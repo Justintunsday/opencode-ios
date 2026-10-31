@@ -504,7 +504,8 @@ only one pending run per group); they are not failures.
 | v2 no-Intl (run 41171982508) | runs (`node --version`, `process.platform=="ios"`, fs/sqlite/TLS/child_process OK), but CLI rejected: `Intl` undefined + `\p{...}` regexp `SyntaxError`. Drove patch 0002 / full-icu. |
 | ICU build (run 41184686029) | runs, ICU present, but CLI rejected: `ReferenceError: WebAssembly is not defined` from Node `fetch`/undici wasm llhttp. Drove patch 0003 / JIT+wasm. |
 | v3 (run 41193603642) | starts; `--version` OK; **any JS/wasm code execution traps with SIGBUS (138) / EXC_BAD_ACCESS**, regardless of entitlement set. Drove patch 0004 (iOS JIT W^X). |
-| v4 (run 41205805269) | CI run dispatched; device verification pending at the time of writing. |
+| v4 (run 41205805269) | **CI failure before build**: the workflow's patch-series marker check (`require_patched_source`) still looked for the old PR#150 comment line that patch 0004 replaces in `build_config.h`, so normalize-cache aborted. Fixed in `dfbc093` (one stable marker per patch 0001..0004), re-run as 41207449703. |
+| v4 (run 41207449703) | CI run in progress; device verification pending at the time of writing. |
 
 ## 9.1 Downstream consumption (packaging integration)
 
