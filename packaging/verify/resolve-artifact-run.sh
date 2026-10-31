@@ -59,8 +59,10 @@ optional_skip() {
 
 run_has_artifact() {
     local run_id="$1" count
-    count="$(gh run view "$run_id" --repo "$REPO" --json artifacts \
-        --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\" and (.expired | not))] | length" \
+    # `gh run view --json artifacts` is not available in all gh versions, so
+    # query the REST API directly (token comes from GH_TOKEN/GITHUB_TOKEN).
+    count="$(gh api "repos/${REPO}/actions/runs/${run_id}/artifacts" \
+        --jq "[.artifacts[] | select(.name == \"$ARTIFACT_NAME\" and (.expired == false))] | length" \
         2>/dev/null || echo 0)"
     [ "${count:-0}" -gt 0 ]
 }

@@ -92,6 +92,66 @@ commands from a NewTerm 3 shell or SSH. Full install instructions:
 Optional after test 10: confirm a local file edit and a `git` operation through
 the agent in a throwaway repository.
 
+## Device verification results
+
+Status: **PENDING — no device run has been recorded yet.** The device tests above
+therefore remain `UNVERIFIED ON DEVICE`. This section is where real device
+evidence is recorded when the maintainer runs the runbook on the target iPhone.
+
+Device results are **user/owner-reported**, not CI-produced. CI reports
+(`port-verification`, `package-report.json`) stay runner-only evidence and must
+never be presented as device proof.
+
+Target device identity (provided by the project maintainer; no credentials,
+account identifiers or keys are recorded anywhere in this repository):
+
+| Property | Value |
+| --- | --- |
+| Device | iPhone SE (2nd generation), identifier `iPhone12,8`, arm64 |
+| OS | iOS 16.1.1 (20B101) |
+| Jailbreak | Dopamine rootless; `/var/jb` symlink into `/private/preboot/.../dopamine-*/procursus` |
+| User / tools | `mobile`; dpkg, ldid, zsh installed; NewTerm 3 / SSH |
+
+### Recording template (copy per device run)
+
+```markdown
+### Device run N — YYYY-MM-DD (UTC) — <device> — package <version>
+
+| Field | Value |
+| --- | --- |
+| Package file | `OpenCode-iOS-rootless.deb` |
+| Package SHA-256 | `<sha256>` |
+| Package workflow run | <package-rootless run URL> |
+| Runtime artifact run | <build-runtime run URL> |
+| CLI artifact run | <build-opencode run URL> |
+| Packaging commit | `<git sha>` |
+| Operator | <role/name> (credentials kept local, never shared) |
+| Device identity | iPhone SE 2 (iPhone12,8), iOS 16.1.1 (20B101), Dopamine rootless, user `mobile` |
+
+| Test | Status | Evidence / output snippet |
+| --- | --- | --- |
+| device.install | PENDING | |
+| device.version | PENDING | |
+| device.help | PENDING | |
+| device.paths | PENDING | |
+| device.auth | PENDING | |
+| device.no-network | PENDING | |
+| device.jitless | PENDING | |
+| device.tui | PENDING | |
+| device.uninstall | PENDING | |
+| device.ldid | PENDING | |
+
+Observed limitations / deviations:
+- <e.g. TUI rendering degraded in NewTerm, PTY fallback confirmed>
+
+Open issues:
+- <link to issue, if any>
+```
+
+Only mark a row PASS/FAIL from the exact captured command output, and update the
+**Status summary** table at the top of this document in the same commit as the
+evidence. Do not include API keys, tokens, account names or personal project data.
+
 ## Device runbook (exact commands)
 
 On the iPhone:

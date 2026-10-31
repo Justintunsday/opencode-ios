@@ -251,6 +251,12 @@ sh /var/jb/usr/share/doc/opencode/device-smoke.sh
 
 ## 12. Reporting a device result
 
+Device verification results are recorded in
+[`VERIFICATION.md`](VERIFICATION.md) under **Device verification results**, which
+contains the device identity table and a per-test evidence template. The CI
+reports (`port-verification`, `package-report.json`) stay runner-only evidence and
+must not be presented as device proof.
+
 To move the port out of `UNVERIFIED ON DEVICE`, open an issue with:
 
 1. Device model, iOS version, jailbreak (e.g. "iPhone SE2, iOS 16.1.1, Dopamine rootless").
