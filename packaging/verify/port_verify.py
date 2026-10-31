@@ -1911,6 +1911,26 @@ def _check_runtime(checks, ctx, repo_root, extract_dir, mode, skip_native):
                     metrics["runtime_manifest_sha256"] = sha256_file(manifest_path)
 
 
+def _capability_enabled(value):
+    """Interpret a producer capability declaration as enabled/disabled.
+
+    The runtime manifest uses strings of the form
+    ``"enabled: <evidence...>"`` / ``"disabled: <reason...>"`` (booleans are also
+    accepted). Explanatory text after the state word may legitimately mention
+    "jitless" or "disabled" (e.g. "the build no longer passes --v8-options=--jitless"),
+    so only the declared state segment is interpreted.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    head = text.split(":", 1)[0].strip()
+    return head in ("enabled", "true", "yes", "on")
+
+
 def _check_runtime_profile(checks, ctx, extract_dir):
     """Reject runtime artifacts whose build/capabilities cannot run the CLI.
 
@@ -1982,7 +2002,6 @@ def _check_runtime_profile(checks, ctx, extract_dir):
 
     # ---- WebAssembly (required by Node fetch/undici on 22.9) ------------
     wasm_policy = policy.get("webassembly")
-    wasm_text = str(wasm_policy).lower() if wasm_policy is not None else ""
     if wasm_policy is None:
         problems.append(
             "runtime-manifest.json does not declare runtime_policy.webassembly; the "
@@ -1990,7 +2009,7 @@ def _check_runtime_profile(checks, ctx, extract_dir):
             "wasm llhttp — a no-wasm runtime makes every CLI command fail with "
             "'ReferenceError: WebAssembly is not defined', device-verified)."
         )
-    elif "disabled" in wasm_text or "jitless" in wasm_text or "enabled" not in wasm_text:
+    elif not _capability_enabled(wasm_policy):
         problems.append(
             f"runtime_policy.webassembly={wasm_policy!r}: WebAssembly must be enabled "
             "(Node fetch/undici requires it; no-wasm runtime fails on device)."
@@ -1998,7 +2017,6 @@ def _check_runtime_profile(checks, ctx, extract_dir):
 
     # ---- JIT (required for Wasm code generation; 2-key entitlements suffice)
     jit_policy = policy.get("v8_jit")
-    jit_text = str(jit_policy).lower() if jit_policy is not None else ""
     if any("--v8-options=--jitless" in flag for flag in flags):
         problems.append(
             "--v8-options=--jitless is set: the shipped runtime must have JIT enabled "
@@ -2010,7 +2028,7 @@ def _check_runtime_profile(checks, ctx, extract_dir):
             "runtime-manifest.json does not declare runtime_policy.v8_jit; the runtime "
             "must declare JIT enabled."
         )
-    elif "disabled" in jit_text or "jitless" in jit_text or "enabled" not in jit_text:
+    elif not _capability_enabled(jit_policy):
         problems.append(
             f"runtime_policy.v8_jit={jit_policy!r}: JIT must be enabled for this runtime."
         )

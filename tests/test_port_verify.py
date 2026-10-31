@@ -218,14 +218,46 @@ class CheckSummaryTest(unittest.TestCase):
         self.assertEqual(port_verify.summarize_checks(checks)["ci_status"], "FAIL")
 
 
+class CapabilityEnabledTest(unittest.TestCase):
+    def test_enabled_forms(self):
+        self.assertTrue(port_verify._capability_enabled("enabled: WebAssembly supported"))
+        self.assertTrue(port_verify._capability_enabled("Enabled: default V8 JIT"))
+        self.assertTrue(port_verify._capability_enabled("enabled"))
+        self.assertTrue(port_verify._capability_enabled(True))
+
+    def test_disabled_forms(self):
+        self.assertFalse(port_verify._capability_enabled("disabled: no wasm"))
+        self.assertFalse(port_verify._capability_enabled("not enabled"))
+        self.assertFalse(port_verify._capability_enabled(False))
+        self.assertFalse(port_verify._capability_enabled(None))
+        self.assertFalse(port_verify._capability_enabled(""))
+
+    def test_v3_style_explanation_mentioning_jitless_is_enabled(self):
+        # Producer evidence text may mention the removed flag; the declared state
+        # segment ("enabled:") is what matters.
+        value = (
+            "enabled: default V8 JIT (the build no longer passes "
+            "--v8-options=--jitless). Device-verified on the target iPhone."
+        )
+        self.assertTrue(port_verify._capability_enabled(value))
+
+
 class RuntimeBuildProfileTest(unittest.TestCase):
     GOOD_FLAGS = [
         "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=full-icu",
     ]
     GOOD_POLICY = {
         "intl": {"mode": "full-icu", "icu_version": "75"},
-        "webassembly": "enabled (V8 wasm)",
-        "v8_jit": "enabled",
+        "webassembly": (
+            "enabled: patches/nodejs-mobile/0003 restores upstream "
+            "v8_enable_webassembly; Node fetch()/undici instantiates a wasm llhttp "
+            "parser (the earlier no-wasm runtime died with 'ReferenceError: "
+            "WebAssembly is not defined' on device)."
+        ),
+        "v8_jit": (
+            "enabled: default V8 JIT (the build no longer passes "
+            "--v8-options=--jitless). Device-verified with the 2-key entitlements."
+        ),
     }
 
     def _run_profile_check(self, configure_flags=None, runtime_policy="default"):
@@ -272,7 +304,7 @@ class RuntimeBuildProfileTest(unittest.TestCase):
     def test_rejects_missing_webassembly_declaration(self):
         policy = {
             "intl": {"mode": "full-icu", "icu_version": "75"},
-            "v8_jit": "enabled",
+            "v8_jit": "enabled: default V8 JIT",
         }
         checks = self._run_profile_check(runtime_policy=policy)
         self.assertEqual(checks[0]["status"], "FAIL")
