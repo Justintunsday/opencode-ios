@@ -127,9 +127,10 @@ def ensure_stock_node(version: str, cache_dir: str) -> dict[str, object]:
     plat, arch = node_platform()
     if plat == "win":
         archive_name = f"node-v{version}-win-{arch}.zip"
+        extract_name = archive_name[: -len(".zip")]
     else:
         archive_name = f"node-v{version}-{plat}-{arch}.tar.gz"
-    extract_name = archive_name.split(".")[0]
+        extract_name = archive_name[: -len(".tar.gz")]
     extract_dir = os.path.join(cache_dir, extract_name)
     marker = os.path.join(extract_dir, ".verified")
     binary = os.path.join(extract_dir, "node.exe" if plat == "win" else os.path.join("bin", "node"))
