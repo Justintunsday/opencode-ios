@@ -1,11 +1,11 @@
 # OpenCode CLI bundle for the iPhoneOS Node.js runtime
 
-Status: **CI build + host-Node smoke verified; device execution pending the ICU runtime rebuild**
-(`UNVERIFIED ON DEVICE`). First device attempts found that the initial iPhoneOS runtime was
-built `--with-intl=none`, which makes V8 reject the bundle's Unicode property escapes at
-parse time and leaves `Intl` undefined — a runtime capability gap, not a CLI patch issue
-(see §11). The runtime is being rebuilt with ICU (`--with-intl=full-icu` from Node's canned
-full-ICU source); the CLI artifact is otherwise device-ready and package-integration-proven.
+Status: **CI build + host-Node smoke + .deb package build verified; device execution pending**
+(`UNVERIFIED ON DEVICE`). The first device attempt exposed a runtime ICU gap (initial
+iPhoneOS runtime was built `--with-intl=none`, which makes V8 reject the bundle's Unicode
+property escapes at parse time and leaves `Intl` undefined — see §11). The full-icu runtime
+now builds, packages and passes all CI validations, and a green `.deb` exists
+(§4, package run 41185611403). Remaining: record the on-device CLI matrix.
 
 This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
@@ -129,11 +129,16 @@ Node binaries.
 ### Integration with the packaging workflow
 
 `package-rootless.yml` resolves the latest successful run of this workflow, downloads
-`opencode-cli-node-ios` and verifies it before assembling the `.deb`. First integration
-run that consumed a patched artifact:
-[41177665245](https://github.com/Justintunsday/opencode-ios/actions/runs/41177665245)
-(package build, CI result FAIL for an unrelated runtime-entitlements plist issue). The
-CLI-side checks all passed:
+`opencode-cli-node-ios` and verifies it before assembling the `.deb`.
+
+**Latest package build (green):**
+[41185611403](https://github.com/Justintunsday/opencode-ios/actions/runs/41185611403) —
+`OpenCode-iOS-rootless.deb` sha256 `13a0483d817a03d2f9a3b706526546289328cd62e60a0cac32243d2b03f0ae24`,
+50,315,864 bytes; verification `passed=44 failed=0 skipped=1`, `ci_status=PASS`,
+`device_status=UNVERIFIED ON DEVICE`. Provenance: CLI run
+[41176539017](https://github.com/Justintunsday/opencode-ios/actions/runs/41176539017) (this
+workflow, `opencode.mjs` sha256 `69ce398b…`, verified byte-identical in the package) +
+full-icu runtime run 41184686029. CLI-side evidence from that run:
 
 | Check | Result |
 | --- | --- |
@@ -141,12 +146,18 @@ CLI-side checks all passed:
 | `cli.artifact-policy` — iOS candidate (patch series + required Node 22.9 smoke) | PASS |
 | `cli.native-assets` — no desktop Mach-O binaries shipped as CLI assets | PASS |
 | `cli.assets-contract` — non-SEA assets directory wired up | PASS |
-| `cli.host-node-smoke` — bundle runs on host Node.js 22.9.0 (7 checks, 0 failures) | PASS |
+| `cli.host-node-smoke` — bundle/launcher run on host Node.js 22.9.0 (7/7 checks) | PASS |
 | `pkg.verbatim-copy` — packaged CLI files byte-identical to the artifact | PASS |
+| `runtime.build-profile` — runtime built with `--with-intl=full-icu` (Intl/\p{} capable) | PASS |
 | host Node provenance/version (nodejs.org checksum, pinned 22.9.0) | PASS |
 
-The only failures were `runtime.entitlements*` on the node runtime artifact (owned by the
-runtime build, not the CLI bundle).
+An earlier package run
+([41177665245](https://github.com/Justintunsday/opencode-ios/actions/runs/41177665245))
+failed only on `runtime.entitlements*`/`runtime.build-profile` from the then-current runtime
+artifact; those are runtime-owned and now pass.
+
+The `.deb` is ready to install on the device; the CLI device matrix is still
+**UNVERIFIED ON DEVICE** until the Lead's device run is recorded (§12).
 
 ## 5. Host-Node smoke matrix
 
