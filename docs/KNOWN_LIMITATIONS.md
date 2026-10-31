@@ -11,8 +11,8 @@ override any of it. Target device: iPhone SE 2, iOS 16.1.1, Dopamine rootless.
 | 3 | **No native file watcher.** `@parcel/watcher` has no iPhoneOS build; watch-based features fall back to polling or are disabled. | Live reload/incremental watching may lag or not happen; re-run commands to observe changes. Large repositories are affected more. | documented fallback |
 | 4 | **No `fff`/`ffi-rs` native modules.** Upstream ships an unavailable-proxy fallback for ffi; it is selected on iOS. Desktop native binaries are removed from the packaged assets (CI rejects stock bundles that still contain them). | Features requiring native FFI (and fff-backed search/UI helpers) are unavailable. Pure-JS and WASM paths can work because the final runtime enables WebAssembly, but wasm-backed optional components are not individually validated on device. | documented fallback |
 | 5 | **Node.js 22.9.0, not Node 26.x.** Upstream OpenCode's Node build path normally targets a newer Node version. | APIs added after 22.9 are missing (e.g. `module.registerHooks`); the iOS prelude avoids them and the Vite bundle is patched, but some CLI features/paths could fail. Node 22.9's built-in fetch/undici requires WebAssembly (wasm llhttp), which is why the runtime must be built with WASM+JIT enabled. Host-runtime smoke passes for `--version`/`--help` on 22.9.0 after the iOS patch series; broader CLI commands are covered by the device runbook. | documented constraint |
-| 6 | **JIT + WebAssembly are required and enabled in the shipped runtime, with the iOS V8 W^X patch.** Node 22.9's built-in fetch/undici needs WebAssembly (wasm llhttp). An intermediate JIT-less/WASM-disabled runtime made every CLI command fail with `ReferenceError: WebAssembly is not defined`; the v3 JIT+WASM build trapped with **SIGBUS when executing V8-generated code** on device with every entitlement set, because V8's iOS W^X path (`MAP_JIT` + `pthread_jit_write_protect`) was a no-op. The v4 runtime (run `41207449703`) adds patch `0004-ios-jit-write-protect.patch`, and the packaging CI now rejects JIT-enabled runtime manifests without that patch; its device run is pending. `OPENCODE_IOS_JITLESS=1` remains a debug escape hatch but disables JIT/WASM and breaks fetch/network features. | Until the v4 device run passes, JIT-dependent code execution on iOS is **unverified**; devices/jailbreaks that cannot provide executable memory would require JITless mode and lose fetch-based functionality. | unverified (v4 W^X fix packaged; device run pending) |
-| 7 | **Entitlements are device-verified only partially.** The JIT-less runtime works with exactly `platform-application` + `com.apple.private.security.no-sandbox` (device-verified; old 4-key allow-jit sets without those keys were SIGKILLed, exit 137). For V8 JIT on iOS the shipped v4 package uses a **tentative 4-key set** (`platform-application`, `com.apple.private.security.no-sandbox`, `dynamic-codesigning`, `com.apple.security.cs.allow-unsigned-executable-memory`), marked tentative/device-unverified in the runtime manifest; the exact minimal subset is pending device confirmation (a change would be signing-only). The loader can SIGKILL on an unresolved extra entitlement. | If the runtime is killed at startup, repair/re-sign with the shipped `runtime/entitlements.xml` only; do not add other keys randomly. Exact v4 entitlement set will be documented after the device run. | partially device-verified (preliminary); v4 set pending device confirmation |
+| 6 | **JIT + WebAssembly are required; the iOS JIT memory model is the hard part.** Node 22.9's built-in fetch/undici needs WebAssembly (wasm llhttp). An intermediate JIT-less/WASM-disabled runtime made every CLI command fail with `ReferenceError: WebAssembly is not defined`; the v3 JIT+WASM build trapped with **SIGBUS on generated code** on device with every entitlement set, and the v4 runtime (MAP_JIT + `pthread_jit_write_protect`, patch 0004) crashed at V8 code-range reservation (`EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in `CodeRange::InitReservation`) because iOS denies `mprotect` RWX. **v5** replaces this with a plain-`mprotect` W^X model (patch `0005-no-map-jit-on-ios.patch`, 2-key device-verified entitlements); alternatively the optional `ios-jit-shim` interposer can be injected via `DYLD_INSERT_LIBRARIES`. Packaging CI rejects JIT-enabled runtime manifests without an iOS W^X patch. `OPENCODE_IOS_JITLESS=1` remains a debug escape hatch but disables JIT/WASM and breaks fetch/network features. | Until a v5/shim build is device-verified, JIT-dependent code execution on iOS is **unverified**; devices/jailbreaks that cannot provide executable memory would require JITless mode and lose fetch-based functionality. | unverified (v5/shim approach in progress; no device-runnable JIT runtime yet) |
+| 7 | **Entitlements are device-verified for the JIT-less path only.** The JIT-less runtime works with exactly `platform-application` + `com.apple.private.security.no-sandbox` (device-verified; old 4-key allow-jit sets without those keys were SIGKILLed, exit 137). The v4 JIT build shipped a **tentative 4-key set** (`platform-application`, `com.apple.private.security.no-sandbox`, `dynamic-codesigning`, `com.apple.security.cs.allow-unsigned-executable-memory`) which was device-unverified; v5 returns to the device-verified 2-key set with the plain-mprotect model. The optional `libjitshim.dylib` interposer is injected only when shipped. The loader can SIGKILL on an unresolved extra entitlement. | If the runtime is killed at startup, repair/re-sign with the shipped `runtime/entitlements.xml` only; do not add other keys randomly. Exact final set will be documented after the device-verified run. | partially device-verified (2-key set for JIT-less path); final JIT build pending |
 | 8 | **No GUI/desktop application.** CLI only. | No menu-bar app, no GUI editor, no native window; use NewTerm 3 or SSH. | documented constraint |
 | 9 | **Jailbreak required; rootless only.** Only `iphoneos-arm64` + `/var/jb` prefix (Dopamine-style) is packaged and validated. | Rootful jailbreaks, other prefixes (`/var/jb` absent) and non-arm64 devices are unsupported. | documented constraint |
 | 10 | **Only iPhone SE 2 / iOS 16.1.1 is targeted.** No testing on other models/iOS versions. | Behaviour on other devices is untested; minimum iOS stated by the runtime is ≤ 16.1.1 (build target iOS 15.0). | unverified |
@@ -42,17 +42,26 @@ override any of it. Target device: iPhone SE 2, iOS 16.1.1, Dopamine rootless.
   minimal pair (`platform-application` + `com.apple.private.security.no-sandbox`),
   packages built from stock (non-iOS) CLI artifacts, runtime artifacts that are
   not full-ICU or that lack WebAssembly/JIT (or contain `--v8-options=--jitless`),
-  and JIT-enabled runtime manifests without the iOS V8 W^X patch
-  (`0004-ios-jit-write-protect.patch`); those are hard failures, not warnings.
+  and JIT-enabled runtime manifests without an iOS V8 W^X patch
+  (`0004-ios-jit-write-protect.patch` or `0005-no-map-jit-on-ios.patch`); those
+  are hard failures, not warnings.
 - Package history: the first CI-green package (run `41185611403`, `.deb` SHA-256
   `13a0483d...`) was an intermediate, not shippable (WASM-disabled runtime:
   `ReferenceError: WebAssembly is not defined`). The v3-runtime package (run
-  `41202900005`, `.deb` SHA-256 `cf5db02a...`) passed all CI checks but is
-  superseded: device testing trapped with SIGBUS in V8-generated code. The
-  current candidate is the **v4** package (run `41218342323`, `.deb` SHA-256
-  `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`, includes the
-  optional iPhoneOS `rg`), built with the W^X runtime (patch 0004); its device
-  run is still `UNVERIFIED ON DEVICE`.
+  `41202900005`, `.deb` SHA-256 `cf5db02a...`) trapped with SIGBUS in
+  V8-generated code on device. The v4-runtime package (run `41218342323`, `.deb`
+  SHA-256 `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`)
+  passed all CI checks but crashed on device at V8 code-range reservation
+  (`FatalOOM`/SIGTRAP, iOS denies `mprotect` RWX), so it is also not shippable.
+  The pending candidates are the **v5** runtime (plain-mprotect W^X, 2-key
+  entitlements) and the optional **`ios-jit-shim`** interposer path; both are
+  `UNVERIFIED ON DEVICE` until the maintainer records a run.
+- Optional bundled `rg` (stretch `ios-ripgrep` artifact) is only used if the
+  artifact was published; its absence is reported as `SKIP`, not as a failure of
+  the package. The optional `libjitshim.dylib` (`ios-jit-shim` artifact) is
+  likewise included only when published and is injected via
+  `DYLD_INSERT_LIBRARIES` only when present; it is a jailbreak JIT W^X
+  interposer, documented and audited in `package-report.json`.
 - Optional bundled `rg` (stretch `ios-ripgrep` artifact) is only used if the
   artifact was published; its absence is reported as `SKIP`, not as a failure of
   the package.

@@ -22,42 +22,54 @@ this repository claims on-device success.
 > device (entitlements, rootless shells, dpkg script handling, runtime capability
 > requirements) are recorded separately and do **not** verify the packaged CLI.
 
-### Latest CI-verified build — v4 (iOS JIT W^X), device verification pending
+### Latest CI-verified build — v4 (device-incompatible: iOS mprotect RWX denied)
 
-Both CI workflows are green on the same artifact, produced from the v4 runtime
-(full-ICU + WebAssembly + JIT, patch `0004-ios-jit-write-protect.patch`, tentative
-4-key JIT entitlement set). The v3 JIT build (without the W^X patch) trapped with
-SIGBUS on V8-generated code on device and is superseded.
+Both CI workflows are green on the v4 artifact (full-ICU + WebAssembly + JIT, patch
+`0004-ios-jit-write-protect.patch`, tentative 4-key JIT entitlement set), but the
+**v4 runtime is not device-runnable**: on the target iPhone V8 crashes while
+reserving its code range (`EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in
+`CodeRange::InitReservation`) because iOS denies `mprotect` to RWX. The v3 JIT
+build trapped earlier (SIGBUS on generated code). Both are superseded; **do not
+ship them**. Two resolutions are in progress:
+
+- **v5 runtime** — V8 allocates JIT mappings RWX at `mmap` time on iOS
+  (jailbreak-JIT-app pattern) instead of `PROT_NONE`→`mprotect RWX`
+  (patch `0005-no-map-jit-on-ios.patch`), with 2-key device-verified entitlements.
+- **Optional `ios-jit-shim`** — a small iPhoneOS `libjitshim.dylib` interposer
+  (published as artifact `ios-jit-shim`) that the launcher injects via
+  `DYLD_INSERT_LIBRARIES` only when present; the package pipeline can consume it
+  (installed at `/var/jb/usr/lib/opencode/runtime/libjitshim.dylib`, 0755, audited
+  as an iPhoneOS dylib and recorded in `package-report.json`). It relaxes JIT
+  W^X for jailbreak use and is documented as such. Whether the v4+shim
+  combination works is pending maintainer device testing.
 
 | Item | Value |
 | --- | --- |
-| Package workflow run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218342323> |
-| Package artifact | `OpenCode-iOS-rootless`, artifact id `13047999069`, 52,934,458 bytes |
-| `.deb` | `OpenCode-iOS-rootless.deb`, 52,914,772 bytes |
-| `.deb` SHA-256 | `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4` |
+| Package workflow run (v4) | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218342323> |
+| Package artifact (v4) | `OpenCode-iOS-rootless`, artifact id `13047999069`, 52,934,458 bytes |
+| `.deb` SHA-256 (v4) | `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4` |
 | Version / arch | `2.2.5-1` / `iphoneos-arm64`, Installed-Size 164,008 KiB |
-| Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41207449703> (v4: full-ICU/ICU 75 + WebAssembly + JIT enabled; `source.patches` includes 0004-ios-jit-write-protect.patch) |
-| Runtime node | sha256 `48eecd595ad94c433dafc5573bd528f4a947c7fe5e57f59cedd139890839ec66`, 106,842,032 bytes, Mach-O iPhoneOS arm64 minOS 14.0, dylibs only `libSystem.B.dylib`/`libc++.1.dylib` |
-| Runtime entitlements | tentative 4-key set: `platform-application`, `com.apple.private.security.no-sandbox`, `dynamic-codesigning`, `com.apple.security.cs.allow-unsigned-executable-memory` (required pair present; extras reported, pending device minimisation) |
-| Optional bundled `rg` | `/var/jb/usr/bin/rg` from `ios-ripgrep`: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b`, 6,624,992 bytes, iPhoneOS arm64 minOS 10.0, iOS system libraries only |
+| Runtime artifact run (v4) | <https://github.com/Justintunsday/opencode-ios/actions/runs/41207449703> |
+| Runtime node (v4) | sha256 `48eecd595ad94c433dafc5573bd528f4a947c7fe5e57f59cedd139890839ec66`, 106,842,032 bytes, Mach-O iPhoneOS arm64 minOS 14.0, dylibs only `libSystem.B.dylib`/`libc++.1.dylib` |
+| Runtime entitlements (v4) | tentative 4-key set: `platform-application`, `com.apple.private.security.no-sandbox`, `dynamic-codesigning`, `com.apple.security.cs.allow-unsigned-executable-memory` |
+| Optional bundled `rg` | sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b`, 6,624,992 bytes, iPhoneOS arm64, iOS system libraries only |
 | CLI artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41192939688> |
-| Package validation | `ci_status=PASS`, 45 PASS / 0 FAIL / 0 SKIP; gates include "WebAssembly enabled; JIT enabled; iOS V8 W^X patch (0004) declared" |
-| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218528704> (artifact `port-verification`, id `13048839513`) |
-| Verification result | `ci_status=PASS`, 46 PASS / 0 FAIL / 0 SKIP; `device_status=UNVERIFIED ON DEVICE` |
-| Device status | `UNVERIFIED ON DEVICE` — this is the artifact to install for the v4 device run |
+| Package validation (v4) | `ci_status=PASS`, 45 PASS / 0 FAIL / 0 SKIP |
+| Verification workflow (v4) | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218528704> (artifact id `13048839513`), 46 PASS / 0 FAIL / 0 SKIP |
+| Device status | **v4 device-incompatible (SIGTRAP/FatalOOM: iOS denies mprotect RWX). Superseded — do not ship.** v5 runtime rebuild and the optional `ios-jit-shim` path are pending; the final table will be replaced when a device-runnable artifact exists. |
 
 **Artifact identity across docs commits.** The packaged documentation is part of
 the `.deb`, so CI rebuilds triggered by documentation-only commits produce
 byte-different `.debs` (different SHA-256) even though the runtime, CLI bundle and
-launcher code are identical. The pinned run above identifies a specific artifact;
-later green runs on docs commits are pipeline evidence only.
+launcher code are identical. Pinned runs above identify specific artifacts; later
+green runs on docs commits are pipeline evidence only.
 
 Pipeline history: the v3 package (run `41202900005`, `.deb` sha `cf5db02a...`)
 passed all CI checks but trapped with SIGBUS on V8-generated code on the device
 (no W^X patch), and the earlier intermediate package
 (run `41185611403`, `.deb` sha `13a0483d...`) used a WASM-disabled runtime and
-failed with `ReferenceError: WebAssembly is not defined`. Both are superseded and
-not shippable; the packaging capability gates now reject such runtime artifacts.
+failed with `ReferenceError: WebAssembly is not defined`. All are superseded and
+not shippable; the packaging capability gates reject such runtime artifacts.
 
 ## Where the evidence lives
 
@@ -103,7 +115,7 @@ Produced by `scripts/validate-port.sh` on `macos-15`. Each assertion appears in
 | Host-runtime smoke | pinned Node.js **22.9.0** downloaded from nodejs.org with `SHASUMS256.txt` SHA-256 verification; `node opencode.mjs --version` and `--help`; the **packaged launcher** run with `OPENCODE_IOS_PREFIX`/`OPENCODE_IOS_NODE` pointing at the host node (flag ordering, exec, argv forwarding incl. rejection of an unknown flag); version output must contain the pinned upstream version |
 | Integrity & hygiene | `SHA256SUMS` matches the `.deb`; contents manifest re-verified against the archive (path/mode/size/SHA-256); no secret files/private keys; no `.git`/`node_modules`/`.DS_Store`/debug artifacts; size limits; packaged docs contain MIT/attribution and state the device status |
 | Repository | LF line endings, shell syntax, no secrets in tracked files, packaging layout, workflow contract, factory unit tests (`python3 -m unittest discover -s tests -v`), optional workflow YAML parse |
-| Optional components | iPhoneOS `rg` (stretch `ios-ripgrep` artifact): Mach-O + dylib audit when shipped; explicit SKIP when absent |
+| Optional components | iPhoneOS `rg` (stretch `ios-ripgrep` artifact): Mach-O + dylib audit when shipped; explicit SKIP when absent. Optional `libjitshim.dylib` (`ios-jit-shim` artifact): iPhoneOS MH_DYLIB audit, conditional `DYLD_INSERT_LIBRARIES` launcher injection, provenance in `package-report.json`; SKIP when absent. |
 
 The **host-runtime smoke is not a device test**. It executes the CLI JavaScript
 bundle with a desktop macOS Node.js build of the same version on the same OS
@@ -203,7 +215,10 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | WebAssembly | `undefined` on the intermediate JIT-less runtime (WebAssembly was disabled) |
 | Dylib linkage on device | only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib` |
 | Re-sign with shipped 2-key entitlements (`ldid -S`) | PASS; old 4-key signature SIGKILLed (137) |
-| v4 runtime built (patch 0004 W^X, tentative 4-key JIT set) | CI-green (run `41207449703`): node sha256 `48eecd59…`, `source.patches` includes `0004-ios-jit-write-protect.patch`, manifest marks entitlements tentative / device-unverified; packaged as run `41218342323`. **Device run pending** — the v3 SIGBUS trap is what patch 0004 targets. |
+| v4 runtime built (patch 0004 W^X, tentative 4-key JIT set) | CI-green (run `41207449703`): node sha256 `48eecd59…`, `source.patches` includes `0004-ios-jit-write-protect.patch`, manifest marks entitlements tentative / device-unverified; packaged as run `41218342323`. |
+| **v4 runtime on device** | **FAIL:** the package installs but the JIT runtime crashes while reserving V8 code range — `EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in `CodeRange::InitReservation` because iOS denies `mprotect` to RWX (MAP_JIT memory model). Resolution in progress: v5 runtime (plain-mprotect W^X, patch `0005-no-map-jit-on-ios.patch`, 2-key entitlements) and/or optional `libjitshim.dylib` interposer injected via `DYLD_INSERT_LIBRARIES`. |
+| iOS JIT memory-permission probe | Separate diagnostic workflow (`iOS JIT memory probe dylib`) builds `libjitprobe.dylib` (artifact `ios-jit-probe`, never shipped) to report which executable-memory primitives the jailbreak permits; used to choose the v5/shim approach. |
+| **v5 runtime / jit-shim candidate** | **PENDING** — v5 runtime run in progress; optional `ios-jit-shim` is consumed by packaging when published. Device PASS only after the maintainer's raw outputs. |
 | ICU-enabled iOS Node reference | the community reference Node 18.20.4 binary on the same iPhone reports `process.versions.icu = 74.2` and `typeof Intl === "object"`, confirming an ICU-enabled iOS Node build works on this exact device |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
 | **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |

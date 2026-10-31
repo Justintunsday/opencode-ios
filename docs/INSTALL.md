@@ -31,8 +31,9 @@ Rootless environment facts (device-verified on the target iPhone):
 | `HOME` | SSH/NewTerm sessions run as `mobile` (uid 501) with `HOME=/var/jb/var/mobile`. Config/data therefore resolve to `/var/jb/var/mobile/.config/opencode` and `/var/jb/var/mobile/.local/share/opencode`. |
 | `PATH` | SSH default: `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`. The packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` so shells/tools spawned by the CLI resolve. |
 | `git` | **Not installed by default.** The package `Recommends: git`; install it with `sudo apt-get install -y git` (Procursus apt, git 2.39.1) for git tool support. |
-| Entitlements | The device-verified minimal runtime entitlement set is exactly `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient on this device; the same 2-key set was device-proven to permit JIT and WebAssembly. |
-| Runtime capabilities | The shipped runtime must be **full-ICU** with **WebAssembly and JIT enabled** (Node 22.9's built-in fetch/undici requires wasm llhttp; a wasm-disabled runtime fails on device with `ReferenceError: WebAssembly is not defined`). Packaging CI rejects runtimes built `--with-intl=none` or with `--jitless`/WebAssembly disabled. |
+| Entitlements | The device-verified minimal runtime entitlement set is `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient. The v4 JIT runtime additionally used a tentative 4-key set, but it is still device-incompatible (see shipping status below). |
+| Runtime capabilities | The shipped runtime must be **full-ICU** with **WebAssembly and JIT enabled** (Node 22.9's built-in fetch/undici requires wasm llhttp; a wasm-disabled runtime fails on device with `ReferenceError: WebAssembly is not defined`). Packaging CI rejects runtimes built `--with-intl=none` or with `--jitless`/WebAssembly disabled. JIT execution additionally needs a device-compatible iOS W^X memory model (v5 plain-mprotect approach) or the optional jailbreak JIT shim. |
+| Optional JIT shim | If the `ios-jit-shim` artifact is published, the package installs `/var/jb/usr/lib/opencode/runtime/libjitshim.dylib` (0755) and the launcher exports `DYLD_INSERT_LIBRARIES` for it **only when present**. It is a jailbreak-only JIT interposer (relaxes W^X/mprotect for V8) and is recorded in `package-report.json`; without it the launcher behaves normally. |
 | Launcher shebang | `/var/jb/usr/bin/opencode` starts with `#!/var/jb/bin/sh` because the kernel execs it directly and `/bin/sh` does not exist. Maintainer scripts keep `#!/bin/sh`, which rootless Procursus `dpkg` handles (device-verified). |
 
 Node.js 22.9.0 is older than the Node version upstream OpenCode normally targets;
@@ -72,22 +73,21 @@ Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 `UPSTREAM.lock`). The exact SHA-256 of the published `.deb` is recorded in
 `SHA256SUMS` and inside `package-report.json`.
 
-> **Shipping status (2026-11-01):** the v4-runtime package is the current
-> candidate: package run
-> <https://github.com/Justintunsday/opencode-ios/actions/runs/41218342323>
-> (artifact `OpenCode-iOS-rootless`, id `13047999069`), `.deb` 52,914,772 bytes,
-> SHA-256
-> `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`, built from
-> the v4 runtime (full-ICU + WebAssembly + JIT + patch
-> `0004-ios-jit-write-protect.patch`, tentative 4-key JIT entitlement set) and
-> including the optional iPhoneOS `rg`. CI status is `PASS` (45/0/0 package checks,
-> 46/0/0 verification checks) but the **on-device run is still pending**, so the
-> packaged CLI remains `UNVERIFIED ON DEVICE` until the maintainer records it in
-> `docs/VERIFICATION.md`. Do **not** install the superseded v3-runtime package
-> (run `41202900005`, `.deb` sha `cf5db02a...`): device testing trapped with
-> SIGBUS in V8-generated code (pre-W^X). Earlier WASM-disabled packages
-> (`.deb` sha `13a0483d...`) fail with
-> `ReferenceError: WebAssembly is not defined` and are likewise not shippable.
+> **Shipping status (2026-11-01):** **no artifact is device-runnable yet; do not
+> install a candidate expecting a working CLI.** The v4-runtime package (run
+> `41218342323`, `.deb` SHA-256
+> `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`) passes every
+> CI check but is **device-incompatible**: on the iPhone the JIT runtime crashes
+> while reserving V8 code range (`EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in
+> `CodeRange::InitReservation`, iOS denies `mprotect` to RWX). The v3-runtime
+> package (run `41202900005`) trapped earlier with SIGBUS on generated code, and
+> WASM-disabled packages (`.deb` sha `13a0483d...`) fail with
+> `ReferenceError: WebAssembly is not defined`. Resolution in progress: **v5
+> runtime** (plain-mprotect W^X, patch `0005-no-map-jit-on-ios.patch`) and/or the
+> **optional `ios-jit-shim`** interposer injected via `DYLD_INSERT_LIBRARIES`.
+> Install only a package whose `package-report.json` shows the matching runtime
+> and, for JIT builds, the v5/shim path, and only after the maintainer records a
+> device run in `docs/VERIFICATION.md`.
 
 ## 3. Transfer the package to the device
 
@@ -295,6 +295,8 @@ test.
 | --- | --- |
 | Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Entitlement/code-signature problem. The package ships the **device-verified minimal entitlement set**: `platform-application` + `com.apple.private.security.no-sandbox` (`runtime/entitlements.xml`). Re-sign the runtime with exactly those shipped entitlements, then retry: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`. Do **not** substitute the older allow-jit / allow-unsigned-executable-memory / disable-library-validation / dynamic-codesigning sets: those were empirically SIGKILLed on the target device (exit 137), while the 2-key set was device-proven to run the JIT+WebAssembly-enabled runtime. `ldid` is installed on the target device; it is not a package dependency. |
 | Every command fails with `ReferenceError: WebAssembly is not defined` | The runtime was built with WebAssembly disabled (device-verified on the intermediate package: Node's fetch/undici needs wasm llhttp) or `OPENCODE_IOS_JITLESS=1` is set in the environment. Install the final package built from a WebAssembly+JIT-enabled runtime (check `package-report.json` → `runtime.build-profile`: "WebAssembly enabled; JIT enabled") and unset `OPENCODE_IOS_JITLESS`. |
+| CLI crashes early with `EXC_BREAKPOINT`/SIGTRAP, `FatalOOM`, or `CodeRange::InitReservation` | The JIT runtime's iOS memory model is incompatible (iOS denied `mprotect` RWX; device-verified on the v4 runtime). Use a package with the v5 runtime (plain-mprotect W^X, `0005-no-map-jit-on-ios.patch`) and/or the optional `libjitshim.dylib` (`ios-jit-shim`) interposer, which the launcher injects via `DYLD_INSERT_LIBRARIES` only when shipped. Do not try to fix this with entitlement changes alone. |
+| JIT shim present but no effect / `DYLD_INSERT_LIBRARIES` ignored | The shim is a jailbreak-only W^X interposer and several factors can disable injection (hardened runtime restrictions, missing `dynamic-codesigning`, other injected tweaks). Check `package-report.json` → `runtime.jitshim` for whether the shim was shipped and its audit; run with a clean environment (no `DYLD_*` overrides of your own) and report outputs. Without the shim the launcher launches normally. |
 | `bad option: --use-system-ca` / `--experimental-ffi` | A custom launcher/wrapper is passing Node flags that do not exist in Node 22.9. Use the installed launcher unmodified (it passes `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size` only). The device jitless runtime accepts `--jitless` fine; `--use-system-ca`/`--experimental-ffi` must never be passed. |
 | `/var/jb/bin/sh: not found` / `bad interpreter` when running `opencode` | Launcher was replaced or the package was edited by hand. Rootless iOS has no `/bin/sh`; the launcher must keep the `#!/var/jb/bin/sh` shebang. Reinstall the `.deb`. |
 | CLI fails with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu` or `Intl is undefined` | The runtime was built without ICU (`--with-intl=none`). Device-verified on the first no-ICU runtime build; the CLI bundle requires Intl/Unicode property escapes and `Intl.Segmenter`. Reinstall a package built from a full-ICU (`--with-intl=full-icu`) runtime — packaging CI rejects no-ICU runtime artifacts, and the bundle must not be patched. |
