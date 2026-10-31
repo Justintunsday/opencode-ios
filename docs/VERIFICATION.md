@@ -22,10 +22,16 @@ this repository claims on-device success.
 > device (entitlements, rootless shells, dpkg script handling, runtime capability
 > requirements) are recorded separately and do **not** verify the packaged CLI.
 
-### Latest CI-verified build — FINAL CANDIDATE (device verification pending)
+### Latest CI-verified build — SUPERSEDED BY DEVICE RESULT (v4 W^X fix in progress)
 
-Both CI workflows are green on the same artifact, produced from the v3 runtime
-(full-ICU + WebAssembly + JIT, 2-key entitlements):
+Both CI workflows were green on the same artifact, produced from the v3 runtime
+(full-ICU + WebAssembly + JIT, 2-key entitlements). **Device testing of the v3
+JIT-enabled runtime then trapped with SIGBUS when executing V8-generated code**,
+independent of the entitlement set; runtime-engineer is rebuilding with patch
+`0004-ios-jit-write-protect.patch` (V8 `MAP_JIT` + `pthread_jit_write_protect` on
+iOS arm64) and a tentative 4-key JIT entitlement set. The artifact below is kept
+for CI provenance but is **not shippable**; the final table will be updated once
+the v4 runtime, package and device run are green.
 
 | Item | Value |
 | --- | --- |
@@ -41,15 +47,13 @@ Both CI workflows are green on the same artifact, produced from the v3 runtime
 | Package validation | `ci_status=PASS`, 45 PASS / 0 FAIL / 0 SKIP |
 | Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41203040598> (artifact `port-verification`, id `13043027716`) |
 | Verification result | `ci_status=PASS`, 46 PASS / 0 FAIL / 0 SKIP; `device_status=UNVERIFIED ON DEVICE` |
-| Device status | `UNVERIFIED ON DEVICE` — awaiting the maintainer's full device runbook; this is the artifact to install |
+| Device status | **device-trapped: SIGBUS on V8 generated code (v3); superseded, do not ship** |
 
 **Artifact identity across docs commits.** The packaged documentation is part of
 the `.deb`, so CI rebuilds triggered by documentation-only commits produce
 byte-different `.debs` (different SHA-256) even though the runtime, CLI bundle and
-launcher code are identical. The table above pins the **device-tested artifact**
-(run `41202900005`, `.deb` SHA-256 `cf5db02a...`). Later green runs on docs
-commits are pipeline evidence only and do not replace that pinned artifact for
-device verification.
+launcher code are identical. The pinned run above identifies a specific artifact;
+later green runs on docs commits are pipeline evidence only.
 
 Pipeline history: the earlier CI-green package
 (run `41185611403`, `.deb` sha `13a0483d...`) was an **intermediate build** that
@@ -182,7 +186,8 @@ commands, **not** the packaged `.deb`, so the status summary above stays
 | `node --jitless` on device | accepted (jitless runtime; not needed for the final runtime) |
 | `git` | not installed by default; Procursus apt provides git 2.39.1 (`sudo apt-get install -y git`) |
 | Intermediate package (WASM-disabled runtime) on device | **FAIL:** every CLI command dies with `ReferenceError: WebAssembly is not defined` — Node 22.9's built-in fetch/undici needs WASM (wasm llhttp). This is why the intermediate package is marked **not shippable**. |
-| JIT+WASM with the 2-key entitlements | **PASS:** the maintainer re-signed a JIT-enabled Node binary with `platform-application` + `com.apple.private.security.no-sandbox`; on device `WebAssembly` is an object, a wasm module compiles, and a JIT loop runs. The v3 runtime (JIT+WASM+full-ICU) was then built and packaged (runtime run 41193603642, final package run 41202900005). |
+| JIT+WASM with the 2-key entitlements | **PASS (non-generated-code paths):** the maintainer re-signed a JIT-enabled Node binary with `platform-application` + `com.apple.private.security.no-sandbox`; on device `WebAssembly` is an object, a wasm module compiles, and a JIT loop runs. The v3 runtime (JIT+WASM+full-ICU) was then built and packaged (runtime run 41193603642, package run 41202900005). |
+| v3 JIT runtime on device (V8 generated-code execution) | **FAIL:** every entitlement set tested (2-key, +dynamic-codesigning, +allow-jit, 6-key, 9-key) still trapped with **SIGBUS** when executing V8-generated code. The trap is a V8 iOS memory-permission bug (no-op `pthread_jit_write_protect`/`MAP_JIT` code path), not signing. runtime-engineer's patch `0004-ios-jit-write-protect.patch` adds the iOS V8 W^X path; v4 runtime rebuild with a tentative 4-key JIT entitlement set (`platform-application`, `no-sandbox`, `dynamic-codesigning`, `allow-unsigned-executable-memory`) is in progress. The v3-based package (run `41202900005`) is therefore **superseded, not shippable**. |
 
 Native runtime binary probes on the real iPhone (same date, ldid re-signed with the
 2-key entitlement set — **runtime only, not the packaged CLI**):
