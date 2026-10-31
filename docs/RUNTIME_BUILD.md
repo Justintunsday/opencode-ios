@@ -252,9 +252,10 @@ This section records the actual GitHub Actions runs for this workflow. Every
 entry links the run and states the exact failure/fix; nothing here is
 fabricated.
 
-| Run | Status | Notes |
-| --- | --- | --- |
-| _filled in as the build-debug loop progresses_ | | |
+| Run | Commit | Status | Evidence / notes |
+| --- | --- | --- | --- |
+| [41171982508](https://github.com/Justintunsday/opencode-ios/actions/runs/41171982508) | `6cf042d` | **success** (first cold build) | configure gate 05:21:43Z -> 05:21:46Z; `make -j3` 05:21:46Z -> 06:38:24Z (**76m38s** cold, 3 vCPU `macos-15`); build path `make-executable` (`out/Release/node` produced by the normal executable target, `make` exit 0); node 60,598,384 bytes sha256 `53fc2a2237bc6954ef6f780c4d0031fbe67f9b257966f6672c9d7e6ec1201b78`; check_macho PASS iPhoneOS arm64 minos 14.0.0; otool -L only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; cache saved (`ios-node-22.9.0-...-e1-<patch hash>`, ~3 min). Signed with the (now superseded) 4-key JIT entitlement set - see run 41173373500 for the corrected signing. |
+| [41173373500](https://github.com/Justintunsday/opencode-ios/actions/runs/41173373500) | `e7fe917` | in progress | re-runs from the saved `out/Release` cache with the device-verified 2-key entitlement set (`platform-application` + `com.apple.private.security.no-sandbox`), hard exact-set entitlement validation, build-inputs cache fingerprinting, and the optional `ios-ripgrep` job. |
 
 ## 10. Limitations / unresolved issues
 
