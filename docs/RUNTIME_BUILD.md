@@ -1,7 +1,13 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
-Status: **CI build of the `node` CLI + static Mach-O audit.** Device execution is
-**UNVERIFIED ON DEVICE** (GitHub-hosted macOS runners cannot run iPhoneOS binaries).
+Status: **CI build of the `node` CLI (full-icu) + static Mach-O audit.**
+A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
+target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
+but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
+`\p{...}` Unicode property escapes were unsupported. This ICU-enabled rebuild is
+the fix for that blocker; its own device verification is still pending.
+GitHub-hosted macOS runners cannot execute iPhoneOS binaries, so all CI evidence
+below is static.
 
 This document is the recipe, pin record and evidence log for
 `.github/workflows/build-runtime.yml`, `scripts/build-ios-runtime.sh`,
@@ -16,9 +22,9 @@ executable**, built from the pinned nodejs-mobile source with the iPhoneOS SDK
 
 | Artifact file | Meaning |
 | --- | --- |
-| `node` | the CLI runtime, Mach-O `MH_EXECUTE`, arm64, platform IOS, minos <= 16.1.1, ad-hoc signed with ldid |
+| `node` | the CLI runtime, Mach-O `MH_EXECUTE`, arm64, platform IOS, minos <= 16.1.1, with full ICU linked in (ECMA-402/`Intl` + V8 `\p{...}` escapes), ad-hoc signed with ldid |
 | `entitlements.plist` | the exact entitlement set used when signing |
-| `runtime-manifest.json` | pins, build path, observed static facts, runtime policy (JIT/WASM/platform) |
+| `runtime-manifest.json` | pins, build path, observed static facts, runtime policy (JIT/WASM/Intl/platform) |
 | `SHA256SUMS` | sha256 over the three files above |
 | `validation-report.txt` | human-readable copy of the static validation evidence |
 
@@ -41,12 +47,13 @@ verifies it after checkout):
 | CI runner | `macos-15` |
 | Xcode | `16.4` (`mobiledevops/xcode-select-version-action@v1`) |
 | deployment target | nodejs-mobile's iOS default `IPHONEOS_DEPLOYMENT_TARGET=14.0` (<= device iOS 16.1.1) |
+| ECMA-402/Intl | `--with-intl=full-icu`; ICU 75 source + full data bundled in the pinned tree at `deps/icu-small` (`README-FULL-ICU.txt`, `source/data/in/icudt75l.dat.bz2`), statically linked (no download) |
 
-Upstream repositories are never modified: CI applies
-`patches/nodejs-mobile/0001-ios-build-fixes.patch` to a clean checkout of the
-pinned commit and verifies the checkout SHA first.
+Upstream repositories are never modified: CI applies the whole
+`patches/nodejs-mobile/*.patch` series (in filename order) to a clean checkout of
+the pinned commit and verifies the checkout SHA first.
 
-## 3. Patch series: `patches/nodejs-mobile/0001-ios-build-fixes.patch`
+## 3. Patch series: `patches/nodejs-mobile/`
 
 The full PR #150 diff was downloaded and its sha256 recorded in the patch header
 (`728c77f3215d1b5995d100a4b99d46484c3961ef4e27b0a587d9c0decdb1ef79` for the raw
@@ -65,8 +72,24 @@ download used here). This repository keeps only the source/build hunks:
 | `tools/android_build.sh` | **no** | Android-only compiler flags |
 
 The patch applies cleanly (`git apply --check`) to the pinned commit; verification
-is repeated in CI before every build (see §6, step "Verify pinned commit and
+is repeated in CI before every build (see §7, step "Verify pinned commit and
 apply nodejs-mobile build fixes").
+
+### `0002-icu-host-toolset-macos.patch` (this repository, not PR #150)
+
+PR #150 only targeted `--with-intl=none` builds, where no ICU host tools are
+built. The runtime now needs ICU (see §6), so `make` must build **and immediately
+execute** the ICU host-toolset tools (`genccode`, `icupkg`, `genrb`,
+`iculslocs` from `tools/icu/icu-generic.gyp`) to generate the ICU data file.
+With gyp flavor `ios`, `common.gypi`'s `OS=="ios"` target_defaults also stamp the
+iPhoneOS SDK/arch onto those `#host` targets, so they would be iPhoneOS binaries
+that the runner cannot execute. Patch 0002 adds one `_toolset=="host"`
+`target_conditions` entry to the `OS=="ios"` block of `common.gypi` that restores
+`SDKROOT=macosx` (+ `-mmacosx-version-min=10.15`, clears the iPhoneOS flags) for
+every host-toolset target. This is the same treatment PR #150 applied per-target
+to `node.gyp`, `deps/uv/uv.gyp` and `deps/simdutf/simdutf.gyp`; V8's
+`tools/v8_gypfiles/toolchain.gypi` already had it. Only the build-time tools are
+macOS binaries; the shipped runtime still targets iPhoneOS arm64.
 
 ## 4. Build recipe
 
@@ -83,7 +106,7 @@ export GYP_DEFINES="target_arch=arm64 host_os=mac target_os=ios"
 ./configure \
   --dest-os=ios \
   --dest-cpu=arm64 \
-  --with-intl=none \
+  --with-intl=full-icu \
   --cross-compiling \
   --openssl-no-asm \
   --v8-options=--jitless \
@@ -93,8 +116,9 @@ make -j"$(sysctl -n hw.ncpu)"          # -> out/Release/node
 ```
 
 `./configure` also generates the gyp makefiles for the iPhoneOS SDK (this is the
-fast ~1–2 min gate that catches patch/flag/toolchain errors before the 40–90 min
-compile). Python 3.12 + setuptools venv is required because the bundled node-gyp
+fast gate - measured 3 s to generate the makefiles in the first green run - that
+catches patch/flag/toolchain errors before the long compile; the measured cold
+`make -j3` was 76m38s without ICU and is expected to be ~95-115 min with ICU). Python 3.12 + setuptools venv is required because the bundled node-gyp
 still imports `distutils`, removed in Python 3.12
 (nodejs-mobile/node-gyp#2869 workaround); the workflow shadows `python3.13` in
 the venv so `configure`'s newest-python preference still sees setuptools.
@@ -103,7 +127,12 @@ the venv so `configure`'s newest-python preference still sees setuptools.
 (`tools/gyp/pylib/gyp/generator/make.py`, flavor `make-ios`) emulates the Xcode
 SDK settings from the `OS=="ios"` blocks in `common.gypi`
 (`SDKROOT=iphoneos`, `-isysroot <iPhoneOS.sdk>`, `-miphoneos-version-min=14.0`,
-`-arch arm64`).
+`-arch arm64`). ICU is enabled via `--with-intl=full-icu`: configure unpacks the
+bundled `icudt75l.dat.bz2` into `deps/icu-tmp/`, compiles ICU's `common`+`i18n`
+sources for the iPhoneOS target, and `genccode` (a macOS host tool, see §3
+patch 0002) emits the full data as a C array that is statically linked into
+`node`. That is why `otool -L` stays at `/usr/lib/libSystem` +
+`/usr/lib/libc++`: there is no dynamic ICU dependency.
 
 ### Fallback link path (safety net)
 
@@ -185,6 +214,18 @@ compatibility.
 - **No WebAssembly.** PR #150 forces `v8_enable_webassembly=0`; `WebAssembly`
   is unavailable. The CLI port must degrade WASM-dependent features
   (tree-sitter / photon paths) instead of crashing.
+- **Intl / ECMA-402 support IS present (full-icu).** This is mandatory, not
+  optional: the CLI bundle uses `Intl.Segmenter`/`DateTimeFormat`/`NumberFormat`
+  and 196 `\p{...}` regexp property escapes. The earlier `--with-intl=none`
+  runtime started fine on the device but the bundle failed to even parse:
+  `SyntaxError: Invalid regular expression:
+  /[\p{Mark}\p{Control}\p{Default_Ignorable_Code_Point}]/gu:
+  Invalid property name in character class` (device-rejected; see §6.1).
+  `full-icu` (not `small-icu`) is used because small-icu trims the ICU
+  break-iterator data (`tools/icu/icu_small.json`: `brkitr: none`) and Node's
+  small-icu + `Intl.Segmenter` is a known crash class (nodejs/node#51752).
+  CI hard-gates this: `config.gypi` must report `v8_enable_i18n_support=1` and
+  the binary must contain ICU symbols (`icudt75_dat` / `u_strToUpper`).
 - **Node 22.9.0 CLI flags:** `--experimental-sqlite` and
   `--experimental-vm-modules` exist in this version (needed for `node:sqlite`);
   `--use-system-ca` and `--experimental-ffi` **do not exist** in 22.9.0 — the
@@ -197,6 +238,26 @@ compatibility.
   libraries/frameworks (`/usr/lib/*`, `/System/Library/Frameworks/*`), audited
   from `otool -L`; no `/opt/homebrew`, `/usr/local`, macOS-only frameworks or
   `@rpath` dependencies are allowed.
+
+### 6.1 Why ICU is required (device evidence)
+
+On the target device (iPhone SE 2, iOS 16.1.1, Dopamine rootless, signed with the
+2-key entitlement set), the first `--with-intl=none` 22.9.0 build was verified to
+run `node` itself (`node --version` -> `v22.9.0`, `process.platform` -> `ios`,
+`process.arch` -> `arm64`, V8 `12.4.254.21-node.19`, OpenSSL `3.0.13+quic`,
+`node:sqlite` OK, fs OK, TLS OK, child_process OK, startup fast), but the
+OpenCode CLI bundle could not be evaluated:
+
+```
+SyntaxError: Invalid regular expression:
+/[\p{Mark}\p{Control}\p{Default_Ignorable_Code_Point}]/gu:
+Invalid property name in character class
+```
+
+`Intl` was `undefined` in that build (no ICU data) and V8 rejects `\p{...}` when
+compiled without ICU Unicode property data. No CLI-side patch can fix a regexp
+syntax error raised before module evaluation, so the runtime had to be rebuilt
+with ICU. That is the `--with-intl=full-icu` configuration of this document.
 
 ## 7. CI design (performance and debuggability)
 
@@ -252,24 +313,29 @@ This section records the actual GitHub Actions runs for this workflow. Every
 entry links the run and states the exact failure/fix; nothing here is
 fabricated.
 
+The cancelled pending runs `41172259089` and `41172408512` were superseded in the
+workflow's concurrency queue by newer commits on the same branch (GitHub keeps
+only one pending run per group); they are not failures.
+
 | Run | Commit | Status | Evidence / notes |
 | --- | --- | --- | --- |
 | [41171982508](https://github.com/Justintunsday/opencode-ios/actions/runs/41171982508) | `6cf042d` | **success** (first cold build) | configure gate 05:21:43Z -> 05:21:46Z; `make -j3` 05:21:46Z -> 06:38:24Z (**76m38s** cold, 3 vCPU `macos-15`); build path `make-executable` (`out/Release/node` produced by the normal executable target, `make` exit 0); node 60,598,384 bytes sha256 `53fc2a2237bc6954ef6f780c4d0031fbe67f9b257966f6672c9d7e6ec1201b78`; check_macho PASS iPhoneOS arm64 minos 14.0.0; otool -L only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; cache saved (`ios-node-22.9.0-...-e1-<patch hash>`, ~3 min). Signed with the (now superseded) 4-key JIT entitlement set - see run 41173373500 for the corrected signing. |
-| [41173373500](https://github.com/Justintunsday/opencode-ios/actions/runs/41173373500) | `e7fe917` | in progress | re-runs from the saved `out/Release` cache with the device-verified 2-key entitlement set (`platform-application` + `com.apple.private.security.no-sandbox`), hard exact-set entitlement validation, build-inputs cache fingerprinting, and the optional `ios-ripgrep` job. |
+| [41173373500](https://github.com/Justintunsday/opencode-ios/actions/runs/41173373500) | `e7fe917` | cancelled | was re-running from cache with the device-verified 2-key entitlement set; cancelled on 2026-10-31 because device testing showed the no-ICU runtime cannot parse the CLI bundle (missing `Intl`/`\p{}`). No artifact was consumed. |
+| [41178496308](https://github.com/Justintunsday/opencode-ios/actions/runs/41178496308) | `08b4557` | run dispatched 06:54:57Z | ICU rebuild: `--with-intl=full-icu` (canned ICU 75 from `deps/icu-small`), patch 0002 (macOS SDK for ICU host tools during the iOS cross build), cache epoch 2 (cold, configure flags changed), ICU symbol/`v8_enable_i18n_support=1` hard gates, optional `ios-ripgrep` job. This is the artifact that fixes the CLI-blocking device failure recorded in §6.1. |
 
 ## 10. Limitations / unresolved issues
 
-1. **UNVERIFIED ON DEVICE** — the runtime has not been executed on the target
-   iPhone by this pipeline. All CI validation is static. Device execution must
-   be performed per `scripts/ios-runtime/README.md` before the runtime is called
-   working.
-2. **No JIT / no WebAssembly** — see §6. CPU-bound JS will be slower; WASM
+1. **ICU rebuild not yet device-verified** - the no-Intl 22.9.0 build was
+   device-verified to run and its only CLI blocker was the missing
+   `Intl`/`\p{}` support; the `--with-intl=full-icu` artifact is pending its own
+   device run. All CI validation is static.
+2. **No JIT / no WebAssembly** - see §6. CPU-bound JS will be slower; WASM
    features must be feature-detected by the CLI.
 3. **Signing is ldid ad-hoc with the device-verified 2-key set**
    (`platform-application` + `com.apple.private.security.no-sandbox`). The
    entitlement requirement itself was verified on the target device (the old
-   4-key JIT set is SIGKILLed); execution of *this* 22.9.0 artifact on the device
-   is still pending external device verification.
+   4-key JIT set is SIGKILLed). Re-sign the downloaded artifact on the device if
+   needed (`scripts/ios-runtime/README.md`).
 4. **Patch is a subset of PR #150** — the omitted workflow/gitignore/android
    hunks are not needed here; if nodejs-mobile merges PR #150 upstream, this
    repository should re-pin and drop the patch.
@@ -284,7 +350,7 @@ fabricated.
 git clone --depth 1 https://github.com/nodejs-mobile/nodejs-mobile.git nodejs-mobile
 git -C nodejs-mobile fetch --depth 1 origin 106c51f95d55d1010de56a2ffd09bfb4ba819a47
 git -C nodejs-mobile checkout FETCH_HEAD
-git -C nodejs-mobile apply "$PWD/patches/nodejs-mobile/0001-ios-build-fixes.patch"
+for p in "$PWD"/patches/nodejs-mobile/*.patch; do git -C nodejs-mobile apply "$p"; done
 
 python3.12 -m venv .venv && . .venv/bin/activate && pip install setuptools
 bash scripts/build-ios-runtime.sh all
