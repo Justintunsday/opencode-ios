@@ -29,6 +29,7 @@ import platform
 import plistlib
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -1953,6 +1954,164 @@ def _check_cli(checks, ctx, extract_dir, mode):
               "asset resolution relies on prelude defaults")
 
 
+def _macho_info(path):
+    """Return Mach-O platform/arch metadata for a file, or None when not Mach-O."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(32)
+            if len(head) < 28:
+                return None
+            magic_le = struct.unpack_from("<I", head, 0)[0]
+            if magic_le in (0xFEEDFACF, 0xFEEDFACE):
+                is_64 = magic_le == 0xFEEDFACF
+                cpu_type = struct.unpack_from("<I", head, 4)[0]
+                file_type = struct.unpack_from("<I", head, 12)[0]
+                ncmds = struct.unpack_from("<I", head, 16)[0]
+                sizeofcmds = struct.unpack_from("<I", head, 20)[0]
+                header_size = 32 if is_64 else 28
+                if ncmds > 10000 or sizeofcmds > 16 * 1024 * 1024:
+                    return {"arch": hex(cpu_type), "filetype": file_type,
+                            "platform": "unknown", "minos": None, "fat": False}
+                commands = handle.read(sizeofcmds)
+            elif magic_le == 0xBEBAFECA:  # FAT_CIGAM: fat binary, big-endian header
+                return {"arch": "fat", "filetype": None, "platform": "fat",
+                        "minos": None, "fat": True}
+            else:
+                return None
+    except OSError:
+        return None
+    if len(commands) != sizeofcmds:
+        return None
+    pos = 0
+    platform = None
+    minos = None
+    for _ in range(ncmds):
+        if pos + 8 > len(commands):
+            break
+        cmd, size = struct.unpack_from("<II", commands, pos)
+        if size < 8 or pos + size > len(commands):
+            break
+        if cmd == 0x32 and size >= 24:  # LC_BUILD_VERSION
+            plat, min_version = struct.unpack_from("<II", commands, pos + 8)
+            platform = {1: "macOS", 2: "iOS", 3: "tvOS", 4: "watchOS",
+                        6: "iOSSimulator", 7: "tvOSSimulator",
+                        8: "watchOSSimulator", 9: "macCatalyst"}.get(plat, f"platform({plat})")
+            parts = ((min_version >> 16) & 0xFFFF, (min_version >> 8) & 0xFF,
+                     min_version & 0xFF)
+            minos = ".".join(str(part) for part in parts)
+            break
+        if cmd == 0x25 and size >= 16:  # LC_VERSION_MIN_IPHONEOS
+            min_version = struct.unpack_from("<I", commands, pos + 8)[0]
+            platform = "iOS"
+            parts = ((min_version >> 16) & 0xFFFF, (min_version >> 8) & 0xFF,
+                     min_version & 0xFF)
+            minos = ".".join(str(part) for part in parts)
+            break
+        pos += size
+    return {"arch": hex(cpu_type), "filetype": file_type, "platform": platform,
+            "minos": minos, "fat": False}
+
+
+def _check_artifact_policy(checks, ctx, cli_dir):
+    """Gate the CLI artifact on the producer's iOS-patch/smoke policy metadata."""
+    metrics = ctx["metrics"]
+    manifest_path = cli_dir / "bundle-manifest.json"
+    if not manifest_path.is_file():
+        check(checks, "cli.artifact-policy", "cli",
+              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+              "SKIP", "opencode-cli-node-ios did not ship bundle-manifest.json")
+        return
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, ValueError) as exc:
+        check(checks, "cli.artifact-policy", "cli",
+              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+              "FAIL", f"cannot parse bundle-manifest.json: {exc}")
+        return
+    build = manifest.get("build", {}) if isinstance(manifest, dict) else {}
+    status = manifest.get("verification_status", {}) if isinstance(manifest, dict) else {}
+    notes = manifest.get("notes", []) if isinstance(manifest, dict) else []
+    notes_text = " | ".join(str(note) for note in notes)
+    required_node = status.get("host_smoke_required_node_version")
+    required_passed = status.get("host_smoke_required_passed")
+    metrics["cli_artifact_policy"] = {
+        "ios_prelude": build.get("ios_prelude") if isinstance(build, dict) else None,
+        "host_smoke_required_node_version": required_node,
+        "host_smoke_required_passed": required_passed,
+        "stock_build": "STOCK upstream build" in notes_text,
+    }
+    problems = []
+    if "STOCK upstream build" in notes_text:
+        problems.append(
+            "artifact is a STOCK upstream build without the iOS patch series "
+            "(bundle-manifest notes say it is expected to fail on the iPhoneOS runtime)"
+        )
+    if required_passed is False:
+        problems.append("the producer's required host-Node smoke test did not pass")
+    if required_node and str(required_node) != "22.9.0":
+        problems.append(
+            f"artifact was smoke-required on Node {required_node}, but the shipped "
+            "iPhoneOS runtime is Node 22.9.0 (patch series must make 22.9.0 the "
+            "required smoke version)"
+        )
+    if problems:
+        check(checks, "cli.artifact-policy", "cli",
+              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+              "FAIL", truncate("; ".join(problems), 1200))
+    elif required_node:
+        check(checks, "cli.artifact-policy", "cli",
+              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+              "PASS",
+              f"bundle-manifest: ios_prelude={build.get('ios_prelude') if isinstance(build, dict) else '?'}, "
+              f"required smoke Node {required_node} passed")
+    else:
+        check(checks, "cli.artifact-policy", "cli",
+              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+              "SKIP", "bundle-manifest has no host-smoke version policy metadata")
+
+
+def _check_assets_native(checks, ctx, cli_dir):
+    """No macOS/desktop Mach-O binaries may be shipped as iOS CLI assets."""
+    assets_root = cli_dir / "assets"
+    metrics = ctx["metrics"]
+    native = []
+    if assets_root.is_dir():
+        for path in sorted(assets_root.rglob("*")):
+            if not path.is_file():
+                continue
+            info = _macho_info(path)
+            if info is None:
+                continue
+            native.append({
+                "path": path.relative_to(cli_dir).as_posix(),
+                "platform": info.get("platform"),
+                "arch": info.get("arch"),
+                "filetype": info.get("filetype"),
+                "minos": info.get("minos"),
+            })
+    metrics["cli"]["native_assets"] = native
+    ios_ok = [item for item in native if item["platform"] == "iOS"]
+    violations = [item for item in native if item["platform"] != "iOS"]
+    if violations:
+        detail = ", ".join(
+            f"{item['path']} ({item['platform'] or 'unknown'} {item['arch']})"
+            for item in violations[:10]
+        )
+        check(checks, "cli.native-assets", "cli",
+              "No desktop Mach-O binaries are shipped as CLI assets", "FAIL",
+              f"{len(violations)} non-iOS native binary file(s) in assets/: {detail}. "
+              "The iOS patch series must remove desktop native addons; they are not "
+              "loadable on iPhoneOS and must not be packaged.")
+    elif native:
+        check(checks, "cli.native-assets", "cli",
+              "No desktop Mach-O binaries are shipped as CLI assets", "PASS",
+              f"{len(native)} Mach-O asset file(s), all iPhoneOS-platform")
+    else:
+        check(checks, "cli.native-assets", "cli",
+              "No desktop Mach-O binaries are shipped as CLI assets", "PASS",
+              "assets/ contains no Mach-O native binaries (JS/Wasm/data only)")
+
+
 def _check_host_smoke(checks, ctx, host_smoke_path):
     metrics = ctx["metrics"]
     if not host_smoke_path or not Path(host_smoke_path).is_file():
@@ -2352,6 +2511,9 @@ def cmd_verify(args):
     _check_runtime(checks, ctx, repo_root, extract_dir, mode, args.skip_native_audit)
     _check_optional_ripgrep(checks, ctx, extract_dir, args.skip_native_audit, mode)
     _check_cli(checks, ctx, extract_dir, mode)
+    cli_dir_check = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
+    _check_artifact_policy(checks, ctx, cli_dir_check)
+    _check_assets_native(checks, ctx, cli_dir_check)
     if args.skip_smoke:
         check(checks, "cli.host-node-smoke", "cli",
               "CLI bundle runs on the host Node.js 22.9.0 runtime", "SKIP",
