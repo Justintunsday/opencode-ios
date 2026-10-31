@@ -5,10 +5,10 @@ out/
 out_ios/
 out_ios_*/
 out_android/
-upstream/
-upstream-src/
+/upstream/
+/upstream-src/
 runtime/
-opencode/
+/opencode/
 node_modules/
 .cache/
 *.log
