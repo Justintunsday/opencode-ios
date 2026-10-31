@@ -37,6 +37,7 @@ env:
   NODE_VERSION: 22.9.0
   XCODE_VERSION: "16.4"
   NODEJS_MOBILE_DIR: nodejs-mobile
+  RIPGREP_VERSION: "14.1.1"
   SCCACHE_GHA_ENABLED: "true"
 
 jobs:
@@ -270,5 +271,56 @@ jobs:
             dist/ios-node-runtime/otool-L-signed.txt
             dist/ios-node-runtime/entitlements-signed.xml
             dist/ios-node-runtime/build-summary.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  # ------------------------------------------------------------------------
+  # Optional stretch: ripgrep for iPhoneOS arm64. OpenCode's search tool uses
+  # `rg`; package-rootless.yml consumes this `ios-ripgrep` artifact when it
+  # exists and installs /var/jb/usr/bin/rg. continue-on-error keeps this
+  # optional component from ever failing the required runtime run (the run must
+  # stay "success" for the artifact-resolution in package-rootless.yml).
+  # ------------------------------------------------------------------------
+  ripgrep:
+    name: ripgrep iPhoneOS arm64 (optional stretch; NOT device-verified)
+    needs: build-runtime
+    if: ${{ needs.build-runtime.result == 'success' }}
+    continue-on-error: true
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        uses: mobiledevops/xcode-select-version-action@v1
+        with:
+          xcode-select-version: ${{ env.XCODE_VERSION }}
+
+      - name: Install Rust toolchain with the aarch64-apple-ios target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Install ldid (iOS ad-hoc signing)
+        run: brew install ldid
+
+      - name: Cross-compile, sign and statically validate ripgrep
+        env:
+          RIPGREP_VERSION: ${{ env.RIPGREP_VERSION }}
+        run: bash scripts/ios-runtime/build-ripgrep.sh
+
+      - name: Upload ios-ripgrep artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ripgrep
+          path: |
+            dist/ios-ripgrep/rg
+            dist/ios-ripgrep/ripgrep-manifest.json
+            dist/ios-ripgrep/SHA256SUMS
+            dist/ios-ripgrep/check-macho.txt
+            dist/ios-ripgrep/otool-L.txt
+            dist/ios-ripgrep/vtool.txt
+            dist/ios-ripgrep/file.txt
           if-no-files-found: error
           retention-days: 30

@@ -200,7 +200,20 @@ signature, re-sign on device with the bundled `entitlements.plist` (see
   execution**. The device test checklist lives in
   `scripts/ios-runtime/README.md`.
 
-## 8. CI run log / evidence
+## 8. Optional stretch artifact: `ios-ripgrep`
+
+After the runtime job succeeds, the workflow also has an **optional** `ripgrep`
+job (job-level `continue-on-error: true`, so it can never fail the required
+runtime run). It cross-compiles pinned `ripgrep` 14.1.1 from crates.io with the
+Rust `aarch64-apple-ios` target and default features disabled (the `pcre2`
+default feature is a C dependency and is not cross-built; the Rust regex engine
+is used instead), ldid-signs the binary (ad-hoc, no entitlements needed), and
+uploads `ios-ripgrep` (`rg`, `ripgrep-manifest.json`, `SHA256SUMS`, static
+validation evidence). `package-rootless.yml` consumes it when present and
+installs `/var/jb/usr/bin/rg`; when absent the package is built without it.
+Device execution remains **UNVERIFIED ON DEVICE**.
+
+## 9. CI run log / evidence
 
 This section records the actual GitHub Actions runs for this workflow. Every
 entry links the run and states the exact failure/fix; nothing here is
@@ -210,7 +223,7 @@ fabricated.
 | --- | --- | --- |
 | _filled in as the build-debug loop progresses_ | | |
 
-## 9. Limitations / unresolved issues
+## 10. Limitations / unresolved issues
 
 1. **UNVERIFIED ON DEVICE** — the runtime has not been executed on the target
    iPhone by this pipeline. All CI validation is static. Device execution must
@@ -228,7 +241,7 @@ fabricated.
    `out/Release` cache; a patch change intentionally misses the exact cache key
    but can reuse the previous tree via the prefix restore key.
 
-## 10. Local reproduction
+## 11. Local reproduction
 
 ```sh
 # macOS with Xcode 16.4, from a clone of this port repository:
