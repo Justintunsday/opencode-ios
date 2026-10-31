@@ -8,6 +8,7 @@
 // Results are appended to /var/mobile/jit-probe-result.txt so the caller can
 // read them after the injected process exits.
 #include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <mach/mach.h>
 #include <stdio.h>
