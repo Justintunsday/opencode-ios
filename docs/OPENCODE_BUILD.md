@@ -1,11 +1,11 @@
 # OpenCode CLI bundle for the iPhoneOS Node.js runtime
 
 Status: **CI build + host-Node smoke + .deb package build verified; device execution pending**
-(`UNVERIFIED ON DEVICE`). The first device attempt exposed a runtime ICU gap (initial
-iPhoneOS runtime was built `--with-intl=none`, which makes V8 reject the bundle's Unicode
-property escapes at parse time and leaves `Intl` undefined — see §11). The full-icu runtime
-now builds, packages and passes all CI validations, and a green `.deb` exists
-(§4, package run 41185611403). Remaining: record the on-device CLI matrix.
+(`UNVERIFIED ON DEVICE`). The first device attempt exposed a runtime capability gap (initial iPhoneOS runtime was built
+`--with-intl=none` and without WebAssembly, which makes V8 reject the bundle's Unicode
+property escapes at parse time and breaks Node's wasm-based `fetch` llhttp - see §11). The
+runtime is now built with full-icu + WebAssembly + JIT; the CLI matrix on hardware is the
+last step (§12).
 
 This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
@@ -103,9 +103,9 @@ change surface — upstream itself is never modified.
 
 | # | Patch | Files | Purpose |
 | --- | --- | --- | --- |
-| 0001 | `ios-node-target-and-prelude` | `packages/cli/src/node/target.ts`, `script/build-node.ts`, `script/node-assets.ts`, `vite.node.config.ts` | Adds the `ios-arm64` Node target; iOS asset collector (no macOS dylibs/addons/helpers); non-SEA iOS prelude (no `node:sea` import, no `module.registerHooks`, no `--experimental-ffi`, assets from `OPENCODE_NODE_ASSETS_DIR`, `/var/jb` PATH prefixes, `OPENCODE_IOS=1`); Node 22.9 HTTP content-length workaround; photon wasm module kept external/lazy. |
+| 0001 | `ios-node-target-and-prelude` | `packages/cli/src/node/target.ts`, `script/build-node.ts`, `script/node-assets.ts`, `vite.node.config.ts` | Adds the `ios-arm64` Node target; iOS asset collector (no macOS dylibs/addons/helpers); non-SEA iOS prelude (no `node:sea` import, no `module.registerHooks`, no `--experimental-ffi`, assets from `OPENCODE_NODE_ASSETS_DIR`, `/var/jb` PATH prefixes, `OPENCODE_IOS=1`); Node 22.9 HTTP content-length workaround; photon wasm module kept external/lazy so startup never instantiates wasm (works on wasm-less runtimes and avoids eager 1.9 MB wasm init). |
 | 0002 | `node22-registerhooks-and-sqlite-fallback` | `packages/cli/src/util/process.ts`, `packages/plugin/src/source.node.ts`, `packages/util/src/runtime/import.node.ts` | `module.registerHooks` exists only in Node ≥22.15: namespace import + guarded call so startup never throws a link-time SyntaxError; plugin local-reload degrades but loads. Propagates `--experimental-sqlite` to self-spawned server children (required for `node:sqlite` on 22.9). |
-| 0003 | `optional-native-modules-startup-safe` | `packages/core/src/pty/pty.node.ts`, `packages/core/src/image/photon-wasm.node.ts` | `node-pty` native addon does not exist on iPhoneOS; its top-level `require` is guarded (PTY unavailable, shell tool uses pipe-based `child_process`). Drops the `node:sea` import (bundle is non-SEA). Guards photon wasm artifact resolution so importing the image pipeline reports “unavailable” instead of throwing (iPhoneOS runtime has WebAssembly disabled). |
+| 0003 | `optional-native-modules-startup-safe` | `packages/core/src/pty/pty.node.ts`, `packages/core/src/image/photon-wasm.node.ts` | `node-pty` native addon does not exist on iPhoneOS; its top-level `require` is guarded (PTY unavailable, shell tool uses pipe-based `child_process`). Drops the `node:sea` import (bundle is non-SEA). Guards photon wasm artifact resolution so importing the image pipeline reports “unavailable” instead of throwing when the wasm artifact/JS glue or WebAssembly support is missing. |
 | 0004 | `ios-shell-selection-and-git` | `packages/core/src/shell/select.ts`, `packages/core/src/util/git-executable.ts` | Rootless iOS has no `/bin/sh`,`/bin/bash`,`/bin/zsh`; shell resolution prefers `$SHELL` then `/var/jb/bin[/usr/bin]/{sh,bash,zsh}` etc. The agent shell tool spawns the resolved shell with `-c` (never Node's hardcoded `/bin/sh`). git is not part of the bootstrap → clear actionable error instead of ENOENT. |
 | 0005 | `node22-sqlite-api-fallbacks` | `packages/core/src/database/sqlite.node.ts` | Node 22.9 `node:sqlite` lacks `StatementSync#setReturnArrays` and `DatabaseSync#loadExtension`: map object rows to column-ordered arrays when the API is missing, report extension loading as unavailable. Without this the embedded server answers 500 on `/api/info` and `/api/model`. |
 | 0006 | `device-robustness` | `packages/cli/vite.node.config.ts`, `packages/core/src/persistent-pty/binary.node.ts`, `packages/core/src/ripgrep/binary.ts` | Rootless-iOS robustness: home-rooted `TMPDIR` fallback in the prelude (do not depend on `/tmp`), persistent-PTY capability reports `false` on ios (the daemon binary is not shipped), and a missing `rg` produces an actionable install hint instead of `unsupported platform for ripgrep: arm64-ios`. |
@@ -163,9 +163,9 @@ The `.deb` is ready to install on the device; the CLI device matrix is still
 
 Smoke tests execute the staged `opencode.mjs` on **stock Node.js** binaries on the build
 host with a throw-away `HOME`. They prove the JavaScript bundle links, the CLI starts and
-its embedded server boots; they are **not** device verification (the iPhoneOS runtime is
-`--jitless`, has no WebAssembly, no PTY/watch/ffi native addons, and `process.platform`
-is `ios`).
+its embedded server boots; they are **not** device verification (the iPhoneOS runtime has
+`process.platform === "ios"`, ships no PTY/watch/ffi native addons, and its JIT/WebAssembly/
+ICU capabilities come from the runtime build rather than from this bundle).
 
 Stock upstream bundle (CI run 41172138603, target `darwin-arm64`, no patches):
 
@@ -241,6 +241,12 @@ exec /var/jb/usr/lib/opencode/runtime/node \
   all: V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
   undefined (device-reported; see §11). `build-runtime.yml` gates on
   `v8_enable_i18n_support=1` and statically linked ICU so a no-ICU runtime is rejected.
+- The runtime needs **WebAssembly and JIT** support (`build-runtime.yml` enables both):
+  Node 22.9's built-in `fetch`/undici HTTP client uses a WebAssembly llhttp parser, and a
+  `--jitless` build cannot instantiate wasm, so provider HTTPS calls fail without them. The
+  CLI bundle itself does not require WebAssembly at startup (photon/tree-sitter payloads are
+  lazy), but the agent's model calls need `fetch` working. Runtime capabilities are reported
+  in the runtime manifest, not in this bundle.
 - The prelude sets `OPENCODE_NODE_ASSETS_DIR` to `<bundle dir>/assets` by default. If the
   wrapper sets it explicitly (recommended: `/var/jb/usr/lib/opencode/cli/assets`) the
   prelude respects the override. `OTUI_ASSET_ROOT` is set from the same root.
@@ -266,8 +272,8 @@ not contain; they are patched to degrade gracefully rather than crash:
 | PTY-backed terminals (`@lydell/node-pty`) | unavailable; interactive terminal panes cannot spawn a PTY. PTY creation fails with a clear error; the rest of the CLI is unaffected. | startup guard patch 0003 |
 | Persistent PTY (`@opencode/pty` Rust binary) | binary not shipped for iPhoneOS; the server reports `persistentPty: false` so clients do not attempt it (patch 0006). | asset set excludes it |
 | File watcher (`@parcel/watcher`) | native binding absent → no native watcher; consumers already fall back (watcher-less). | upstream fallback + asset set |
-| Image resize (photon WebAssembly) | WebAssembly disabled in the shipped runtime → image normalization/auto-resize unavailable; image files still pass through. | patch 0003 + prelude does not set `OPENCODE_PHOTON_WASM_PATH` |
-| TUI syntax highlighting (web-tree-sitter wasm) | wasm payload is included but WebAssembly is disabled; TUI is secondary on device. | asset set + runtime |
+| Image resize (photon WebAssembly) | unavailable in v1: the port deliberately keeps the `@silvia-odwyer/photon-node` wasm-bindgen JS module external/lazy and the single-file bundle does not ship that JS glue nor the photon worker entry, so `photon-normalize` reports “unavailable” and image files pass through unchanged. (WebAssembly itself is available on the shipped runtime; enabling image resize needs a follow-up patch that ships the photon JS payload.) | patch 0003 + prelude does not set `OPENCODE_PHOTON_WASM_PATH` |
+| TUI syntax highlighting (web-tree-sitter wasm) | tree-sitter wasm payload is included and WebAssembly is available on the shipped runtime; the TUI renderer itself is unavailable (see next row), so syntax highlighting only matters if the TUI is ever brought up. | asset set + TUI renderer gap |
 | TUI renderer (`@opentui/core` native library) | the native OpenTUI library is not shipped for iPhoneOS; headless CLI (`run`, `serve`, `models`, …) is the supported surface. | asset set excludes the dylib |
 | grep/glob (ripgrep binary) | no `rg` in the artifact; the tool reports an actionable error (patch 0006). If a system `rg` is present in `PATH` (runtime team may ship one under `/var/jb`), it is used. | upstream `which("rg")` first |
 | Plugin loading/registration | plugins load, but Node 22.9 has no `module.registerHooks`, so live reload of a local plugin’s relative module graph degrades and the special `@opencode/plugin` runtime specifier mapping is unavailable to external plugin code. | patch 0002 |

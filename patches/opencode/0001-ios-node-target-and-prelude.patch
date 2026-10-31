@@ -7,15 +7,15 @@
 #        packages/cli/vite.node.config.ts
 # Why: upstream's Node distribution build targets Node 26 SEA on desktop platforms. The
 #      iPhoneOS runtime is Node 22.9: it has no module.registerHooks, its node:sea exposes
-#      no getAssetKeys/getRawAsset, WebAssembly is disabled, and no desktop Node addons
-#      exist for iOS. The generated bundle must start from stock Node builtins only (no
-#      SEA prelude, no registerHooks, no node:sea import) and must not ship macOS
-#      dylibs/addons or helper executables that cannot load on the device.
+#      no getAssetKeys/getRawAsset, WebAssembly support depends on the runtime build, and
+#      no desktop Node addons exist for iOS. The generated bundle must start from stock
+#      Node builtins only (no SEA prelude, no registerHooks, no node:sea import) and must
+#      not ship macOS dylibs/addons or helper executables that cannot load on the device.
 #      The iOS prelude also declares the installed assets dir, OPENCODE_IOS=1 and the
 #      rootless /var/jb PATH prefixes. @effect/platform-node's strictContentLength is
 #      disabled for iOS because Node 22.9 stores the raw Content-Length header string and
 #      throws ERR_HTTP_CONTENT_LENGTH_MISMATCH on otherwise-correct responses (fixed in
-#      later Node lines). Photon's wasm module is kept external/lazy (WebAssembly is off).
+#      later Node lines). Photon's wasm module is kept external/lazy (no startup wasm).
 # Test: OPENCODE_TARGET=ios-arm64 OPENCODE_IOS=1 bun run script/build-node.ts --bundle-only
 #       then: node --experimental-sqlite opencode.mjs --version  (stock Node 22.9.0)
 #       Evidence and host smoke matrix: docs/OPENCODE_BUILD.md
@@ -54,13 +54,13 @@ index 3022022..895b129 100644
  }
  
 +// iPhoneOS has no prebuilt Node native addons (@lydell/node-pty-*, @parcel/watcher-*,
-+// @ff-labs/fff-*, ffi-rs), no persistent-PTY binary, and the shipped runtime is
-+// compiled with WebAssembly disabled. Stage only the platform-independent payloads
-+// the CLI can use: attention sounds, the photon wasm artifact (optional - it is
-+// kept for a future runtime with WebAssembly, image processing degrades without it)
-+// and the OpenTUI tree-sitter JS/wasm payloads. Native desktop binaries are
-+// intentionally omitted so the artifact never ships a macOS dylib/addon that
-+// cannot load on iOS.
++// @ff-labs/fff-*, ffi-rs) and no persistent-PTY binary. WebAssembly support depends
++// on the runtime build, so stage only the platform-independent payloads the CLI can
++// use: attention sounds, the photon wasm artifact (optional - image processing
++// degrades without it; no startup wasm required) and the OpenTUI tree-sitter
++// JS/wasm payloads. Native desktop binaries are intentionally omitted so the
++// artifact never ships a macOS dylib/addon that cannot load on iOS.
++//
 +async function collectIosNodeAssets() {
 +  const parserAssets = getNodeAssets({ platform: "darwin", arch: "arm64" }).filter(
 +    (asset) => !asset.key.endsWith(".dylib"),
@@ -239,8 +239,8 @@ index 071e244..c274383 100644
 -    ssr: { noExternal: true },
 +    // iPhoneOS: keep the photon wasm-bindgen module external. Inlining it into the
 +    // single-file bundle makes Rollup evaluate its module body at startup, where it
-+    // unconditionally reads photon_rs_bg.wasm and instantiates WebAssembly - but the
-+    // shipped runtime is compiled with WebAssembly disabled, and the image pipeline
++    // unconditionally reads photon_rs_bg.wasm and instantiates WebAssembly - fatal on
++    // runtimes without WebAssembly and wasted work elsewhere. The image pipeline
 +    // already guards the import behind a runtime "is the wasm artifact available"
 +    // check that is false on iOS. External keeps it a true lazy dynamic import.
 +    ssr: input.target.ios

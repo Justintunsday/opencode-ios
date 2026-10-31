@@ -9,9 +9,9 @@
 #      guarded and PTY spawning then fails with a clear error (the shell tool does not use
 #      the PTY). The node:sea isSea() import is dropped because the bundle is non-SEA and
 #      Node 22.9's node:sea lacks several newer exports. (2) photon: its wasm-bindgen module
-#      reads photon_rs_bg.wasm and instantiates WebAssembly at module load; the shipped
-#      iPhoneOS runtime has WebAssembly disabled. The artifact path resolution is guarded so
-#      the image pipeline reports 'unavailable' instead of throwing.
+#      reads photon_rs_bg.wasm and instantiates WebAssembly at module load, which is fatal
+#      on runtimes without WebAssembly and wasted work elsewhere. The artifact path
+#      resolution is guarded so the image pipeline reports 'unavailable' instead of throwing.
 # Test: node --experimental-sqlite opencode.mjs --version / --help on stock Node 22.9.0
 #       with no native addons next to the bundle.
 # Status: required for the iPhoneOS runtime; desktop Node builds keep behaving as before.
@@ -25,9 +25,9 @@ index 6147408..35900c4 100644
  
 -export default process.env.OPENCODE_PHOTON_WASM_PATH ??
 -  createRequire(import.meta.url).resolve("@silvia-odwyer/photon-node/photon_rs_bg.wasm")
-+// iPhoneOS: the photon WebAssembly payload may be absent, and the shipped Node
-+// runtime is compiled with WebAssembly disabled. Resolve the artifact defensively
-+// so importing the image pipeline never throws at startup; `available` in
++// iPhoneOS: the photon WebAssembly payload may be absent, and the runtime may be
++// built without WebAssembly support. Resolve the artifact defensively so importing
++// the image pipeline never throws at startup; `available` in
 +// photon-normalize then reports false and image processing degrades with a clean
 +// error instead of crashing the CLI.
 +export default (() => {

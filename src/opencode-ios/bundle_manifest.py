@@ -62,7 +62,7 @@ ENV_CONTRACT = {
         "notes": [
             "--experimental-ffi does not exist on Node 22.9.0 and the ffi-rs addon is absent on iPhoneOS.",
             "--use-system-ca does not exist on Node 22.9.0 (added to later Node lines); do not pass it.",
-            "The iPhoneOS runtime is built --jitless with WebAssembly disabled; this bundle was not Wasm-required at startup.",
+            "The runtime must provide ECMA-402 Intl (full-icu/small-icu) and Node 22.9's built-in WebAssembly llhttp parser (fetch/undici needs it; a --jitless build cannot instantiate wasm). The shipped runtime enables full-icu + WebAssembly + JIT. The CLI bundle itself does not require WebAssembly at startup.",
         ],
     },
     "notes": [
@@ -74,7 +74,7 @@ ENV_CONTRACT = {
 ASSET_CATEGORY_NOTES = {
     "app-archive": "Web/TUI app archive embedded by the Node build (read by the server).",
     "audio": "attention sound assets used by the interface.",
-    "wasm": "WebAssembly payload (photon image processing); included but optional — the iPhoneOS runtime has WebAssembly disabled, consumers must degrade gracefully.",
+    "wasm": "WebAssembly payload (photon image processing / tree-sitter syntax parsing); included but optional — the CLI does not require WebAssembly at startup and degrades gracefully when it is unavailable or when the matching JS glue is not shipped.",
     "native-binary": "NATIVE BINARY: not loadable on iPhoneOS (macOS/Linux addon or helper). Present only for stock/desktop builds; the iOS patch series must remove these.",
     "data": "other static data file.",
 }
