@@ -81,11 +81,24 @@ require_tools() {
 require_patched_source() {
   [[ -d "$NODE_SRC" ]] || die "nodejs-mobile source not found: $NODE_SRC"
   [[ -f "$NODE_SRC/configure.py" ]] || die "$NODE_SRC does not look like nodejs-mobile"
-  grep -q 'nodejs-mobile patch: disable V8_HAS_PTHREAD_JIT_WRITE_PROTECT' \
+  # One stable marker per patch in the series (0001..0004). Keep in sync with
+  # patches/nodejs-mobile/*.patch: a missing marker means the series was not
+  # applied (or a patch changed without updating this function).
+  grep -q 'kPathSeparator = std::filesystem::path::preferred_separator' \
+    "$NODE_SRC/src/util.h" \
+    || die "patch series not applied: 0001 marker (src/util.h kPathSeparator) missing"
+  grep -q 'nodejs-mobile-build-fixes: for iOS cross builds' \
+    "$NODE_SRC/common.gypi" \
+    || die "patch series not applied: 0002 marker (common.gypi host toolset) missing"
+  grep -q "v8_enable_webassembly'\] = 0 if options.v8_lite_mode else 1" \
+    "$NODE_SRC/configure.py" \
+    || die "patch series not applied: 0003 marker (configure.py v8_enable_webassembly) missing"
+  grep -q 'nodejs-mobile-build-fixes: enable pthread_jit_write_protect' \
     "$NODE_SRC/deps/v8/src/base/build_config.h" \
-    || die "patches/nodejs-mobile/*.patch does not look applied (build_config.h marker missing)"
-  grep -q "v8_enable_webassembly'\] = 0" "$NODE_SRC/configure.py" \
-    || die "patches/nodejs-mobile/*.patch does not look applied (configure.py WebAssembly marker missing)"
+    || die "patch series not applied: 0004 marker (build_config.h pthread_jit_write_protect) missing"
+  grep -q 'pthread_jit_write_protect_np' \
+    "$NODE_SRC/deps/v8/src/base/platform/platform-ios.cc" \
+    || die "patch series not applied: 0004 marker (platform-ios.cc dlsym) missing"
 }
 
 node_version_from_source() {
