@@ -1,8 +1,8 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
 Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly, iOS
-no-MAP_JIT memory model) + static Mach-O audit; the v5 artifact is CI-green and
-awaiting device verification.**
+no-MAP_JIT memory model) + static Mach-O audit; the v5 build (run 41219489179) is
+in progress and will be device-tested when the artifact lands.**
 A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
 target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
 but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
@@ -443,6 +443,29 @@ set, which is why the shipped runtime reverts to `V8_HAS_PTHREAD_JIT_WRITE_PROTE
 `platform-posix.cc` guard is present and that the linked binary does NOT contain
 the `pthread_jit_write_protect_np` string (i.e. the MAP_JIT path is really off).
 
+#### Device memory-permission probe (definitive, iPhone SE 2 / iOS 16.1.1)
+
+A diagnostic iPhoneOS arm64 probe executable (CI artifact `ios-jit-probe`,
+ldid-signed with the 2-key set, run as uid 501 on the device) measured the
+kernel's memory-permission behaviour directly. This is why v5 is the only viable
+model on this hardware:
+
+```
+plain_then_mprotect_rwx: mmap=ok mprotect=0 errno=0          <- plain mapping mprotect RWX SUCCEEDS
+mmap_jit_rwx: FAIL errno=22                                  <- MAP_JIT mmap denied (EINVAL)
+plain_write_rx_exec: mprotect_rx=0 exec=0 errno=0            <- W^X write->RX->execute WORKS
+mapjit_reserve_mprotect_rwx_exec: mprotect=-1 exec=-1 errno=22 <- MAP_JIT reservation unusable
+pthread_jit_write_protect_np: absent                         <- APRR toggle API absent on iOS 16.1.1 device
+```
+
+So on this device: ordinary (non-MAP_JIT) mappings support both RWX mprotect and
+the W^X write->RX->execute sequence, while MAP_JIT reservations and the
+`pthread_jit_write_protect_np` toggle are unavailable. That is exactly the v5
+model (plain mprotect W^X, no MAP_JIT, 2-key entitlements, V8 10.2/Node-18
+behaviour) and confirms no entitlement set can make the v3/v4 MAP_JIT paths work
+(full 9-key also failed). The probe artifacts are diagnostic only, not for
+packaging.
+
 ## 7. CI design (performance and debuggability)
 
 - `macos-15` + Xcode 16.4, `timeout-minutes: 360` on the build job.
@@ -539,8 +562,8 @@ only one pending run per group); they are not failures.
 | ICU build (run 41184686029) | runs, ICU present, but CLI rejected: `ReferenceError: WebAssembly is not defined` from Node `fetch`/undici wasm llhttp. Drove patch 0003 / JIT+wasm. |
 | v3 (run 41193603642) | starts; `--version` OK; **any JS/wasm code execution traps with SIGBUS (138) / EXC_BAD_ACCESS**, regardless of entitlement set. Drove patch 0004 (iOS JIT W^X). |
 | v4 (run 41205805269) | **CI failure before build**: the workflow's patch-series marker check (`require_patched_source`) still looked for the old PR#150 comment line that patch 0004 replaces in `build_config.h`, so normalize-cache aborted. Fixed in `dfbc093` (one stable marker per patch 0001..0004), re-run as 41207449703. |
-| v4 (run 41207449703) | **device-rejected**: node 106,842,032 bytes sha256 `48eecd59...`, 4-key signed, MAP_JIT + `V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1`. Device: EXC_BREAKPOINT / SIGTRAP (exit 133), `V8::FatalProcessOutOfMemory` from `CodeRange::InitReservation` because iOS denies RWX `mprotect` of the MAP_JIT code range; also fails with 9-key entitlements. Drove patch 0005 (no MAP_JIT on iOS). |
-| v5 (run pending) | CI run dispatched after patch 0005 (no MAP_JIT, plain mprotect W^X, 2-key entitlements); device verification pending. |
+| v4 (run 41207449703) | **device-rejected**: node 106,842,032 bytes sha256 `48eecd59...`, 4-key signed, MAP_JIT + `V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1`. Device: EXC_BREAKPOINT / SIGTRAP (exit 133), `v8::base::OS::Abort` <- `FatalOOM` <- `V8::FatalProcessOutOfMemory` <- `Heap::SetUp`; exact site `CodeRange::InitReservation` (src/heap/code-range.cc) doing `SetPermissions(base, 128MB, kReadWriteExecute)` on the MAP_JIT code range. Full 9-key entitlements also fail. Device probe then proved `mmap(MAP_JIT)` is denied (EINVAL) and `pthread_jit_write_protect_np` is absent on iOS 16.1.1. Drove patch 0005 (no MAP_JIT on iOS). |
+| v5 (run 41219489179) | CI run dispatched after patch 0005 (no MAP_JIT, plain mprotect W^X, 2-key entitlements); device verification pending at the time of writing. |
 
 ## 9.1 Downstream consumption (packaging integration)
 
@@ -567,10 +590,11 @@ execution remains the open gate.
    device-verified to run and its only CLI blocker was the missing
    `Intl`/`\p{}` support; the `--with-intl=full-icu` artifact is pending its own
    device run. All CI validation is static.
-2. **JIT + WebAssembly enabled; iOS JIT memory handling patched** - see
-   §6/§6.3/§6.4. v3 proved that enabling JIT without patch 0004 SIGBUSes on the
-   device; v4 carries the fix plus a tentative 4-key entitlement set, all pending
-   the final device verdict.
+2. **JIT + WebAssembly enabled; iOS JIT memory model is patch 0005** - see
+   §6.3/§6.4. Device probing proved MAP_JIT/pthread_jit_write_protect are
+   unavailable on iOS 16.1.1 while plain mprotect W^X works, so the runtime uses
+   the V8 10.2 / Node-18 model (no MAP_JIT) with the 2-key entitlements; the
+   final device verdict for the v5 artifact is pending.
 3. **Signing is ldid ad-hoc with the device-verified 2-key set**
    (`platform-application` + `com.apple.private.security.no-sandbox`). The
    entitlement requirement itself was verified on the target device (the old
