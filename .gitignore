@@ -1,4 +1,4 @@
-# Build outputs and checkouts (never committed)
+﻿# Build outputs and checkouts (never committed)
 build/
 dist/
 out/
@@ -23,3 +23,7 @@ Thumbs.db
 .env
 .env.*
 !.env.example
+
+# Python bytecode caches from local validation runs
+__pycache__/
+*.pyc
