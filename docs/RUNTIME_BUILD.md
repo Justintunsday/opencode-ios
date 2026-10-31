@@ -22,9 +22,9 @@ executable**, built from the pinned nodejs-mobile source with the iPhoneOS SDK
 
 | Artifact file | Meaning |
 | --- | --- |
-| `node` | the CLI runtime, Mach-O `MH_EXECUTE`, arm64, platform IOS, minos <= 16.1.1, with full ICU linked in (ECMA-402/`Intl` + V8 `\p{...}` escapes), ad-hoc signed with ldid |
+| `node` | the CLI runtime, Mach-O `MH_EXECUTE`, arm64, platform IOS, minos <= 16.1.1, with JIT + WebAssembly enabled and full ICU linked in (ECMA-402/`Intl` + V8 `\p{...}` escapes), ad-hoc signed with ldid |
 | `entitlements.plist` | the exact entitlement set used when signing |
-| `runtime-manifest.json` | pins, build path, observed static facts, runtime policy (JIT/WASM/Intl/platform) |
+| `runtime-manifest.json` | pins, build path, observed static facts, runtime policy (JIT/WASM/Intl/platform) and audit evidence |
 | `SHA256SUMS` | sha256 over the three files above |
 | `validation-report.txt` | human-readable copy of the static validation evidence |
 
@@ -49,6 +49,7 @@ verifies it after checkout):
 | deployment target | nodejs-mobile's iOS default `IPHONEOS_DEPLOYMENT_TARGET=14.0` (<= device iOS 16.1.1) |
 | ECMA-402/Intl | `--with-intl=full-icu`; ICU 75 source + full data bundled in the pinned tree at `deps/icu-small` (`README-FULL-ICU.txt`, `source/data/in/icudt75l.dat.bz2`), statically linked (no download) |
 | ICU host tools | built as macOS host-toolset binaries by patch 0002 (needed to generate the ICU data file during the iOS cross build) |
+| V8 JIT / WebAssembly | enabled: no `--v8-options=--jitless`; `v8_enable_webassembly=1` via patch 0003 (Node 22.9 `fetch()`/undici needs wasm llhttp) |
 
 Upstream repositories are never modified: CI applies the whole
 `patches/nodejs-mobile/*.patch` series (in filename order) to a clean checkout of
@@ -110,7 +111,6 @@ export GYP_DEFINES="target_arch=arm64 host_os=mac target_os=ios"
   --with-intl=full-icu \
   --cross-compiling \
   --openssl-no-asm \
-  --v8-options=--jitless \
   --without-node-code-cache \
   --without-node-snapshot
 make -j"$(sysctl -n hw.ncpu)"          # -> out/Release/node
@@ -134,6 +134,14 @@ sources for the iPhoneOS target, and `genccode` (a macOS host tool, see §3
 patch 0002) emits the full data as a C array that is statically linked into
 `node`. That is why `otool -L` stays at `/usr/lib/libSystem` +
 `/usr/lib/libc++`: there is no dynamic ICU dependency.
+
+The recipe no longer passes `--v8-options=--jitless`, and patch 0003 restores
+upstream `v8_enable_webassembly=1`, so the runtime has a working V8 JIT **and**
+WebAssembly. This is mandatory: Node 22.9's built-in `fetch()`/undici
+instantiates a wasm llhttp parser during startup, so the earlier jitless/no-wasm
+runtime died on device with `ReferenceError: WebAssembly is not defined` (see
+§6.3). The device-verified 2-key entitlement set is sufficient for JIT/WASM on
+this jailbroken iPhone.
 
 ### Fallback link path (safety net)
 
@@ -190,10 +198,11 @@ Why exactly these two keys:
 - `com.apple.private.security.no-sandbox` - the runtime needs the jailbroken
   filesystem layout (`/var/jb/...`, user home, child processes); the sandbox
   otherwise kills it.
-- **No JIT / executable-memory entitlements** are needed because this runtime is
-  built `--jitless` and without WebAssembly. They are deliberately omitted, and
-  the CI sign step rejects them if they ever reappear in the signed
-  entitlements.
+- **No JIT / executable-memory entitlements** are needed even though JIT and
+  WebAssembly are enabled: a JIT-enabled community Node binary was device-tested
+  on this exact iPhone with only the same two keys and JIT/WASM worked (device
+  evidence in §6.3). They are deliberately omitted, and the CI sign step rejects
+  them if they ever reappear in the signed entitlements.
 
 If the device loader rejects the signature, re-sign on device with the bundled
 `entitlements.plist` (see `scripts/ios-runtime/README.md`). This is a
@@ -205,16 +214,17 @@ compatibility.
   `NODE_PLATFORM="<(OS)"` for the executable and `libnode` targets;
   `configure.py` sets `OS=ios` for `--dest-os=ios`; `src/node_metadata.cc`
   initialises the metadata platform from `NODE_PLATFORM`. The runtime therefore
-  reports `ios`, not `darwin`. This is a static/source-level determination
-  (CI cannot execute the binary) and is recorded in
+  reports `ios`, not `darwin`. This was confirmed **on device**
+  (`process.platform === "ios"` for the 22.9.0 build) and is recorded in
   `runtime-manifest.json` → `runtime_policy.process_platform`.
-- **No JIT.** Built with `--v8-options=--jitless` (compiled into the binary as
-  `NODE_V8_OPTIONS="--jitless"`). All JavaScript runs through V8's interpreter.
-  Precedent packages (imcynic's Node 18/22 iOS `.deb`) also run
-  JIT-disabled; JIT entitlement behaviour cannot be tested on hosted CI.
-- **No WebAssembly.** PR #150 forces `v8_enable_webassembly=0`; `WebAssembly`
-  is unavailable. The CLI port must degrade WASM-dependent features
-  (tree-sitter / photon paths) instead of crashing.
+- **JIT enabled (default V8 JIT).** The build does not pass
+  `--v8-options=--jitless`; JIT is a runtime-required feature for the CLI
+  (performance) and JIT+WASM were device-verified to work with the 2-key
+  entitlements on the target iPhone.
+- **WebAssembly enabled.** `v8_enable_webassembly=1` (patch 0003 restores upstream
+  behaviour). This is **required**, not optional: Node 22.9's built-in
+  `fetch()`/undici instantiates a wasm llhttp parser at startup, so a no-wasm
+  runtime cannot run the CLI at all (§6.3).
 - **Intl / ECMA-402 support IS present (full-icu).** This is mandatory, not
   optional: the CLI bundle uses `Intl.Segmenter`/`DateTimeFormat`/`NumberFormat`
   and 196 `\p{...}` regexp property escapes. The earlier `--with-intl=none`
@@ -292,6 +302,29 @@ found. The first full-ICU run failed its audit for exactly this reason (the buil
 had ICU). The script now writes `nm` output to `nm-symbols-<stage>.txt` first and
 greps that file, so every signal check is pipeline-free.
 
+### 6.3 Why WebAssembly is required (device evidence)
+
+The first ICU-enabled (but jitless/no-wasm) 22.9.0 runtime started on the target
+iPhone, but every CLI command failed during startup:
+
+```
+node:internal/deps/undici/undici:5578
+    mod = await WebAssembly.compile(llhttpWasmData || require_llhttp_wasm());
+ReferenceError: WebAssembly is not defined
+    at lazyllhttp ... at lib/global.js
+```
+
+Node 22.9's built-in `fetch()`/`undici` instantiates a wasm llhttp parser as soon
+as the HTTP stack is touched, which the OpenCode bundle does at module load. No
+CLI patch can work around a missing `WebAssembly` global. Precedent packages are
+no guide here: they run simple JS, not the undici stack.
+
+Same-device proof that JIT+WASM is allowed: a JIT-enabled community Node 18
+binary, re-signed with only the 2-key entitlement set, runs on this iPhone
+(`typeof WebAssembly === "object"`, `new WebAssembly.Module(...)` succeeds, a JIT
+loop executes). Therefore the runtime now ships with JIT + WebAssembly enabled
+and the 2-key entitlements are kept unchanged.
+
 ## 7. CI design (performance and debuggability)
 
 - `macos-15` + Xcode 16.4, `timeout-minutes: 360` on the build job.
@@ -359,7 +392,8 @@ only one pending run per group); they are not failures.
 | [41173373500](https://github.com/Justintunsday/opencode-ios/actions/runs/41173373500) | `e7fe917` | cancelled | was re-running from cache with the device-verified 2-key entitlement set; cancelled on 2026-10-31 because device testing showed the no-ICU runtime cannot parse the CLI bundle (missing `Intl`/`\p{}`). No artifact was consumed. |
 | [41178496308](https://github.com/Justintunsday/opencode-ios/actions/runs/41178496308) | `08b4557` | **failure (audit heuristic, build OK)** | ICU rebuild with `--with-intl=full-icu`: configure accepted the canned ICU 75 source (`Using floating patch tools/icu/patches/75/.../genccode.c`); `make -j3` ran 06:58:45Z -> 08:18Z and produced `out/Release/node` with ICU static libraries linked; **the run then failed only in CI's ICU symbol audit** (`ERROR: binary does not appear to contain ICU symbols`), because ICU is compiled with `visibility=hidden` and the symbols are local in the final binary while the audit used a global-symbol-style grep. Fixed by the multi-signal audit described in §6.2. The `out/Release` tree was cached (failed-run cache save) so the rerun is incremental. |
 | [41184686029](https://github.com/Justintunsday/opencode-ios/actions/runs/41184686029) | `e803c8b` | **success** (ICU artifact) | exact `out/Release` cache hit from the failed run, so `make` was incremental (run 08:27:57Z -> 08:39:01Z); ICU audit passed with 4/4 signals; **node 97,286,800 bytes, sha256 `790cb43296dbed51a6375d82eca5a5a178808ca9fb3fecbabbd2daf547adaac2`**; `v8_enable_i18n_support=1`, `icu_small=false`, ICU 75; `nm` local symbols `_icudt75_dat`, `_u_strToUpper_75`, `_u_getPropertyEnum_75`; otool -L still only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; 2-key entitlement signature. The optional `ios-ripgrep` job failed in that run only on the too-strict `platform IOS` vtool grep (the binary uses the legacy `LC_VERSION_MIN_IPHONEOS` command; `check_macho.py` had PASSed); job-level `continue-on-error` kept the run/artifact-consumption green, and §8 has the fix. |
-| [_robustness rerun_](https://github.com/Justintunsday/opencode-ios/actions/runs/) | _pending commit_ | _to be filled in_ | hardens the ICU audit against a `nm | grep -q` SIGPIPE/`pipefail` race (nm output now captured to a file before grepping) and fixes the optional ripgrep vtool platform check; no change to the produced `node`, expected to be a cached ~15 min run. |
+| [41185874714](https://github.com/Justintunsday/opencode-ios/actions/runs/41185874714) | `72da8ac` | cancelled | ICU-audit SIGPIPE/`pipefail` hardening + ripgrep vtool fix; cancelled on 2026-10-31 to free the macOS runner for the v3 (JIT+wasm) rebuild. The hardening is on `main` and ships with v3. |
+| [_runtime v3: JIT + WebAssembly enabled_](https://github.com/Justintunsday/opencode-ios/actions/runs/) | _pending commit_ | _to be filled in_ | patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals) and updates the manifest policy to `v8_jit=enabled`, `webassembly=enabled`. Configure flags changed, so cache epoch is bumped to 3: cold rebuild (~80-95 min) on purpose. This fixes the last known device blocker (§6.3). |
 
 ## 10. Limitations / unresolved issues
 
@@ -367,8 +401,8 @@ only one pending run per group); they are not failures.
    device-verified to run and its only CLI blocker was the missing
    `Intl`/`\p{}` support; the `--with-intl=full-icu` artifact is pending its own
    device run. All CI validation is static.
-2. **No JIT / no WebAssembly** - see §6. CPU-bound JS will be slower; WASM
-   features must be feature-detected by the CLI.
+2. **JIT + WebAssembly enabled** - see §6/§6.3. Device-verified viable with the
+   2-key entitlements; hosted CI can only audit their presence in the binary.
 3. **Signing is ldid ad-hoc with the device-verified 2-key set**
    (`platform-application` + `com.apple.private.security.no-sandbox`). The
    entitlement requirement itself was verified on the target device (the old

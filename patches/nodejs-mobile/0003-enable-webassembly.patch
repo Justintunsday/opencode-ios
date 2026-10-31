@@ -1,0 +1,42 @@
+# =============================================================================
+# nodejs-mobile: enable V8 WebAssembly (undo the PR #150 wasm-off build hack)
+# =============================================================================
+#
+# Base:   nodejs-mobile/nodejs-mobile update22-9-0
+#         commit 106c51f95d55d1010de56a2ffd09bfb4ba819a47
+# Depends: 0001-ios-build-fixes.patch (this patch reverts the line 0001 introduces)
+# Applied: by .github/workflows/build-runtime.yml to a clean checkout of the
+#          pinned base, in filename order, with `git apply`.
+#
+# PR #150's configure.py hunk disabled WebAssembly unconditionally
+# (`o['variables']['v8_enable_webassembly'] = 0`) so that its jitless iOS build
+# would compile. That was wrong for the shipped runtime and it was
+# device-rejected:
+#
+#   Node 22.9's built-in fetch()/undici instantiates a wasm llhttp parser at
+#   startup. On the target iPhone every CLI command died with
+#       node:internal/deps/undici/undici:5578
+#         mod = await WebAssembly.compile(llhttpWasmData || require_llhttp_wasm());
+#       ReferenceError: WebAssembly is not defined
+#   because the runtime had --v8-options=--jitless baked in AND wasm disabled.
+#
+# This patch restores upstream Node behaviour (`1` unless --v8-lite-mode is
+# used), and the build recipe no longer passes --v8-options=--jitless, so the
+# runtime ships with JIT + WebAssembly. Device evidence: a JIT-enabled community
+# Node 18 binary runs on the same iPhone (Dopamine rootless, iOS 16.1.1) with
+# ONLY the two-key entitlement set (platform-application +
+# com.apple.private.security.no-sandbox); no JIT-specific entitlements are
+# needed on this device, and the 2-key set is kept unchanged.
+# =============================================================================
+
+--- a/configure.py
++++ b/configure.py
+@@ -1642,7 +1642,7 @@
+ def configure_v8(o, configs):
+   set_configuration_variable(configs, 'v8_enable_v8_checks', release=1, debug=0)
+ 
+-  o['variables']['v8_enable_webassembly'] = 0
++  o['variables']['v8_enable_webassembly'] = 0 if options.v8_lite_mode else 1
+   o['variables']['v8_enable_javascript_promise_hooks'] = 1
+   o['variables']['v8_enable_lite_mode'] = 1 if options.v8_lite_mode else 0
+   o['variables']['v8_enable_gdbjit'] = 1 if options.gdb else 0

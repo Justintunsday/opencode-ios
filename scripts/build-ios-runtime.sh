@@ -20,6 +20,12 @@
 # executable and `make` links out/Release/node as a standalone iPhoneOS arm64
 # CLI binary. We only need the CLI, not the .framework.
 #
+# JIT + WebAssembly are ENABLED: Node 22.9's built-in fetch()/undici needs a wasm
+# llhttp parser at startup, so a jitless/no-wasm runtime is unusable by the CLI
+# (device evidence in docs/RUNTIME_BUILD.md). patches/nodejs-mobile/0003 restores
+# upstream v8_enable_webassembly behaviour; the 2-key entitlement set is
+# device-verified sufficient for JIT/WASM on the target jailbroken iPhone.
+#
 # Environment overrides:
 #   NODE_SRC   nodejs-mobile checkout          (default: <repo>/nodejs-mobile)
 #   DIST       artifact output directory       (default: <repo>/dist/ios-node-runtime)
@@ -46,7 +52,6 @@ CONFIGURE_FLAGS=(
   --with-intl=full-icu
   --cross-compiling
   --openssl-no-asm
-  --v8-options=--jitless
   --without-node-code-cache
   --without-node-snapshot
 )
@@ -135,7 +140,9 @@ cmd_normalize_cache() {
 
   if [[ "$cur_patch" == "$cached_patch" && "$cur_flags" == "$cached_flags" ]]; then
     log "restored tree was built from identical patch series + configure flags; keeping cached objects"
-  elif [[ "$cur_patch" == "$cached_patch" ]]; then
+  elif [[ "$cur_flags" != "$cached_flags" ]]; then
+    # Configure flags change compile-time defines for many targets (e.g. V8
+    # WebAssembly / i18n), so no object can be trusted: force a full rebuild.
     warn "configure flags changed; stamping all sources to now to force a correct full rebuild"
     find "$NODE_SRC" -path "$NODE_SRC/out" -prune -o -type f -exec touch {} +
   else
@@ -332,7 +339,48 @@ validate_static() {
     die "no ICU evidence found (config says i18n=1, but nm/strings/size all indicate absence); see $icu_evidence"
   fi
   log "[$stage] ICU present: full-icu statically linked (v8_enable_i18n_support=1; $icu_signals/4 signals)"
-  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU linked)"
+  # WebAssembly must be compiled in: Node 22.9 fetch()/undici instantiates a wasm
+  # llhttp parser at startup (device-rejected without it). Hard requirement:
+  # config.gypi says v8_enable_webassembly=1 and the build no longer passes
+  # --v8-options=--jitless. Presence signals (V8 wasm symbols are local too):
+  log "[$stage] V8 WebAssembly presence audit"
+  local wasm_evidence="$DIST/wasm-evidence-$stage.txt"
+  local wasm_signals=0
+  {
+    echo "== config.gypi =="
+    grep -E "'(v8_enable_webassembly|v8_enable_lite_mode|v8_enable_turbofan)':" "$NODE_SRC/config.gypi" || true
+    echo "== configure flags (must not contain --jitless) =="
+    grep -E 'v8-options|jitless' "$NODE_SRC/config.status" || true
+    echo "== nm: wasm symbols (local included) =="
+    grep -aiE '(_?wasm|liftoff|turboshaft|wasm_|Wasm)' "$nm_file" | head -n 10 || true
+    echo "== binary strings: WebAssembly =="
+    LC_ALL=C grep -a -m3 'WebAssembly' "$bin" || true
+  } > "$wasm_evidence" 2>&1
+  cat "$wasm_evidence"
+
+  grep -q "'v8_enable_webassembly': 1" "$NODE_SRC/config.gypi" \
+    || die "config.gypi says v8_enable_webassembly != 1 (apply patches/nodejs-mobile/0003; Node fetch/undici needs wasm)"
+  if grep -q -- '--jitless' "$NODE_SRC/config.status"; then
+    die "config.status still passes --v8-options=--jitless; JIT/wasm would be unusable"
+  fi
+
+  if grep -aqiE '(_?wasm|liftoff|wasm_)' "$nm_file"; then
+    wasm_signals=$((wasm_signals + 1))
+    log "[$stage] WebAssembly signal: V8 wasm symbols present in nm output"
+  fi
+  if LC_ALL=C grep -aq 'WebAssembly' "$bin"; then
+    wasm_signals=$((wasm_signals + 1))
+    log "[$stage] WebAssembly signal: 'WebAssembly' strings present"
+  fi
+  if grep -q "'v8_enable_turbofan': 1" "$NODE_SRC/config.gypi"; then
+    wasm_signals=$((wasm_signals + 1))
+    log "[$stage] WebAssembly signal: V8 turbofan (wasm compiler) enabled"
+  fi
+  if [[ "$wasm_signals" -eq 0 ]]; then
+    die "no WebAssembly evidence found; see $wasm_evidence"
+  fi
+  log "[$stage] WebAssembly present: enabled ($wasm_signals/3 signals); JIT enabled (no --jitless)"
+  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU + WebAssembly linked)"
 }
 
 # ldid ad-hoc signing with the minimal, device-verified entitlement set.
@@ -505,7 +553,6 @@ manifest = {
             "--with-intl=full-icu",
             "--cross-compiling",
             "--openssl-no-asm",
-            "--v8-options=--jitless",
             "--without-node-code-cache",
             "--without-node-snapshot",
         ],
@@ -526,10 +573,15 @@ manifest = {
         "entitlements_sha256": sha256(dist / "entitlements.plist"),
     },
     "runtime_policy": {
-        "v8_jit": "disabled at build time: configure --v8-options=--jitless compiles "
-                  "NODE_V8_OPTIONS=\"--jitless\" into the binary",
-        "webassembly": "disabled: PR #150 sets v8_enable_webassembly=0 in configure.py "
-                       "(jitless iOS build); WebAssembly is NOT available on this runtime",
+        "v8_jit": "enabled: default V8 JIT (the build no longer passes --v8-options=--jitless). "
+                  "Device-verified on the target iPhone: a JIT-enabled Node binary runs with only "
+                  "the 2-key entitlement set, so no JIT-specific entitlements are required here.",
+        "webassembly": "enabled: patches/nodejs-mobile/0003 restores upstream "
+                       "v8_enable_webassembly (1 unless --v8-lite-mode); required because Node "
+                       "22.9's built-in fetch()/undici instantiates a wasm llhttp parser at "
+                       "startup (the earlier no-wasm runtime died with 'ReferenceError: "
+                       "WebAssembly is not defined' on device). Device-verified viable with the "
+                       "2-key entitlement set.",
         "intl": {
             "mode": "full-icu",
             "configure_flag": "--with-intl=full-icu",
@@ -627,7 +679,9 @@ write_validation_report() {
     echo
     echo "- Mach-O: iPhoneOS arm64 executable, minos <= 16.1.1 (scripts/check_macho.py PASS)"
     echo "- Dylib linkage: iOS system libraries/frameworks only (no Homebrew, no macOS-only libs)"
-    echo "- ldid signing: ad-hoc signature with minimal entitlements; re-validated after signing"
+    echo "- V8: JIT enabled (no --jitless) and WebAssembly enabled (required by Node fetch/undici)"
+    echo "- ICU: full-icu statically linked (ECMA-402 Intl + V8 \\p{...} regexps)"
+    echo "- ldid signing: ad-hoc signature with the 2-key device-verified entitlements; re-validated after signing"
     echo "- Device execution: **UNVERIFIED ON DEVICE** (GitHub-hosted runners cannot run iOS binaries)"
     echo
     echo "## file(1)"

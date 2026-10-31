@@ -14,7 +14,7 @@ on:
       cache_epoch:
         description: "Bump to invalidate the cached out/Release build tree"
         required: false
-        default: "2"
+        default: "3"
         type: string
   push:
     paths:
@@ -165,9 +165,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.NODEJS_MOBILE_DIR }}/out/Release
-          key: ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '2' }}-${{ steps.cache-inputs.outputs.patch_sha256 }}
+          key: ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '3' }}-${{ steps.cache-inputs.outputs.patch_sha256 }}
           restore-keys: |
-            ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '2' }}-
+            ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '3' }}-
 
       - name: Normalize source mtimes so the restored build cache is incremental
         # A fresh git checkout stamps every file with "now", which is newer than

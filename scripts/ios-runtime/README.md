@@ -35,14 +35,15 @@ That plist carries exactly the two device-verified keys
 JIT/executable-memory entitlements (`dynamic-codesigning`, `allow-jit`,
 `allow-unsigned-executable-memory`, `disable-library-validation`): on the target
 device those sets are SIGKILLed (exit 137) by the iOS loader, even together with
-`platform-application`. This runtime is jitless and has no WebAssembly, so it
-does not need them.
+`platform-application`. JIT and WebAssembly are enabled in this build, but
+on-device testing showed the two-key set is sufficient for JIT+WASM on this
+hardware - no JIT-specific entitlements are needed.
 
 ## 2. Smoke tests (device — required before claiming runtime works)
 
-Run in NewTerm or over SSH. The runtime is built with V8 `--jitless` and without
-WebAssembly, so avoid flags that require JIT/WASM. **ICU is compiled in** (the
-CLI bundle needs ECMA-402 `Intl` and `\p{...}` regexp escapes).
+Run in NewTerm or over SSH. The runtime ships with **V8 JIT + WebAssembly
+enabled** and **full ICU** (the CLI bundle needs ECMA-402 `Intl`, `\p{...}`
+regexp escapes, and a wasm llhttp parser for Node's `fetch()`/undici).
 
 ```sh
 node --version                          # expect v22.9.0
@@ -51,39 +52,43 @@ node -p process.arch                    # expect 'arm64'
 node -p 'process.versions.v8'           # V8 version from Node 22.9.0
 node -p 'process.versions.icu'          # expect an ICU version (e.g. 75.1) - NOT undefined
 node -p 'typeof Intl'                   # expect 'object'
+node -p 'typeof WebAssembly'            # expect 'object' (wasm enabled)
 node -e 'console.log(/\p{L}/u.test("é"), new Intl.Segmenter("en",{granularity:"word"}).segment("hi there").next().value)'  # expect 'true hi'
-node -e 'console.log(new Intl.DateTimeFormat("en",{dateStyle:"short"}).format(new Date(0)))'
+node -e 'new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]))'  # minimal valid wasm module: no throw
+node -e 'const t=Date.now();for(let i=0;i<1e7;i++){};console.log("jit loop ok",Date.now()-t)'  # JIT executes
+node -p 'process.versions.undici || "n/a"'  # informational: built-in fetch stack
+node -e 'fetch("https://example.com").then(r=>{console.log(r.status);process.exit(0)},e=>{console.error(e);process.exit(1)})'  # built-in fetch (uses wasm llhttp)
 node -e 'console.log(1 + 2)'            # basic JS execution
 node -e 'console.log(require("fs").readdirSync("."))'   # filesystem
 node -e 'require("fs").writeFileSync("/tmp/node-ios-test.txt","ok")' \
   && cat /tmp/node-ios-test.txt         # write
 node -e 'new (require("worker_threads").Worker)("console.log(1)",{eval:true})'  # threads
 node -e 'require("https").get("https://example.com",r=>{console.log(r.statusCode);process.exit(0)})'  # TLS
-node -e 'console.log(typeof WebAssembly)'  # expected 'undefined' (wasm disabled in this build)
 ```
 
 Record for each: command, exit code, stdout/stderr. Attach to the device test
 report; the CI artifact alone is not proof of runtime viability.
 
-If `Intl` is still undefined or the `\p{L}` regexp throws, the ICU-enabled build
-did not make it to the device — do not use that artifact for the CLI.
+If `Intl` is undefined, the `\p{L}` regexp throws, `WebAssembly` is undefined, or
+built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 
 ## 3. Known limitations of this runtime build
 
-- **No JIT** — built with `--v8-options=--jitless`, matching the precedent
-  packages. Expect slower CPU-bound JavaScript.
-- **No WebAssembly** — PR #150 sets `v8_enable_webassembly=0`; `WebAssembly`
-  is unavailable (tree-sitter/photon WASM features in the CLI must degrade).
-- **ICU is required and compiled in** — the first no-ICU build was device-run but
-  the CLI failed with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu:
-  Invalid property name in character class`; this build uses
-  `--with-intl=full-icu` (statically linked, all locales).
+- **JIT + WebAssembly enabled** — device-verified to work with the 2-key
+  entitlement set on the target iPhone. Do not re-sign with JIT entitlements.
+- **ICU is required and compiled in** — `--with-intl=full-icu`, statically
+  linked (all locales). The first no-ICU build was device-run but the CLI failed
+  with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu: Invalid
+  property name in character class`.
+- **WebAssembly is required and compiled in** — Node 22.9's built-in
+  `fetch()`/undici instantiates a wasm llhttp parser at startup; the earlier
+  no-wasm runtime failed with `ReferenceError: WebAssembly is not defined`.
 - **Not executed by CI** — all CI checks are static (Mach-O platform/minos,
-  arch, dylib linkage, ldid signature, ICU symbol presence).
+  arch, dylib linkage, ICU/WebAssembly audits, ldid signature).
 - **Native addons** — only addons that are the same architecture (`arm64`) and
   statically compatible can load; prebuilt macOS/Linux addons will not.
 - `process.platform === "ios"` — CLI code must treat iOS as its own platform,
-  not `darwin`.
+  not `darwin` (device-confirmed).
 
 ## 4. Rebuild / reproduce locally
 
