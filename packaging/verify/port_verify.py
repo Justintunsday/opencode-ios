@@ -1089,8 +1089,15 @@ def _check_launcher(checks, ctx, extract_dir):
         return
     text = read_text(launcher)
     problems = []
-    if not text.startswith("#!/bin/sh\n"):
-        problems.append("launcher must start with '#!/bin/sh'")
+    if not text.startswith("#!/var/jb/bin/sh\n"):
+        problems.append(
+            "launcher must start with '#!/var/jb/bin/sh' — rootless iOS has no "
+            "/bin/sh and the kernel execs the launcher directly"
+        )
+    if "PATH=" not in text or "/bin" not in text:
+        problems.append(
+            "launcher must prepend /var/jb/bin:/var/jb/usr/bin to PATH before exec"
+        )
     if re.search(r"(?m)^\s*exec\s", text) is None:
         problems.append("launcher must exec the runtime (no fork)")
     if '"$@"' not in text:
@@ -1760,6 +1767,45 @@ def _check_runtime(checks, ctx, repo_root, extract_dir, mode, skip_native):
     elif parsed is None:
         check(checks, "runtime.entitlements", "runtime",
               "Entitlements plist ships with the runtime", "FAIL",
+              "entitlements.xml missing")
+
+    # Entitlements policy: the device-verified minimal working set for this
+    # rootless jailbreak is platform-application + no-sandbox. The old
+    # allow-jit/dynamic-codesigning-only sets were empirically SIGKILLed on
+    # iPhone12,8 / iOS 16.1.1 (exit 137), so the package refuses them.
+    if isinstance(parsed, dict):
+        required_entitlements = (
+            "platform-application",
+            "com.apple.private.security.no-sandbox",
+        )
+        missing_entitlements = [
+            key for key in required_entitlements if parsed.get(key) is not True
+        ]
+        metrics["entitlements_keys"] = keys
+        if missing_entitlements:
+            check(checks, "runtime.entitlements-policy", "runtime",
+                  "Runtime entitlements match the device-verified minimal set", "FAIL",
+                  "missing/not-true required entitlement(s): "
+                  + ", ".join(missing_entitlements)
+                  + ". Device-verified minimal set is platform-application=true + "
+                    "com.apple.private.security.no-sandbox=true; the old "
+                    "allow-jit/dynamic-codesigning sets were SIGKILLed on the target "
+                    "device (exit 137). Update the runtime entitlements.plist.")
+        else:
+            extra = [key for key in keys if key not in required_entitlements]
+            check(checks, "runtime.entitlements-policy", "runtime",
+                  "Runtime entitlements match the device-verified minimal set", "PASS",
+                  "required entitlements present and true: "
+                  + ", ".join(required_entitlements)
+                  + (f"; additional keys: {', '.join(extra)}" if extra else
+                     "; no unnecessary keys"))
+    elif parsed == "invalid":
+        check(checks, "runtime.entitlements-policy", "runtime",
+              "Runtime entitlements match the device-verified minimal set", "FAIL",
+              "entitlements.xml could not be parsed")
+    else:
+        check(checks, "runtime.entitlements-policy", "runtime",
+              "Runtime entitlements match the device-verified minimal set", "FAIL",
               "entitlements.xml missing")
 
     # runtime-manifest.json: JSON + hash consistency with the shipped node.
@@ -2675,9 +2721,9 @@ def cmd_fixture(args):
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>com.apple.security.cs.allow-jit</key>
+    <key>platform-application</key>
     <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <key>com.apple.private.security.no-sandbox</key>
     <true/>
     <key>self-test-placeholder</key>
     <true/>

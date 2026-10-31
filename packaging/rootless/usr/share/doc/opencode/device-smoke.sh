@@ -1,5 +1,8 @@
-#!/bin/sh
+#!/var/jb/bin/sh
 # OpenCode iOS (rootless) on-device smoke test.
+#
+# Shebang is /var/jb/bin/sh because rootless iOS has no /bin/sh; invoking it as
+# `sh /var/jb/usr/share/doc/opencode/device-smoke.sh` works regardless.
 #
 # Run this ON THE iPHONE (NewTerm 3 or SSH), after installing
 # OpenCode-iOS-rootless.deb. It performs offline checks only: no provider API
@@ -44,6 +47,43 @@ else
     bad "opencode not in PATH (check /var/jb/usr/bin is exported in PATH)"
 fi
 
+# 1b. Rootless shell / tooling environment. Rootless iOS has no /bin/sh or
+#     /bin/bash; the Procursus bootstrap shells live under /var/jb. The CLI's
+#     shell tool spawns commands through sh, so a working rootless shell and a
+#     PATH containing /var/jb/bin:/var/jb/usr/bin are required for shell tools.
+SHELL_OK=0
+for candidate_shell in /var/jb/bin/sh /var/jb/usr/bin/sh /var/jb/bin/bash; do
+    if [ -x "$candidate_shell" ]; then
+        if "$candidate_shell" -c 'printf shell-ok' 2>/dev/null | grep -q shell-ok; then
+            ok "rootless shell executable: $candidate_shell"
+            SHELL_OK=1
+            break
+        else
+            warn "rootless shell exists but failed to execute: $candidate_shell"
+        fi
+    fi
+done
+if [ "$SHELL_OK" -eq 0 ]; then
+    bad "no working rootless shell found under /var/jb/bin or /var/jb/usr/bin (CLI shell tools will fail)"
+fi
+if command -v sh >/dev/null 2>&1; then
+    ok "sh resolves in PATH: $(command -v sh)"
+else
+    warn "sh not in PATH (launcher prepends /var/jb/bin:/var/jb/usr/bin; shell tools may still work via absolute path)"
+fi
+printf 'PATH=%s\n' "${PATH:-unset}"
+printf 'HOME=%s\n' "${HOME:-unset}"
+if [ -d "${HOME:-/nonexistent}" ] && [ -w "${HOME:-/nonexistent}" ]; then
+    ok "HOME is writable: $HOME (config/sessions resolve here)"
+else
+    warn "HOME is not writable or unset (${HOME:-unset})"
+fi
+if command -v git >/dev/null 2>&1; then
+    ok "git present: $(git --version 2>/dev/null | head -n 1)"
+else
+    warn "git not installed (git tool features unavailable); install with: sudo apt-get install -y git"
+fi
+
 # 2. Mandatory CLI startup checks (offline).
 VERSION_OUTPUT=$(opencode --version 2>&1)
 VERSION_RC=$?
@@ -85,7 +125,9 @@ fi
 # 5. Not covered here: model provider connectivity and an agent turn. Those need
 #    credentials/network and are run manually (see docs/INSTALL.md):
 #      opencode auth login
-#      cd /var/mobile/Documents/example && opencode run --help
+#      cd /var/jb/var/mobile/Documents/example && opencode run --help
+#    Also confirm shell-tool fallback with a real CLI command once authenticated:
+#      opencode run "run: printf shell-tool-ok"   (requires a provider)
 printf '\n'
 if [ "$FAILURES" -eq 0 ]; then
     printf 'DEVICE SMOKE TEST: PASS (offline checks only; model connectivity not tested)\n'

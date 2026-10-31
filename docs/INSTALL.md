@@ -15,13 +15,24 @@ Target environment (only configuration validated by CI):
 
 | Property | Value |
 | --- | --- |
-| Device | iPhone SE (2nd generation), arm64 |
-| iOS | 16.1.1 (20B101) |
-| Jailbreak | Dopamine (rootless), `/var/jb` prefix |
+| Device | iPhone SE (2nd generation), identifier `iPhone12,8`, arm64 |
+| iOS | 16.1.1 (20B101), Darwin 22.1.0 |
+| Jailbreak | Dopamine (rootless), `/var/jb` -> `/private/preboot/.../dopamine-*/procursus`, ElleKit 1.2 |
 | Package | `OpenCode-iOS-rootless.deb` (`Architecture: iphoneos-arm64`) |
 | Installed binary | `/var/jb/usr/bin/opencode` |
 | Runtime / CLI / assets | `/var/jb/usr/lib/opencode/{runtime,cli}` |
 | Docs | `/var/jb/usr/share/doc/opencode/` |
+
+Rootless environment facts (device-verified on the target iPhone):
+
+| Fact | Detail |
+| --- | --- |
+| Shells | **No `/bin/sh`, `/bin/bash` or `/bin/zsh`.** The bootstrap shells are `/var/jb/bin/sh` and `/var/jb/usr/bin/sh` (both symlinks to `/var/jb/usr/bin/dash`), plus `/var/jb/bin/bash`, `/var/jb/bin/zsh`. |
+| `HOME` | SSH/NewTerm sessions run as `mobile` (uid 501) with `HOME=/var/jb/var/mobile`. Config/data therefore resolve to `/var/jb/var/mobile/.config/opencode` and `/var/jb/var/mobile/.local/share/opencode`. |
+| `PATH` | SSH default: `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`. The packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` so shells/tools spawned by the CLI resolve. |
+| `git` | **Not installed by default.** The package `Recommends: git`; install it with `sudo apt-get install -y git` (Procursus apt, git 2.39.1) for git tool support. |
+| Entitlements | The device-verified minimal runtime entitlement set is exactly `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient on this device. |
+| Launcher shebang | `/var/jb/usr/bin/opencode` starts with `#!/var/jb/bin/sh` because the kernel execs it directly and `/bin/sh` does not exist. Maintainer scripts keep `#!/bin/sh`, which rootless Procursus `dpkg` handles (device-verified). |
 
 Node.js 22.9.0 is older than the Node version upstream OpenCode normally targets;
 see [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
@@ -31,11 +42,15 @@ see [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 - Dopamine **rootless** jailbreak (a rootless bootstrap that mounts `/var/jb`).
   Rootful jailbreaks and other prefixes are **not** supported by this package.
 - A terminal: NewTerm 3 or SSH. `dpkg` from the rootless bootstrap
-  (`/var/jb/usr/bin/dpkg`).
+  (`/var/jb/usr/bin/dpkg`). On the target device `sudo` works with the device
+  password, and `dpkg`, `ldid`, `zsh` are installed.
 - ~150 MB free under `/var/jb` for the runtime, CLI bundle and assets
   (`Installed-Size` in the package metadata is authoritative).
-- Internet access only for **agent usage** (provider API calls). Installation,
-  `--version`, `--help` and `auth list` are offline.
+- Internet access only for **agent usage** (provider API calls) and for optional
+  `git` installation. Installation, `--version`, `--help` and `auth list` are
+  offline.
+- Optional: `git` for git tool support (`sudo apt-get install -y git`; the
+  package declares `Recommends: git`, not a hard dependency).
 
 ## 2. Get the package
 
@@ -58,28 +73,31 @@ Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 
 ## 3. Transfer the package to the device
 
+Your device home is `/var/jb/var/mobile`, so `~/Documents` below means
+`/var/jb/var/mobile/Documents`.
+
 Pick one:
 
 - **AirDrop / Filza:** AirDrop the `.deb` to the iPhone, then use Filza to move it
-  to `/var/mobile/Documents/`.
+  to `~/Documents/` (`/var/jb/var/mobile/Documents/`).
 - **SSH/SFTP** (OpenSSH from the rootless bootstrap, on the same Wi-Fi):
 
   ```sh
-  scp OpenCode-iOS-rootless.deb SHA256SUMS mobile@<iphone-ip>:/var/mobile/Documents/
+  scp OpenCode-iOS-rootless.deb SHA256SUMS mobile@<iphone-ip>:Documents/
   ```
 
 - **NewTerm on-device download** (`curl` from the rootless bootstrap) into
-  `/var/mobile/Documents/` if you have the artifact URL.
+  `~/Documents/` if you have the artifact URL.
 
 ## 4. Verify integrity on the device
 
 ```sh
-cd /var/mobile/Documents
+cd ~/Documents
 sha256sum -c SHA256SUMS
 # expected: OpenCode-iOS-rootless.deb: OK
 dpkg-deb --info OpenCode-iOS-rootless.deb | head -n 20
 # expected: Package: opencode, Version: 2.2.5-1, Architecture: iphoneos-arm64,
-#           Depends: firmware (>= 15.0)
+#           Depends: firmware (>= 15.0), Recommends: git
 ```
 
 If `sha256sum` is unavailable, use `shasum -a 256 OpenCode-iOS-rootless.deb` and
@@ -88,7 +106,7 @@ compare with the value in `SHA256SUMS`.
 ## 5. Install
 
 ```sh
-sudo dpkg -i /var/mobile/Documents/OpenCode-iOS-rootless.deb
+sudo dpkg -i ~/Documents/OpenCode-iOS-rootless.deb
 ```
 
 Expected: dpkg unpacks under `/var/jb`, runs `postinst`, and prints
@@ -112,8 +130,9 @@ opencode --version
 opencode --help
 ```
 
-The launcher (`/var/jb/usr/bin/opencode`, POSIX `sh`) exports
-`OPENCODE_NODE_ASSETS_DIR` and `OPENCODE_IOS=1` and executes:
+The launcher (`/var/jb/usr/bin/opencode`, POSIX `dash`/`sh`, shebang
+`#!/var/jb/bin/sh`) prepends `/var/jb/bin:/var/jb/usr/bin` to `PATH`, exports
+`OPENCODE_NODE_ASSETS_DIR` and `OPENCODE_IOS=1`, and executes:
 
 ```sh
 /var/jb/usr/lib/opencode/runtime/node \
@@ -123,8 +142,11 @@ The launcher (`/var/jb/usr/bin/opencode`, POSIX `sh`) exports
 ```
 
 `--experimental-sqlite` is required by `node:sqlite` on Node 22.9 and is not a
-bug. `/var/jb/usr/bin` is normally already on `PATH`; if `opencode` is not found,
-add `export PATH="/var/jb/usr/bin:$PATH"` to `~/.profile`.
+bug. The launcher shebang is `/var/jb/bin/sh` because rootless iOS has no
+`/bin/sh` and the kernel executes `/var/jb/usr/bin/opencode` directly. If
+`opencode` is not found, add `export PATH="/var/jb/usr/bin:$PATH"` to
+`~/.profile`. Your session `HOME` is `/var/jb/var/mobile` (SSH/NewTerm), so config
+and sessions live beneath it.
 
 The v1 runtime is **built with V8 JIT disabled** (`--v8-options=--jitless`) and
 WebAssembly disabled for reliability on a rootless jailbreak. It does not need a
@@ -154,8 +176,9 @@ export provider environment variables (for example `OPENAI_API_KEY` or
 
 Configuration lives in `~/.config/opencode/` (for example
 `~/.config/opencode/opencode.json`); sessions/history and caches live under
-`~/.local/share/opencode/` and `~/.cache/opencode/`. On a jailbroken device the
-user home is `/var/mobile`.
+`~/.local/share/opencode/` and `~/.cache/opencode/`. On this rootless device the
+session `HOME` is `/var/jb/var/mobile`, so those paths expand to
+`/var/jb/var/mobile/.config/opencode` etc.
 
 > API keys are user data. Do not commit them, do not paste them into issues, and
 > do not add them to the launcher or package.
@@ -163,22 +186,34 @@ user home is `/var/mobile`.
 ## 8. Project usage
 
 ```sh
-cd /var/mobile/Documents/my-project
+cd ~/Documents/my-project
 opencode                 # interactive TUI (see PTY caveat below)
 opencode --help          # commands and flags
 opencode run "summarise this repository"   # headless, requires auth+network
 ```
 
+Git support: `git` is not installed by the rootless bootstrap by default; the
+package declares `Recommends: git`, not a hard dependency. Install it when you
+need git tool features:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y git   # Procursus apt, device-verified: git 2.39.1
+git --version
+```
+
 TUI/terminal caveats: interactive PTY panes and native file watchers have no
 iPhoneOS builds, so shell tool calls use pipe-based `child_process` fallback and
-file-watch features degrade to polling/none. Headless `run` mode is the more
-reliable path. See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
+file-watch features degrade to polling/none. The shell fallback needs a working
+rootless shell (`/var/jb/bin/sh` -> dash); the launcher's `PATH` prepend makes
+that available to the CLI. Headless `run` mode is the more reliable path. See
+[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 ## 9. Upgrade / uninstall
 
 ```sh
 # upgrade in place (config and sessions are preserved)
-sudo dpkg -i /var/mobile/Documents/OpenCode-iOS-rootless.deb
+sudo dpkg -i ~/Documents/OpenCode-iOS-rootless.deb
 
 # remove the package, keep user data
 sudo dpkg -r opencode
@@ -205,6 +240,10 @@ Success criteria:
 | runtime present | `OK   native iPhoneOS Node runtime present` |
 | CLI bundle present | `OK   CLI bundle present` |
 | launcher executable | `OK   launcher present and executable` |
+| rootless shell | `OK   rootless shell executable: /var/jb/bin/sh` (rootless iOS has no `/bin/sh`) |
+| shell in PATH | `OK   sh resolves in PATH: /var/jb/usr/bin/sh` |
+| HOME writable | `OK   HOME is writable: /var/jb/var/mobile` |
+| git (optional) | `OK   git present: git version 2.39.1` — or a `WARN ... install with: sudo apt-get install -y git` |
 | `opencode --version` | exit 0 and the OpenCode version (2.2.5) printed |
 | `opencode --help` | exit 0 with a usage block |
 | argument forwarding | `OK   launcher forwards CLI arguments` |
@@ -215,8 +254,10 @@ Manual equivalent (what proves success):
 ```sh
 opencode --version; echo "exit=$?"      # exit=0 and a version string
 opencode --help;    echo "exit=$?"      # exit=0 and usage text
-opencode debug paths                    # config/data paths under /var/mobile (optional)
+opencode debug paths                    # config/data under /var/jb/var/mobile (optional)
 opencode auth list                      # works offline once installed (optional)
+sh /var/jb/bin/sh -c 'echo shell-ok'    # shell-tool fallback shell works
+command -v git && git --version          # git tool support (optional)
 ```
 
 `WARN` lines for `opencode debug paths` / `opencode auth list` are informational
@@ -229,16 +270,19 @@ test.
 
 | Symptom | Cause / fix |
 | --- | --- |
-| Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Code signature / executable-memory misbehaviour after transfer. Re-sign the runtime with the shipped entitlements: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`, then retry. `ldid` is part of the rootless bootstrap; it is not a package dependency. |
-| `bad option: --use-system-ca` / `--experimental-ffi` | A custom launcher/wrapper is passing Node flags that do not exist in Node 22.9. Use the installed launcher unmodified (it passes `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings` only). |
+| Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Entitlement/code-signature problem. The package ships the **device-verified minimal entitlement set**: `platform-application` + `com.apple.private.security.no-sandbox` (`runtime/entitlements.xml`). Re-sign the runtime with exactly those shipped entitlements, then retry: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`. Do **not** substitute the older allow-jit / allow-unsigned-executable-memory / disable-library-validation / dynamic-codesigning sets: those were empirically SIGKILLed on the target device (exit 137) even though the node binary is jitless. `ldid` is installed on the target device; it is not a package dependency. |
+| `bad option: --use-system-ca` / `--experimental-ffi` | A custom launcher/wrapper is passing Node flags that do not exist in Node 22.9. Use the installed launcher unmodified (it passes `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size` only). The device jitless runtime accepts `--jitless` fine; `--use-system-ca`/`--experimental-ffi` must never be passed. |
+| `/var/jb/bin/sh: not found` / `bad interpreter` when running `opencode` | Launcher was replaced or the package was edited by hand. Rootless iOS has no `/bin/sh`; the launcher must keep the `#!/var/jb/bin/sh` shebang. Reinstall the `.deb`. |
+| Shell tool calls fail with `sh: not found` / `/bin/sh: No such file or directory` | The CLI spawned a shell without the rootless paths. Run the installed launcher (`/var/jb/usr/bin/opencode`), which prepends `/var/jb/bin:/var/jb/usr/bin` to `PATH`; do not invoke the node runtime directly. |
+| `git: command not found` in git tool calls | `git` is not installed by default on the rootless bootstrap (only `Recommends: git`). `sudo apt-get install -y git` (or install it from Sileo) and retry. |
 | `cannot execute binary file` / `Exec format error` | Wrong binary (e.g. a macOS Node or desktop build). Reinstall this package; never mix in a macOS `node`. |
 | `opencode: native runtime not found` | Incomplete extraction. Reinstall the `.deb`; the launcher prints the expected path. |
 | `opencode: CLI bundle not found` | Incomplete extraction. Reinstall the `.deb`. |
 | Out-of-memory / jetsam kill during a large session | Lower the heap: `OPENCODE_IOS_MAX_OLD_SPACE_MB=1024 opencode`, or set it in `~/.profile`. |
-| Interactive TUI garbled or terminal panes unavailable | Expected PTY fallback; use `opencode run ...`/`--help`. |
+| Interactive TUI garbled or terminal panes unavailable | Expected PTY fallback; use `opencode run ...`/`--help`. Shell tool calls use the rootless dash via `PATH`. |
 | File changes are not picked up live | Expected watcher fallback (polling/none). Re-run the command or use a watch-free workflow. |
 | `firmware` dependency error from `dpkg` | Rootless bootstrap package is missing/broken; repair the bootstrap via Sileo rather than `--force-depends`. |
-| No provider requests / TLS errors | Check network and certificate trust; agent calls require internet and configured auth. |
+| No provider requests / TLS errors | Check network and certificate trust; agent calls require internet and configured auth. Basic device HTTPS/TLS and `curl` were verified on the target device; proxied/managed networks remain untested. |
 
 Collect diagnostics for bug reports:
 

@@ -1,5 +1,11 @@
-#!/bin/sh
+#!/var/jb/bin/sh
 # OpenCode iOS (rootless) launcher.
+#
+# Shebang is /var/jb/bin/sh, NOT /bin/sh: on rootless iOS the kernel execs this
+# file directly and /bin/sh does not exist (only /var/jb/bin/sh and
+# /var/jb/usr/bin/sh, both -> /var/jb/usr/bin/dash). Rootless Procursus dpkg has
+# its own shell handling, which is why DEBIAN/postinst etc. can keep #!/bin/sh;
+# the launcher cannot. Keep this file POSIX-dash compatible.
 #
 # Installed at /var/jb/usr/bin/opencode by the OpenCode-iOS-rootless .deb.
 # Runs the bundled native iPhoneOS Node.js runtime on the OpenCode CLI bundle.
@@ -52,7 +58,11 @@ fi
 
 OPENCODE_NODE_ASSETS_DIR="$ASSETS"
 OPENCODE_IOS=1
-export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS
+# Rootless iOS has no /bin/sh, /bin/bash or /bin/zsh: the bootstrap shells live
+# under /var/jb. Prepend the rootless bin directories so shells and tools spawned
+# by the CLI (shell tool calls, git, ...) resolve without manual PATH setup.
+PATH="$PREFIX/bin:$PREFIX/usr/bin:$PATH"
+export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS PATH
 
 MAX_OLD_SPACE="${OPENCODE_IOS_MAX_OLD_SPACE_MB:-1536}"
 
