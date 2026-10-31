@@ -122,6 +122,28 @@ The workflow never claims device success: `bundle-manifest.json` always records
 `verification_status.device_verified = false` and the runner only executes stock host
 Node binaries.
 
+### Integration with the packaging workflow
+
+`package-rootless.yml` resolves the latest successful run of this workflow, downloads
+`opencode-cli-node-ios` and verifies it before assembling the `.deb`. First integration
+run that consumed a patched artifact:
+[41177665245](https://github.com/Justintunsday/opencode-ios/actions/runs/41177665245)
+(package build, CI result FAIL for an unrelated runtime-entitlements plist issue). The
+CLI-side checks all passed:
+
+| Check | Result |
+| --- | --- |
+| `pkg.bundle-manifest` — manifest hashes consistent against packaged files | PASS |
+| `cli.artifact-policy` — iOS candidate (patch series + required Node 22.9 smoke) | PASS |
+| `cli.native-assets` — no desktop Mach-O binaries shipped as CLI assets | PASS |
+| `cli.assets-contract` — non-SEA assets directory wired up | PASS |
+| `cli.host-node-smoke` — bundle runs on host Node.js 22.9.0 (7 checks, 0 failures) | PASS |
+| `pkg.verbatim-copy` — packaged CLI files byte-identical to the artifact | PASS |
+| host Node provenance/version (nodejs.org checksum, pinned 22.9.0) | PASS |
+
+The only failures were `runtime.entitlements*` on the node runtime artifact (owned by the
+runtime build, not the CLI bundle).
+
 ## 5. Host-Node smoke matrix
 
 Smoke tests execute the staged `opencode.mjs` on **stock Node.js** binaries on the build
