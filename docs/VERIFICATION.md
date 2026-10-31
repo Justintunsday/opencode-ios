@@ -12,6 +12,7 @@ this repository claims on-device success.
 | Host-runtime JS smoke (`--version`, `--help`, launcher argv forwarding) | GitHub Actions `macos-15` runner, host Node.js 22.9.0 (nodejs.org, checksum-pinned) | **CI-verified** when the workflows are green |
 | Compile of the native iPhoneOS runtime | GitHub Actions `macos-15` runner + iPhoneOS SDK | **CI-verified** (build-runtime workflow) |
 | Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — see *Interim device evidence* below |
+| Native runtime binary execution (node `--version`, `process.platform`, sqlite/fs/TLS/child_process) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — no-ICU build cannot yet run the CLI (see below) |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device | **UNVERIFIED ON DEVICE** — requires the user runbook below |
 
 > **UNVERIFIED ON DEVICE — requires real iPhone SE 2 (iOS 16.1.1, Dopamine rootless).**
@@ -56,6 +57,7 @@ Produced by `scripts/validate-port.sh` on `macos-15`. Each assertion appears in
 | Maintainer scripts | `postinst`/`prerm`/`postrm` are `#!/bin/sh`, `set -e`, `sh -n` clean, offline (no curl/wget/apt/npm/pip/ldid calls), `/var/jb`-relative, executed twice against a rewritten root to prove idempotency. (`#!/bin/sh` is intentional: rootless Procursus `dpkg` executes such scripts on the target device even though `/bin/sh` is absent — device-verified with a test deb.) |
 | Launcher contract | shebang `#!/var/jb/bin/sh` (kernel-exec'd directly; rootless iOS has no `/bin/sh`), prepends `/var/jb/bin:/var/jb/usr/bin` to `PATH`, execs runtime, forwards `"$@"`, passes `--experimental-sqlite`/`--no-warnings`/`--max-old-space-size`, exports `OPENCODE_NODE_ASSETS_DIR`/`OPENCODE_IOS=1`, documents the JITless escape hatch, no invalid Node 22.9 flags (`--use-system-ca`, `--experimental-ffi`), no `uname` dependence, no embedded credentials |
 | Native runtime | `scripts/check_macho.py`: thin arm64 little-endian Mach-O, `MH_EXECUTE`, `LC_BUILD_VERSION platform=iPhoneOS(2)`, minOS ≤ 16.1.1; `otool -L`: iOS system libraries only, no `/opt/homebrew`, `/usr/local`, `@rpath`/`@loader_path`, or macOS-only frameworks; `LC_CODE_SIGNATURE` presence (ldid); entitlements plist parses; `runtime-manifest.json` hashes match the shipped node |
+| Runtime build profile | `runtime-manifest.json` → `build.configure_flags` must contain `--dest-os=ios`, `--dest-cpu=arm64`, `--v8-options=--jitless` and an ICU build (`--with-intl=small-icu`/`full-icu`); a `--with-intl=none` runtime is rejected because Intl is required by the CLI bundle (device-verified parse failure on the no-ICU build) |
 | Runtime entitlements policy | `runtime/entitlements.xml` must contain `platform-application=true` **and** `com.apple.private.security.no-sandbox=true` — the device-verified minimal working set; old allow-jit/executable-memory sets are rejected because they were SIGKILLed on the target device (exit 137) |
 | CLI bundle | `opencode.mjs` present and non-placeholder; `assets/**` copied verbatim; `bundle-manifest.json` hash entries verified when the format is recognised; deb files byte-identical to the source artifacts (`sha256` comparison against provenance) |
 | CLI artifact policy | `bundle-manifest.json` must not be flagged as a stock upstream build and its required host-Node smoke version must be **22.9.0**, matching the shipped iPhoneOS runtime (a stock Node-26-only bundle is rejected) |
@@ -141,8 +143,26 @@ commands, **not** the packaged `.deb`, so the status summary above stays
 | Rootless `dpkg` + `#!/bin/sh` maintainer script | **PASS** — test deb installed (`POSTINST_SHELL_RAN`), `dpkg -r` clean (`#!/bin/sh` handled by patched rootless dpkg even without `/bin/sh`) |
 | Kernel-exec shebang of a direct `/var/jb/usr/bin/*` helper | `/bin/sh` would ENOENT → launchers use `#!/var/jb/bin/sh` (also used by installed rootless packages) |
 | Device network/TLS | HTTPS request returned 200, `curl` works; device time/date correct |
-| `node --jitless` on device | accepted (jitless runtime; no JIT needed) |
+| `node --jitless` on device | accepted (jitless runtime; JIT not needed) |
 | `git` | not installed by default; Procursus apt provides git 2.39.1 (`sudo apt-get install -y git`) |
+
+Native runtime binary probes on the real iPhone (same date, ldid re-signed with the
+2-key entitlement set — **runtime only, not the packaged CLI**):
+
+| Probe | Result |
+| --- | --- |
+| `node --version` | `v22.9.0` (runs, exit 0) |
+| `process.platform` / `process.arch` | `ios` / `arm64` |
+| Embedded versions | V8 12.4.254.21-node.19, uv 1.48.0, OpenSSL 3.0.13, SQLite 3.46.1 |
+| `node:sqlite` (`--experimental-sqlite`) create/insert/select | PASS |
+| Filesystem write/read | PASS |
+| TLS/network (`api.github.com`) | PASS |
+| `child_process` spawn of `/var/jb/bin/sh -c` (uid 501) | PASS |
+| Spawning `node` as a child process | PASS |
+| WebAssembly | `undefined` (disabled, as documented) |
+| Dylib linkage on device | only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib` |
+| Re-sign with shipped 2-key entitlements (`ldid -S`) | PASS; old 4-key signature SIGKILLed (137) |
+| **CLI bundle parse** | **FAIL (expected for this build):** the runtime was built `--with-intl=none`, so `Intl` is undefined and V8 rejects `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. Runtime is being rebuilt with `--with-intl=small-icu`; the packaging CI gate now rejects no-ICU runtime artifacts. |
 
 ### Recording template (copy per device run)
 

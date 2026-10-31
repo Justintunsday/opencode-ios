@@ -218,6 +218,38 @@ class CheckSummaryTest(unittest.TestCase):
         self.assertEqual(port_verify.summarize_checks(checks)["ci_status"], "FAIL")
 
 
+class RuntimeBuildProfileTest(unittest.TestCase):
+    def _run_profile_check(self, configure_flags):
+        with tempfile.TemporaryDirectory() as td:
+            runtime = Path(td) / "var/jb/usr/lib/opencode/runtime"
+            runtime.mkdir(parents=True)
+            manifest = {"build": {"configure_flags": configure_flags}}
+            (runtime / "runtime-manifest.json").write_text(json.dumps(manifest))
+            checks = []
+            ctx = {"metrics": {}}
+            port_verify._check_runtime_profile(checks, ctx, td)
+            return checks
+
+    def test_accepts_icu_jitless_ios_profile(self):
+        checks = self._run_profile_check([
+            "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=small-icu",
+            "--v8-options=--jitless",
+        ])
+        self.assertEqual(checks[0]["status"], "PASS")
+
+    def test_rejects_with_intl_none(self):
+        checks = self._run_profile_check([
+            "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=none",
+            "--v8-options=--jitless",
+        ])
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("with-intl=none", checks[0]["evidence"])
+
+    def test_skips_without_configure_flags(self):
+        checks = self._run_profile_check([])
+        self.assertEqual(checks[0]["status"], "SKIP")
+
+
 class ReportDeviceStatusTest(unittest.TestCase):
     def test_device_status_is_never_passed(self):
         self.assertEqual(port_verify.DEVICE_STATUS, "UNVERIFIED ON DEVICE")

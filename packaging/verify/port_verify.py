@@ -1888,6 +1888,72 @@ def _check_runtime(checks, ctx, repo_root, extract_dir, mode, skip_native):
                     metrics["runtime_manifest_sha256"] = sha256_file(manifest_path)
 
 
+def _check_runtime_profile(checks, ctx, extract_dir):
+    """Reject runtime artifacts built with a profile the CLI cannot use.
+
+    Device-verified requirement: the OpenCode CLI bundle uses Unicode property
+    escapes and Intl, so a runtime configured `--with-intl=none` fails at parse
+    time on device (`SyntaxError: Invalid regular expression: /[\\p{Mark}...]/gu`).
+    The manifest records the configure flags, so the package pipeline can reject
+    such artifacts before they reach a device.
+    """
+    runtime_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/runtime"
+    manifest_path = runtime_dir / "runtime-manifest.json"
+    metrics = ctx["metrics"]
+    if not manifest_path.is_file():
+        check(checks, "runtime.build-profile", "runtime",
+              "Runtime build profile is usable by the CLI", "SKIP",
+              "runtime-manifest.json missing; cannot inspect configure flags")
+        return
+    try:
+        manifest = read_json(manifest_path)
+    except (OSError, ValueError) as exc:
+        check(checks, "runtime.build-profile", "runtime",
+              "Runtime build profile is usable by the CLI", "FAIL",
+              f"cannot parse runtime-manifest.json: {exc}")
+        return
+    build = manifest.get("build") if isinstance(manifest, dict) else None
+    flags = build.get("configure_flags") if isinstance(build, dict) else None
+    if not isinstance(flags, list) or not flags:
+        check(checks, "runtime.build-profile", "runtime",
+              "Runtime build profile is usable by the CLI", "SKIP",
+              "runtime-manifest.json does not declare build.configure_flags")
+        return
+    flags = [str(flag) for flag in flags]
+    metrics["runtime_configure_flags"] = flags
+    problems = []
+    if any("--with-intl=none" in flag for flag in flags):
+        problems.append(
+            "runtime was configured with --with-intl=none: Intl is unavailable and "
+            "V8 rejects the Unicode property escapes used by the OpenCode CLI bundle "
+            "(device-verified parse failure). Rebuild with --with-intl=small-icu."
+        )
+    elif not any(
+        "--with-intl=small-icu" in flag or "--with-intl=full-icu" in flag
+        for flag in flags
+    ):
+        problems.append(
+            "runtime does not declare --with-intl=small-icu/full-icu; the CLI "
+            "requires Intl support."
+        )
+    if not any("--dest-os=ios" in flag for flag in flags):
+        problems.append("--dest-os=ios missing from configure flags")
+    if not any("--dest-cpu=arm64" in flag for flag in flags):
+        problems.append("--dest-cpu=arm64 missing from configure flags")
+    if not any("--v8-options=--jitless" in flag for flag in flags):
+        problems.append(
+            "--v8-options=--jitless missing: the shipped v1 runtime must be jitless"
+        )
+    if problems:
+        check(checks, "runtime.build-profile", "runtime",
+              "Runtime build profile is usable by the CLI", "FAIL",
+              truncate("; ".join(problems), 1200))
+    else:
+        check(checks, "runtime.build-profile", "runtime",
+              "Runtime build profile is usable by the CLI", "PASS",
+              "configure flags: " + truncate(", ".join(flags), 700))
+
+
 def _check_optional_ripgrep(checks, ctx, extract_dir, skip_native, mode):
     rg = Path(extract_dir) / "var/jb/usr/bin/rg"
     metrics = ctx["metrics"]
@@ -2557,6 +2623,7 @@ def cmd_verify(args):
 
     # ---- runtime / CLI checks -------------------------------------------
     _check_runtime(checks, ctx, repo_root, extract_dir, mode, args.skip_native_audit)
+    _check_runtime_profile(checks, ctx, extract_dir)
     _check_optional_ripgrep(checks, ctx, extract_dir, args.skip_native_audit, mode)
     _check_cli(checks, ctx, extract_dir, mode)
     cli_dir_check = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
