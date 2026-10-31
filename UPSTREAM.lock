@@ -1,0 +1,7 @@
+# Verified public GitHub branch snapshots at 2026-10-31 (source metadata)
+OPENCODE_REPO=https://github.com/anomalyco/opencode.git
+OPENCODE_REF=e8238bae9b807b72ecfc75afd3a9fe2e6b07b944
+BUN_REPO=https://github.com/oven-sh/bun.git
+BUN_REF=d7d941c045fe75950910a93752603ca86c2731a4
+# OpenCode dev package.json and packages/cli/package.json observed at v2.2.5 with Bun 1.4.4.
+# Keep builds pinned to commit IDs, record any subsequent upstream upgrade in a new commit.

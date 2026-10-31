@@ -1,0 +1,47 @@
+name: iOS Toolchain and Rootless Packaging Probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/ios-toolchain-smoke.yml'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  toolchain-probe:
+    name: iPhoneOS arm64 smoke binary (NOT OpenCode CLI)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run static audit unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Select Xcode and discover SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+      - name: Install packaging/signing tools
+        run: brew install dpkg ldid
+      - name: Build, audit and sign probe
+        run: bash scripts/build-ios-smoke.sh
+      - name: Package rootless probe
+        run: bash scripts/package-rootless.sh
+      - name: Inspect archive contents and metadata
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg-deb --contents dist/*.deb
+          cat dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-rootless-toolchain-probe-NOT-opencode
+          path: |
+            dist/opencode-ios-toolchain-probe*.deb
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

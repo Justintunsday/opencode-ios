@@ -1,0 +1,1 @@
+Store minimal, reviewed patches to the pinned macOS ARM64 upstream source here. Prefer small source-level OS adaptors and patches over binary rewriting. Each patch must document its upstream commit, required iOS SDK version, test command, and why the macOS implementation does not work on iPhoneOS.
