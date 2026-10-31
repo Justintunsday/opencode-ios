@@ -1,0 +1,47 @@
+name: iOS JIT memory probe dylib
+
+# Builds a tiny arm64-apple-ios dylib that reports, at injection time, which
+# executable-memory primitives are permitted on the jailbroken target device.
+# It is a diagnostic artifact only; it is never shipped in the .deb.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/jit-probe/**'
+      - '.github/workflows/jit-probe.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build iOS JIT probe dylib (diagnostic only)
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dylib for arm64-apple-ios
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          mkdir -p dist
+          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
+            -O2 -Wall -Wextra -dynamiclib -o dist/libjitprobe.dylib scripts/jit-probe/probe.c
+          file dist/libjitprobe.dylib
+          xcrun otool -L dist/libjitprobe.dylib
+      - name: Sign with ldid and validate
+        run: |
+          set -euo pipefail
+          brew install ldid >/dev/null 2>&1 || true
+          ldid -S dist/libjitprobe.dylib
+          python3 scripts/check_macho.py dist/libjitprobe.dylib --max-minos 16.1.1 || true
+          shasum -a 256 dist/libjitprobe.dylib | tee dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-jit-probe
+          path: |
+            dist/libjitprobe.dylib
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
