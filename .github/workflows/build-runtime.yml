@@ -1,0 +1,250 @@
+name: Build iOS Node.js runtime
+
+# Compiles Node.js 22.9.0 from the pinned nodejs-mobile source as a native
+# iPhoneOS arm64 CLI executable (`node`), ldid-signs it and statically audits
+# the Mach-O. GitHub-hosted macOS runners CANNOT execute iPhoneOS binaries, so
+# device execution is always UNVERIFIED ON DEVICE (see docs/RUNTIME_BUILD.md).
+#
+# Artifact contract (consumed by package-rootless.yml): `ios-node-runtime`
+# containing node, entitlements.plist, runtime-manifest.json, SHA256SUMS.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cache_epoch:
+        description: "Bump to invalidate the cached out/Release build tree"
+        required: false
+        default: "1"
+        type: string
+  push:
+    paths:
+      - 'patches/nodejs-mobile/**'
+      - 'scripts/build-ios-runtime.sh'
+      - 'scripts/ios-runtime/**'
+      - '.github/workflows/build-runtime.yml'
+
+permissions:
+  contents: read
+
+# Never cancel an in-flight ~1h native build because of a follow-up push.
+concurrency:
+  group: build-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_MOBILE_REPO: nodejs-mobile/nodejs-mobile
+  NODE_MOBILE_COMMIT: 106c51f95d55d1010de56a2ffd09bfb4ba819a47
+  NODE_VERSION: 22.9.0
+  XCODE_VERSION: "16.4"
+  NODEJS_MOBILE_DIR: nodejs-mobile
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  build-runtime:
+    name: Node.js 22.9.0 iPhoneOS arm64 (static audit; NOT device-verified)
+    runs-on: macos-15
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned nodejs-mobile source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.NODE_MOBILE_REPO }}
+          ref: ${{ env.NODE_MOBILE_COMMIT }}
+          path: ${{ env.NODEJS_MOBILE_DIR }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned commit and apply nodejs-mobile build fixes
+        run: |
+          set -euo pipefail
+          echo "RUNTIME_BUILD_START_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          cd "$NODEJS_MOBILE_DIR"
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$NODE_MOBILE_COMMIT" ]; then
+            echo "::error::pinned nodejs-mobile commit mismatch: got $actual"
+            exit 1
+          fi
+          echo "nodejs-mobile commit: $actual"
+          patch_file="$(ls "$GITHUB_WORKSPACE"/patches/nodejs-mobile/0001-*.patch)"
+          echo "patch: $patch_file"
+          shasum -a 256 "$patch_file"
+          git apply --check --verbose "$patch_file"
+          git apply --verbose "$patch_file"
+          echo "--- patched files ---"
+          git status --short
+          git diff --stat
+
+      - name: Free disk space on runner
+        run: |
+          echo "Before cleanup:"
+          df -h
+          sudo rm -rf /Library/Frameworks/Mono.framework
+          sudo rm -rf /Library/Frameworks/Xamarin.iOS.framework
+          sudo rm -rf /Library/Frameworks/Xamarin.Android.framework
+          sudo rm -rf /Users/runner/Library/Android
+          sudo rm -rf /usr/local/share/powershell
+          sudo find /Applications -type d -name "Xcode_*.app" ! -name "Xcode_$XCODE_VERSION.app" -prune -exec rm -rf "{}" \;
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/Caskroom/android-sdk
+          sudo rm -rf /usr/local/Caskroom/android-ndk
+          sudo rm -rf "$ANDROID_HOME" || true
+          sudo rm -rf "$ANDROID_SDK_ROOT" || true
+          sudo rm -rf /Users/runner/Library/Caches/Homebrew
+          sudo rm -rf /usr/local/Homebrew/Library/Taps
+          sudo rm -rf /usr/local/share/dotnet
+          sudo rm -rf /usr/local/lib/node_modules
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          echo "After cleanup:"
+          df -h
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        uses: mobiledevops/xcode-select-version-action@v1
+        with:
+          xcode-select-version: ${{ env.XCODE_VERSION }}
+
+      - name: Show toolchain versions
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcode-select -p
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-version
+          python3 --version
+          python3.12 --version
+          sw_vers
+          sysctl -n hw.ncpu
+
+      - name: Set up Python 3.12 virtualenv for the bundled node-gyp
+        # Node 22.9's configure.py needs setuptools because Python 3.12 removed
+        # distutils (nodejs-mobile/node-gyp#2869 workaround). The `configure`
+        # shim prefers the newest python3.x on PATH, so the venv also shadows
+        # python3.13 (used by the runner image) to guarantee setuptools is seen.
+        run: |
+          set -euo pipefail
+          python3.12 -m venv "$RUNNER_TEMP/node-build-venv"
+          source "$RUNNER_TEMP/node-build-venv/bin/activate"
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade setuptools
+          ln -sf python "$RUNNER_TEMP/node-build-venv/bin/python3.13"
+          ln -sf python "$RUNNER_TEMP/node-build-venv/bin/python3.11"
+          echo "$RUNNER_TEMP/node-build-venv/bin" >> "$GITHUB_PATH"
+          python -c 'import setuptools, sys; print("venv python", sys.version.split()[0], "setuptools", setuptools.__version__)'
+
+      - name: Install ldid (iOS ad-hoc signing)
+        run: |
+          set -euo pipefail
+          brew install ldid
+          ldid -e /bin/ls >/dev/null 2>&1 || true
+          echo "ldid installed: $(command -v ldid)"
+
+      - name: Enable sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Compute patch hash for cache key
+        id: cache-inputs
+        run: |
+          set -euo pipefail
+          patch_sha="$(shasum -a 256 patches/nodejs-mobile/*.patch | awk '{print $1}')"
+          echo "patch_sha256=$patch_sha" >> "$GITHUB_OUTPUT"
+          echo "patch sha256: $patch_sha"
+
+      - name: Restore nodejs-mobile out/Release build cache
+        id: cache-build
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.NODEJS_MOBILE_DIR }}/out/Release
+          key: ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '1' }}-${{ steps.cache-inputs.outputs.patch_sha256 }}
+          restore-keys: |
+            ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '1' }}-
+
+      - name: Configure Node.js 22.9.0 for iPhoneOS arm64 (fast gate)
+        # Runs ./configure (which also generates out/Makefile via the bundled
+        # gyp) and fails in minutes on patch/flag/toolchain errors.
+        run: bash scripts/build-ios-runtime.sh configure
+
+      - name: Build Node.js 22.9.0 iPhoneOS arm64 runtime
+        # Full native compile+link; the first cold run is the long step
+        # (40-90 min). Incremental when the out/Release cache was restored.
+        run: bash scripts/build-ios-runtime.sh build
+
+      - name: Sign, statically validate and package ios-node-runtime
+        run: bash scripts/build-ios-runtime.sh package
+
+      - name: Check whether the build tree exists for caching
+        id: outdir
+        if: always()
+        run: |
+          if [ -d "$NODEJS_MOBILE_DIR/out/Release" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save nodejs-mobile out/Release build cache
+        # Save even on failure so the next debugging run is incremental.
+        if: always() && steps.cache-build.outputs.cache-hit != 'true' && steps.outdir.outputs.exists == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.NODEJS_MOBILE_DIR }}/out/Release
+          key: ${{ steps.cache-build.outputs.cache-primary-key }}
+
+      - name: Write build summary
+        if: always()
+        run: |
+          mkdir -p dist/ios-node-runtime
+          {
+            echo "# iOS Node.js runtime build summary"
+            echo
+            echo "- workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- nodejs-mobile commit: $NODE_MOBILE_COMMIT"
+            echo "- Node.js: $NODE_VERSION"
+            echo "- Xcode: $XCODE_VERSION"
+            echo "- cache hit: ${{ steps.cache-build.outputs.cache-hit }}"
+            echo "- build tree cached: ${{ steps.outdir.outputs.exists }}"
+            echo
+            if [ -f dist/ios-node-runtime/runtime-manifest.json ]; then
+              echo "## runtime manifest"
+              echo '```json'
+              cat dist/ios-node-runtime/runtime-manifest.json
+              echo '```'
+              echo
+              echo "## SHA256SUMS"
+              echo '```'
+              cat dist/ios-node-runtime/SHA256SUMS
+              echo '```'
+              echo
+              echo "device execution: **UNVERIFIED ON DEVICE** (hosted runner cannot run iOS binaries)"
+            else
+              echo "No ios-node-runtime artifact was produced by this run (see the failing step's log)."
+            fi
+          } | tee dist/ios-node-runtime/build-summary.txt
+          {
+            echo "### ios-node-runtime"
+            echo
+            cat dist/ios-node-runtime/build-summary.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ios-node-runtime artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-node-runtime
+          path: |
+            dist/ios-node-runtime/node
+            dist/ios-node-runtime/entitlements.plist
+            dist/ios-node-runtime/runtime-manifest.json
+            dist/ios-node-runtime/SHA256SUMS
+            dist/ios-node-runtime/validation-report.txt
+            dist/ios-node-runtime/file.txt
+            dist/ios-node-runtime/check-macho-signed.txt
+            dist/ios-node-runtime/vtool-signed.txt
+            dist/ios-node-runtime/otool-L-signed.txt
+            dist/ios-node-runtime/entitlements-signed.xml
+            dist/ios-node-runtime/build-summary.txt
+          if-no-files-found: error
+          retention-days: 30
