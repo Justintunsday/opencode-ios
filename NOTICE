@@ -1,0 +1,82 @@
+OpenCode iOS port — NOTICE and upstream attribution
+===================================================
+
+This repository (https://github.com/Justintunsday/opencode-ios) is an
+independent, community port of the OpenCode CLI to jailbroken iOS (rootless).
+It is not affiliated with, sponsored by, or endorsed by anomalyco, the OpenCode
+project, the Node.js project, or Apple Inc. "OpenCode", "Node.js", "iOS",
+"Dopamine", "Sileo", "NewTerm" and other names are used only for identification
+and belong to their respective owners.
+
+Licensing of this repository
+----------------------------
+
+All original code in this repository (GitHub Actions workflows, packaging
+scripts, Python verification tooling, launcher, maintainer scripts and docs) is
+licensed under the MIT License — Copyright (c) 2026 OpenCode iOS port
+contributors. See the LICENSE file. Upstream software is not re-licensed here;
+the upstream licenses below apply to the upstream components.
+
+OpenCode (upstream CLI source and documentation)
+-----------------------------------------------
+
+Project:  OpenCode — https://github.com/anomalyco/opencode
+License:  MIT License
+Copyright (c) 2025 anomalyco/opencode contributors
+Pinned:   UPSTREAM.lock -> OPENCODE_REF=e8238bae9b807b72ecfc75afd3a9fe2e6b07b944
+          (v2.2.5, bundled into the .deb as the Vite Node.js bundle opencode.mjs
+          plus assets; full MIT text is reproduced in LICENSE and in the
+          packaged /var/jb/usr/share/doc/opencode/copyright)
+
+The upstream repository is consumed as an external dependency and adapted only
+through patches applied to a clean checkout at CI time. Upstream history, files
+and license notices are preserved; no upstream repository is modified.
+
+Node.js and nodejs-mobile (native iPhoneOS runtime)
+--------------------------------------------------
+
+Project:  Node.js — https://github.com/nodejs/node  (v22.9.0)
+          nodejs-mobile — https://github.com/nodejs-mobile/nodejs-mobile
+          branch update22-9-0, commit 106c51f95d55d1010de56a2ffd09bfb4ba819a47,
+          plus build fixes from nodejs-mobile PR #150
+License:  MIT License — Copyright Node.js contributors; nodejs-mobile
+          contributors
+Shipped:  /var/jb/usr/lib/opencode/runtime/node (arm64 iPhoneOS build)
+
+The Node.js binary statically includes third-party components that carry their
+own licenses; they are NOT sublicensed under this repository's MIT license. The
+authoritative list is the LICENSE file of Node.js v22.9.0
+(https://github.com/nodejs/node/blob/v22.9.0/LICENSE), which includes among
+others:
+
+  * V8 (BSD-3-Clause, Copyright the V8 project authors)
+  * OpenSSL (Apache-2.0, Copyright the OpenSSL project authors)
+  * ICU (Unicode License, Copyright Unicode, Inc. and others)
+  * libuv (MIT, Copyright libuv contributors)
+  * zlib (zlib License, Copyright Jean-loup Gailly and Mark Adler)
+  * c-ares (MIT), llhttp (MIT), nghttp2 (MIT), nghttp3 (MIT),
+    ngtcp2 (MIT), undici (MIT), and the npm toolchain (Artistic-2.0)
+
+Bun (host build tool only — NOT shipped)
+----------------------------------------
+
+Project:  Bun — https://github.com/oven-sh/bun
+License:  MIT License — Copyright Oven
+Pinned:   UPSTREAM.lock -> BUN_REF=d7d941c045fe75950910a93752603ca86c2731a4
+          (Bun 1.4.4, used on the macOS CI runner to run upstream OpenCode build
+          scripts; it is not packaged and not part of the iOS runtime)
+
+Packaged attribution
+--------------------
+
+`OpenCode-iOS-rootless.deb` installs a Debian-format copyright/attribution file
+at /var/jb/usr/share/doc/opencode/copyright (plus LICENSE, README.md,
+INSTALL.md, VERIFICATION.md and KNOWN_LIMITATIONS.md), so the attribution travels
+with the binary distribution.
+
+Secrets
+-------
+
+No API keys, tokens, private keys or credentials are stored in this repository or
+embedded in the package. Provider authentication is configured by the user at
+runtime (`opencode auth login`) and stored in the user's home directory.

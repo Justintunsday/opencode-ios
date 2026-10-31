@@ -1,0 +1,25 @@
+Package: opencode
+Version: @VERSION@
+Architecture: iphoneos-arm64
+Maintainer: @MAINTAINER@
+Installed-Size: @INSTALLED_SIZE@
+Section: Development
+Priority: optional
+Depends: firmware (>= 15.0)
+Homepage: https://github.com/Justintunsday/opencode-ios
+Description: OpenCode v2 CLI for jailbroken iOS (rootless, /var/jb)
+ OpenCode is an open-source AI coding agent for the terminal. This package
+ ships the upstream OpenCode v2 CLI through its official Node.js build path
+ running on a native iPhoneOS arm64 Node.js 22.9.0 runtime. Everything is
+ installed rootless beneath /var/jb, so it does not modify the iOS system
+ partition.
+ .
+ Target device for this build: iPhone SE (2nd generation), arm64, iOS 16.1.1
+ with the Dopamine rootless jailbreak; the launcher is /var/jb/usr/bin/opencode.
+ .
+ Features that depend on native addons without iPhoneOS builds (interactive
+ PTY terminal panes, native file watchers, ffi/fff) are disabled or degrade
+ to documented fallbacks. See the packaged KNOWN_LIMITATIONS.md.
+ .
+ Device execution is UNVERIFIED ON DEVICE by CI. Run the packaged
+ device-smoke.sh and see /var/jb/usr/share/doc/opencode/VERIFICATION.md.

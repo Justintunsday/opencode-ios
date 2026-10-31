@@ -1,0 +1,74 @@
+#!/bin/sh
+# OpenCode iOS (rootless) launcher.
+#
+# Installed at /var/jb/usr/bin/opencode by the OpenCode-iOS-rootless .deb.
+# Runs the bundled native iPhoneOS Node.js runtime on the OpenCode CLI bundle.
+# Everything is addressed with absolute paths; no shell beyond POSIX sh, no zsh,
+# no network access and no credentials are involved here.
+#
+# Runtime defaults (see docs/VERIFICATION.md and docs/KNOWN_LIMITATIONS.md):
+#   * The Node.js 22.9.0 iPhoneOS runtime shipped in v1 is built with V8 JIT
+#     disabled (`--v8-options=--jitless`) and WebAssembly disabled. Do not
+#     expect TurboFan/WASM to be available on this runtime.
+#   * --experimental-sqlite is required on Node 22.9 for `node:sqlite`; the CLI
+#     bundle imports it.
+#   * --no-warnings / --disable-warning=ExperimentalWarning keep CLI output clean.
+#   * --max-old-space-size=1536 is a conservative default for 2-3 GB iPhones so
+#     a large session cannot push the process into jetsam before V8 GC notices.
+#
+# Optional environment overrides (all documented in docs/INSTALL.md):
+#   OPENCODE_IOS_JITLESS=1        add --jitless explicitly. The v1 runtime is
+#                                 already jitless, so this is diagnostic parity
+#                                 for future JIT-enabled runtimes; it cannot
+#                                 re-enable JIT.
+#   OPENCODE_IOS_NODE_FLAGS=...   extra Node/V8 flags (word-split), e.g.
+#                                 OPENCODE_IOS_NODE_FLAGS="--trace-warnings"
+#   OPENCODE_IOS_MAX_OLD_SPACE_MB V8 old-space cap in MiB (default 1536)
+#   OPENCODE_IOS_PREFIX           install prefix (default /var/jb); used for
+#                                 host-side smoke tests of this launcher
+#   OPENCODE_IOS_NODE             alternate node binary (host smoke tests only)
+#
+# OPENCODE_NODE_ASSETS_DIR and OPENCODE_IOS are exported for the CLI prelude.
+# Provider credentials are NOT stored here: use `opencode auth login`.
+set -e
+
+PREFIX="${OPENCODE_IOS_PREFIX:-/var/jb}"
+LIB="$PREFIX/usr/lib/opencode"
+NODE="${OPENCODE_IOS_NODE:-$LIB/runtime/node}"
+CLI="$LIB/cli/opencode.mjs"
+ASSETS="$LIB/cli/assets"
+
+if [ ! -x "$NODE" ]; then
+    echo "opencode: native runtime not found or not executable: $NODE" >&2
+    echo "opencode: reinstall OpenCode-iOS-rootless.deb (dpkg -i ...)." >&2
+    exit 127
+fi
+
+if [ ! -f "$CLI" ]; then
+    echo "opencode: CLI bundle not found: $CLI" >&2
+    echo "opencode: reinstall OpenCode-iOS-rootless.deb (dpkg -i ...)." >&2
+    exit 127
+fi
+
+OPENCODE_NODE_ASSETS_DIR="$ASSETS"
+OPENCODE_IOS=1
+export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS
+
+MAX_OLD_SPACE="${OPENCODE_IOS_MAX_OLD_SPACE_MB:-1536}"
+
+# Node flags must precede the entry script; CLI arguments follow the script
+# path, so "$@" is preserved verbatim for the CLI.
+set -- --experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings \
+    "--max-old-space-size=$MAX_OLD_SPACE" "$CLI" "$@"
+
+if [ "${OPENCODE_IOS_JITLESS:-0}" = "1" ]; then
+    set -- --jitless "$@"
+fi
+
+if [ -n "${OPENCODE_IOS_NODE_FLAGS:-}" ]; then
+    # Intentional word splitting: OPENCODE_IOS_NODE_FLAGS is a list of flags.
+    # shellcheck disable=SC2086
+    set -- $OPENCODE_IOS_NODE_FLAGS "$@"
+fi
+
+exec "$NODE" "$@"

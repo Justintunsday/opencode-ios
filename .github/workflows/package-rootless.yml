@@ -1,0 +1,287 @@
+name: Package rootless iOS .deb
+
+# Assembles OpenCode-iOS-rootless.deb from the latest successful upstream build
+# artifacts (never rebuilds them), validates it statically, and publishes:
+#   OpenCode-iOS-rootless / OpenCode-iOS-rootless.deb + SHA256SUMS + package-report.json
+#
+# No device execution happens here: hosted CI cannot run iOS arm64 binaries.
+# Device verification is UNVERIFIED ON DEVICE and documented in the reports.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_run_id:
+        description: "Pin the build-runtime.yml run id (default: latest successful run with ios-node-runtime)"
+        required: false
+        type: string
+      opencode_run_id:
+        description: "Pin the build-opencode.yml run id (default: latest successful run with opencode-cli-node-ios)"
+        required: false
+        type: string
+      self_test:
+        description: "Bootstrap ONLY: run the packaging scripts against synthetic placeholder inputs (never publishes a package)"
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "scripts/package-ios.sh"
+      - "scripts/validate-port.sh"
+      - "scripts/smoke-bundle-host.sh"
+      - "scripts/check_macho.py"
+      - "docs/INSTALL.md"
+      - "docs/VERIFICATION.md"
+      - "docs/KNOWN_LIMITATIONS.md"
+      - "LICENSE"
+      - "NOTICE"
+      - ".github/workflows/package-rootless.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: package-rootless-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------------
+  # Scripts self-test. Exercises packaging/validation scripts with synthetic
+  # placeholder inputs on the runner (compile-only iOS Mach-O, fake CLI). It is
+  # intentionally marked failed at the end so a self-test run can never be
+  # mistaken for (or consumed as) a real package build.
+  # ------------------------------------------------------------------------
+  self-test:
+    name: "Scripts self-test (synthetic placeholders, NOT a package)"
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.self_test }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          python3 --version
+
+      - name: Install dpkg (Debian packaging tools)
+        run: |
+          brew install dpkg
+          dpkg-deb --version
+
+      - name: Build synthetic placeholder inputs and run negative tests
+        run: bash packaging/verify/self_test.sh --work-dir .self-test
+
+      - name: Assemble package tree and .deb from placeholder inputs
+        run: |
+          set -euo pipefail
+          bash scripts/package-ios.sh \
+            --runtime-dir .self-test/artifacts/runtime \
+            --opencode-dir .self-test/artifacts/opencode \
+            --ripgrep-dir .self-test/artifacts/ripgrep \
+            --out-dir .self-test/dist \
+            --runtime-run-id 0 \
+            --opencode-run-id 0 \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --self-test
+
+      - name: Validate the placeholder package (script-path coverage only)
+        run: |
+          set -euo pipefail
+          bash scripts/validate-port.sh \
+            --deb .self-test/dist/OpenCode-iOS-rootless.deb \
+            --mode self-test \
+            --out-dir .self-test/verification \
+            --artifact-dir .self-test/dist \
+            --contents-manifest .self-test/dist/contents-manifest.json \
+            --sources .self-test/dist/package-sources.json
+
+      - name: Self-test report
+        if: always()
+        run: |
+          {
+            echo "## Scripts self-test (NOT a package)"
+            echo ""
+            echo "> This run exercised the packaging + validation scripts with synthetic"
+            echo "> placeholder inputs. It is **not** the OpenCode package and is"
+            echo "> intentionally reported as failed so it can never be consumed as a"
+            echo "> successful packaging run."
+            echo ""
+            if [ -f .self-test/verification/verification-report.md ]; then
+              cat .self-test/verification/verification-report.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse to report success (self-test is not a package)
+        if: always()
+        run: |
+          echo "::error::SELF-TEST ONLY — synthetic placeholder inputs were used. This is NOT OpenCode-iOS-rootless and must not be consumed as a package build. A real packaging run requires green build-runtime.yml and build-opencode.yml artifacts."
+          exit 1
+
+  # ------------------------------------------------------------------------
+  # Real package build.
+  # ------------------------------------------------------------------------
+  package:
+    name: Assemble, validate and upload OpenCode-iOS-rootless.deb
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.self_test }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner toolchain and repository state
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          python3 --version
+          echo "commit: $(git rev-parse HEAD)"
+
+      - name: Install dpkg (Debian packaging tools)
+        run: |
+          brew install dpkg
+          dpkg-deb --version
+
+      - name: Resolve ios-node-runtime build run
+        id: resolve-runtime
+        env:
+          RUNTIME_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_run_id || '' }}
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            build-runtime.yml ios-node-runtime runtime "$RUNTIME_RUN_ID_INPUT"
+
+      - name: Resolve opencode-cli-node-ios build run
+        id: resolve-opencode
+        env:
+          OPENCODE_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.opencode_run_id || '' }}
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            build-opencode.yml opencode-cli-node-ios opencode "$OPENCODE_RUN_ID_INPUT"
+
+      - name: Resolve optional ios-ripgrep artifact (skipped gracefully if absent)
+        id: resolve-ripgrep
+        env:
+          RIPGREP_RUN_ID_INPUT: ""
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            build-runtime.yml ios-ripgrep ripgrep "$RIPGREP_RUN_ID_INPUT" --optional
+
+      - name: Download ios-node-runtime artifact
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/runtime
+          gh run download "${{ steps.resolve-runtime.outputs.runtime_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n ios-node-runtime -D .artifacts/runtime
+          find .artifacts/runtime -maxdepth 3 -type f | sort | head -n 40
+
+      - name: Download opencode-cli-node-ios artifact
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/opencode
+          gh run download "${{ steps.resolve-opencode.outputs.opencode_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n opencode-cli-node-ios -D .artifacts/opencode
+          find .artifacts/opencode -maxdepth 3 -type f | sort | head -n 40
+
+      - name: Download optional ios-ripgrep artifact
+        if: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_id != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/ripgrep
+          gh run download "${{ steps.resolve-ripgrep.outputs.ripgrep_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n ios-ripgrep -D .artifacts/ripgrep
+          find .artifacts/ripgrep -maxdepth 2 -type f | sort
+
+      - name: Assemble rootless .deb
+        env:
+          RUNTIME_RUN_ID: ${{ steps.resolve-runtime.outputs.runtime_run_id }}
+          RUNTIME_RUN_URL: ${{ steps.resolve-runtime.outputs.runtime_run_url }}
+          OPENCODE_RUN_ID: ${{ steps.resolve-opencode.outputs.opencode_run_id }}
+          OPENCODE_RUN_URL: ${{ steps.resolve-opencode.outputs.opencode_run_url }}
+          RIPGREP_RUN_ID: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_id }}
+          RIPGREP_RUN_URL: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          set -- bash scripts/package-ios.sh \
+            --runtime-dir .artifacts/runtime \
+            --opencode-dir .artifacts/opencode \
+            --out-dir dist \
+            --runtime-run-id "$RUNTIME_RUN_ID" \
+            --runtime-run-url "$RUNTIME_RUN_URL" \
+            --opencode-run-id "$OPENCODE_RUN_ID" \
+            --opencode-run-url "$OPENCODE_RUN_URL" \
+            --run-url "$RUN_URL"
+          if [ -n "${RIPGREP_RUN_ID:-}" ] && [ -d .artifacts/ripgrep ]; then
+            set -- "$@" --ripgrep-dir .artifacts/ripgrep \
+              --ripgrep-run-id "$RIPGREP_RUN_ID" \
+              --ripgrep-run-url "$RIPGREP_RUN_URL"
+          fi
+          "$@"
+
+      - name: Validate package (Mach-O, dylibs, layout, scripts, host smoke)
+        run: |
+          set -euo pipefail
+          bash scripts/validate-port.sh \
+            --deb dist/OpenCode-iOS-rootless.deb \
+            --mode package \
+            --out-dir dist \
+            --artifact-dir dist \
+            --contents-manifest dist/contents-manifest.json \
+            --sources dist/package-sources.json \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Run summary
+        if: always()
+        run: |
+          {
+            echo "## OpenCode-iOS-rootless package build"
+            echo ""
+            echo "Runtime run: ${{ steps.resolve-runtime.outputs.runtime_run_url }}"
+            echo "CLI run:     ${{ steps.resolve-opencode.outputs.opencode_run_url }}"
+            if [ -n "${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}" ]; then
+              echo "ripgrep run: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}"
+            fi
+            echo ""
+            if [ -f dist/verification-report.md ]; then
+              cat dist/verification-report.md
+            else
+              echo "_No verification report was produced._"
+            fi
+            echo ""
+            echo "### Package checksum"
+            echo '```'
+            cat dist/SHA256SUMS 2>/dev/null || echo "(SHA256SUMS missing)"
+            echo '```'
+            echo ""
+            echo "**DEVICE TESTS: NOT PERFORMED (requires real iPhone)** — device execution is \`UNVERIFIED ON DEVICE\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Confirm packaging did not modify tracked files
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::packaging modified tracked repository files"
+            git status --porcelain
+            exit 1
+          fi
+          echo "working tree clean (build outputs are ignored)"
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenCode-iOS-rootless
+          path: |
+            dist/OpenCode-iOS-rootless.deb
+            dist/SHA256SUMS
+            dist/package-report.json
+          if-no-files-found: error
+          retention-days: 14

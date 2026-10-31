@@ -1,0 +1,53 @@
+#!/bin/sh
+# OpenCode iOS (rootless) — post-installation maintainer script.
+#
+# Invariants:
+#   * idempotent: safe to run on install, reinstall and upgrade,
+#   * no network access, no package manager calls,
+#   * no assumptions beyond the environment dpkg itself provides,
+#   * only touches the rootless prefix /var/jb.
+set -e
+
+JB_ROOT=/var/jb
+BIN="$JB_ROOT/usr/bin/opencode"
+LIB="$JB_ROOT/usr/lib/opencode"
+RUNTIME="$LIB/runtime"
+CLI="$LIB/cli"
+DOC="$JB_ROOT/usr/share/doc/opencode"
+
+# dpkg records the modes from the archive, but re-assert the critical ones so an
+# interrupted extraction, a copy through a non-preserving transfer, or a
+# reinstall repairs the installation. Each step is individually best-effort.
+chmod 0755 "$BIN" 2>/dev/null || true
+chmod 0755 "$RUNTIME/node" 2>/dev/null || true
+chmod 0644 "$RUNTIME/entitlements.xml" 2>/dev/null || true
+chmod 0644 "$RUNTIME/runtime-manifest.json" 2>/dev/null || true
+
+for f in "$CLI/opencode.mjs" "$CLI/bundle-manifest.json"; do
+    if [ -f "$f" ]; then
+        chmod 0644 "$f" 2>/dev/null || true
+    fi
+done
+
+# The JS bundle assets are read-only data; keep directories traversable and
+# files non-executable regardless of how they arrived on the device.
+if [ -d "$CLI/assets" ]; then
+    find "$CLI/assets" -type d -exec chmod 0755 {} \; 2>/dev/null || true
+    find "$CLI/assets" -type f -exec chmod 0644 {} \; 2>/dev/null || true
+fi
+
+if [ -f "$DOC/device-smoke.sh" ]; then
+    chmod 0755 "$DOC/device-smoke.sh" 2>/dev/null || true
+fi
+
+if [ -x "$BIN" ] && [ -x "$RUNTIME/node" ] && [ -f "$CLI/opencode.mjs" ]; then
+    echo "OpenCode iOS installed (rootless, /var/jb)."
+    echo "Verify with: opencode --version   then: opencode --help"
+    echo "On-device smoke test: sh $DOC/device-smoke.sh"
+    echo "If the CLI is killed at startup, retry with OPENCODE_IOS_JITLESS=1; see $DOC/INSTALL.md"
+else
+    echo "opencode: warning: expected package files are missing after installation." >&2
+    echo "opencode: the package may be incompletely extracted; reinstall OpenCode-iOS-rootless.deb." >&2
+fi
+
+exit 0

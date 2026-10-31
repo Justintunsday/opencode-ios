@@ -1,0 +1,117 @@
+name: Port verification (CI-runnable checks)
+
+# Validates the most recent successful OpenCode-iOS-rootless package artifact
+# without rebuilding anything. Runs every CI-runnable validation and writes a
+# `port-verification` artifact:
+#   verification-report.json, verification-report.md, check-results.json,
+#   unittest.log, host-smoke.json, extract-manifest.json, deb-info/contents.
+#
+# Hosted macOS runners cannot execute iOS arm64 binaries. Device-only tests are
+# listed as UNVERIFIED ON DEVICE in the report — never as passing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: "Pin the package-rootless.yml run id (default: latest successful run with OpenCode-iOS-rootless)"
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - "tests/**"
+      - "scripts/validate-port.sh"
+      - "scripts/smoke-bundle-host.sh"
+      - "scripts/check_macho.py"
+      - "packaging/**"
+      - "docs/VERIFICATION.md"
+      - ".github/workflows/test-port.yml"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: test-port-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Static + host-runtime validation of the latest package artifact
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner toolchain
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          python3 --version
+
+      - name: Install dpkg (independent Debian package tooling checks)
+        run: |
+          brew install dpkg
+          dpkg-deb --version
+
+      - name: Resolve latest successful package-rootless run
+        id: resolve-package
+        env:
+          PACKAGE_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.package_run_id || '' }}
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            package-rootless.yml OpenCode-iOS-rootless package "$PACKAGE_RUN_ID_INPUT"
+
+      - name: Download package artifact
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/package
+          gh run download "${{ steps.resolve-package.outputs.package_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n OpenCode-iOS-rootless -D .artifacts/package
+          ls -la .artifacts/package
+          echo "--- SHA256SUMS ---"
+          cat .artifacts/package/SHA256SUMS
+
+      - name: Run CI-runnable verification suite
+        id: verify
+        run: |
+          set -euo pipefail
+          bash scripts/validate-port.sh \
+            --deb .artifacts/package/OpenCode-iOS-rootless.deb \
+            --mode verify \
+            --out-dir verification \
+            --artifact-dir .artifacts/package \
+            --package-report .artifacts/package/package-report.json \
+            --run-id "${{ steps.resolve-package.outputs.package_run_id }}" \
+            --run-url "${{ steps.resolve-package.outputs.package_run_url }}"
+
+      - name: Annotate run summary (device status is never PASS)
+        if: always()
+        run: |
+          {
+            echo ""
+            echo "### Package artifact"
+            echo ""
+            echo "From package run: ${{ steps.resolve-package.outputs.package_run_url }}"
+            echo ""
+            echo '```'
+            cat .artifacts/package/SHA256SUMS 2>/dev/null || echo "(no SHA256SUMS)"
+            echo '```'
+            echo ""
+            echo "**DEVICE TESTS: NOT PERFORMED (requires real iPhone)** — \`UNVERIFIED ON DEVICE\`."
+            echo "Device-only checks are listed in verification-report.md and must be run"
+            echo "on the iPhone SE 2 (iOS 16.1.1, Dopamine rootless)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload port-verification artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: port-verification
+          path: verification/
+          if-no-files-found: error
+          retention-days: 14

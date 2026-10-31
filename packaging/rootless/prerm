@@ -1,0 +1,19 @@
+#!/bin/sh
+# OpenCode iOS (rootless) — pre-removal maintainer script.
+#
+# Stop-time invariant: remove/upgrade must never delete user data. Provider
+# credentials, configuration (~/.config/opencode) and session history are owned
+# by the invoking user and are intentionally left untouched here.
+set -e
+
+JB_ROOT=/var/jb
+LIB="$JB_ROOT/usr/lib/opencode"
+
+# Nothing daemon-like runs in the background, so there is no service to stop and
+# no process to kill. A leftover package-local cache is cleaned by postrm.
+if [ -d "$LIB" ]; then
+    :
+fi
+
+echo "Removing OpenCode iOS CLI; user configuration and sessions are kept."
+exit 0
