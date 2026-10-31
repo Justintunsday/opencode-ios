@@ -1,0 +1,55 @@
+# OpenCode iOS port patch -- 0005
+# Title: Node 22.9 node:sqlite API fallbacks (setReturnArrays, loadExtension)
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Files: packages/core/src/database/sqlite.node.ts
+# Why: Node 22.9's experimental node:sqlite StatementSync has no setReturnArrays (added in
+#      a later Node line) and DatabaseSync has no loadExtension (added in 22.13+/23). The
+#      SQL client calls both; without the fallback the first query throws
+#      TypeError: setReturnArrays is not a function and the server answers 500 on /api/info
+#      and /api/model. Map object rows to column-ordered arrays when the API is missing and
+#      report extension loading as unavailable instead of throwing a TypeError.
+# Test: node --experimental-sqlite opencode.mjs models / session list on stock Node 22.9.0
+#       (starts the embedded server and runs schema bootstrap + queries).
+# Status: required for the iPhoneOS runtime; newer Node lines keep the array fast path.
+
+diff --git a/packages/core/src/database/sqlite.node.ts b/packages/core/src/database/sqlite.node.ts
+index 9053a0d..ca6f0b6 100644
+--- a/packages/core/src/database/sqlite.node.ts
++++ b/packages/core/src/database/sqlite.node.ts
+@@ -45,10 +45,19 @@ const make = (options: Config) =>
+       Effect.withFiber<ReadonlyArray<ReadonlyArray<unknown>>, SqlError>((fiber) => {
+         const statement = native.prepare(query)
+         statement.setReadBigInts(Context.get(fiber.context, SqlClient.SafeIntegers))
+-        statement.setReturnArrays(true)
++        // Node 22.9 (the iPhoneOS runtime) predates StatementSync#setReturnArrays
++        // (added in a later Node line). Fall back to object rows and map them to
++        // column-ordered arrays, which is what the SQL client expects.
++        const returnsArrays = typeof statement.setReturnArrays === "function"
++        if (returnsArrays) statement.setReturnArrays(true)
+         try {
++          const rows = statement.all(...(params as SQLInputValue[]))
+           return Effect.succeed(
+-            statement.all(...(params as SQLInputValue[])) as unknown as ReadonlyArray<ReadonlyArray<unknown>>,
++            (returnsArrays
++              ? (rows as unknown as ReadonlyArray<ReadonlyArray<unknown>>)
++              : (rows as Array<Record<string, unknown>>).map((row) => Object.values(row))) as ReadonlyArray<
++              ReadonlyArray<unknown>
++            >,
+           )
+         } catch (cause) {
+           return Effect.fail(
+@@ -62,7 +71,13 @@ const make = (options: Config) =>
+     const connection = Sqlite.makeConnection(run, runValues, {
+       loadExtension: (path: string) =>
+         Effect.try({
+-          try: () => native.loadExtension(path),
++          try: () => {
++            // Node 22.9's DatabaseSync has no loadExtension method.
++            if (typeof native.loadExtension !== "function") {
++              throw new Error("sqlite extension loading is not supported by this Node runtime")
++            }
++            native.loadExtension(path)
++          },
+           catch: (cause) =>
+             new SqlError({
+               reason: classifySqliteError(cause, { message: "Failed to load extension", operation: "loadExtension" }),

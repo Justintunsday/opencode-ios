@@ -48,18 +48,18 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     env:
-      # Bundle target: the Darwin arm64 code path of upstream's Node build.
-      # The iOS prelude is selected by OPENCODE_IOS (patch series, not upstream).
-      OPENCODE_TARGET: darwin-arm64
+      # Bundle target: iPhoneOS target of the patched upstream Node build. It reuses
+      # the Darwin code path but the patch series selects the non-SEA iOS prelude, the
+      # iOS-only asset set (no desktop native addons) and OPENCODE_IOS=1 behaviour.
+      OPENCODE_TARGET: ios-arm64
       OPENCODE_IOS: '1'
       # Stock host Node versions used for smoke testing. 22.9.0 is the version
       # the shipped iPhoneOS runtime is compiled from; 24.x/26.4.0 are
       # informational (upstream's supported Node build is 26.4.0).
       OPENCODE_NODE_MATRIX: '22.9.0 24.22.2 26.4.0'
-      # Version whose `--version`/`--help` must pass for this job to be green.
-      # Before the iOS patch series lands the bundle only runs on Node 26.4.0;
-      # after the patch series lands this becomes 22.9.0 (the device runtime).
-      OPENCODE_SMOKE_REQUIRED: '26.4.0'
+      # Version whose `--version`/`--help` (plus the deeper no-network commands) must
+      # pass for this job to be green: the shipped iPhoneOS runtime version.
+      OPENCODE_SMOKE_REQUIRED: '22.9.0'
     steps:
       - name: Checkout port repository
         uses: actions/checkout@v4

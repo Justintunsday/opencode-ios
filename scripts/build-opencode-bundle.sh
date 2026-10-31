@@ -226,13 +226,20 @@ cmd_smoke() {
   [ -f "$ARTIFACT_DIR/opencode.mjs" ] || die "artifact not staged (run: $0 stage)"
   mkdir -p "$BUILD_DIR" "$NODE_CACHE_DIR"
   log "host-Node smoke matrix: $NODE_MATRIX (required: $SMOKE_REQUIRED)"
-  # shellcheck disable=SC2086 # intentional word splitting of the version list
-  "$PYTHON" "$ROOT/src/opencode-ios/host_smoke.py" \
-    --bundle-dir "$ARTIFACT_DIR" \
-    --cache-dir "$NODE_CACHE_DIR" \
-    --report "$BUILD_DIR/smoke-report.json" \
-    --versions $NODE_MATRIX \
+  local -a versions
+  read -r -a versions <<<"$NODE_MATRIX"
+  local -a smoke_args=(
+    --bundle-dir "$ARTIFACT_DIR"
+    --cache-dir "$NODE_CACHE_DIR"
+    --report "$BUILD_DIR/smoke-report.json"
+    --versions "${versions[@]}"
     --require-version "$SMOKE_REQUIRED"
+  )
+  # Some local host environments have an unwritable system temp dir; CI does not.
+  if [ -n "${OPENCODE_SMOKE_WORK_ROOT:-}" ]; then
+    smoke_args+=(--work-root "$OPENCODE_SMOKE_WORK_ROOT")
+  fi
+  "$PYTHON" "$ROOT/src/opencode-ios/host_smoke.py" "${smoke_args[@]}"
   log "smoke report: $BUILD_DIR/smoke-report.json"
 }
 

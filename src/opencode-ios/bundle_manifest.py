@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -220,15 +221,33 @@ def collect_patches(patches_dir: str) -> dict[str, object]:
 
 
 def collect_signatures(artifact_dir: str) -> dict[str, object]:
-    """Detect whether the bundle still carries SEA/registerHooks-only startup code."""
+    """Inspect the generated bundle for startup code that Node 22.9 / iPhoneOS cannot load.
+
+    A *named* `import { registerHooks } from "node:module"` or
+    `import { getRawAsset } from "node:sea"` makes Node 22.9 throw a module
+    link SyntaxError before any code runs, so these are the load-bearing checks.
+    Property access (`nodeModule.registerHooks`) is fine and guarded.
+    """
     path = os.path.join(artifact_dir, "opencode.mjs")
     with open(path, "rb") as handle:
         data = handle.read()
+
+    def search(pattern: bytes) -> bool:
+        return re.search(pattern, data) is not None
+
+    shebang = data.split(b"\n", 1)[0].decode("utf-8", "replace")
     return {
-        "contains_registerHooks_call": b"registerHooks(" in data or b"registerHooks({" in data,
-        "contains_node_sea_import": b'from"node:sea"' in data or b"from 'node:sea'" in data or b"node:sea" in data,
-        "contains_experimental_ffi": b"--experimental-ffi" in data,
         "bytes": len(data),
+        "shebang": shebang,
+        "ios_prelude_marker": b"opencode-ios-prelude" in data,
+        "named_import_registerHooks": search(
+            rb"\{[^}]{0,120}registerHooks[^}]{0,120}\}\s*from\s*['\"]node:module['\"]"
+        ),
+        "named_import_node_sea_asset_api": search(
+            rb"\{[^}]{0,160}(?:getRawAsset|getAssetKeys)[^}]{0,160}\}\s*from\s*['\"]node:sea['\"]"
+        ),
+        "imports_node_sea": search(rb"from\s*['\"]node:sea['\"]"),
+        "prelude_uses_experimental_ffi": "--experimental-ffi" in shebang,
     }
 
 
@@ -257,7 +276,7 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
 
     native = int(bundle["assets"].get("categories", {}).get("native-binary", 0))
     notes: list[str] = []
-    if info.get("PATCHED", "0") != "1" and patches["count"] == 0:
+    if patches["count"] == 0:
         notes.append(
             "STOCK upstream build: no iOS patch series applied yet. The bundle was smoke-tested on host Node "
             "and is expected to fail on the shipped iPhoneOS runtime until the iOS prelude/optional-native patches land."
@@ -285,7 +304,7 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
         "patches": patches,
         "build": {
             "target": info.get("TARGET", "darwin-arm64"),
-            "ios_prelude": info.get("OPENCODE_IOS", "0") == "1",
+            "ios_prelude": bool(signatures["ios_prelude_marker"]),
             "bun_version": info.get("BUN_VERSION"),
             "host_os": info.get("BUILD_HOST_OS"),
             "host_arch": info.get("BUILD_HOST_ARCH"),

@@ -1,0 +1,257 @@
+# OpenCode iOS port patch -- 0001
+# Title: iOS Node build target, non-SEA iOS prelude / asset set / http shim
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Files: packages/cli/src/node/target.ts
+#        packages/cli/script/build-node.ts
+#        packages/cli/script/node-assets.ts
+#        packages/cli/vite.node.config.ts
+# Why: upstream's Node distribution build targets Node 26 SEA on desktop platforms. The
+#      iPhoneOS runtime is Node 22.9: it has no module.registerHooks, its node:sea exposes
+#      no getAssetKeys/getRawAsset, WebAssembly is disabled, and no desktop Node addons
+#      exist for iOS. The generated bundle must start from stock Node builtins only (no
+#      SEA prelude, no registerHooks, no node:sea import) and must not ship macOS
+#      dylibs/addons or helper executables that cannot load on the device.
+#      The iOS prelude also declares the installed assets dir, OPENCODE_IOS=1 and the
+#      rootless /var/jb PATH prefixes. @effect/platform-node's strictContentLength is
+#      disabled for iOS because Node 22.9 stores the raw Content-Length header string and
+#      throws ERR_HTTP_CONTENT_LENGTH_MISMATCH on otherwise-correct responses (fixed in
+#      later Node lines). Photon's wasm module is kept external/lazy (WebAssembly is off).
+# Test: OPENCODE_TARGET=ios-arm64 OPENCODE_IOS=1 bun run script/build-node.ts --bundle-only
+#       then: node --experimental-sqlite opencode.mjs --version  (stock Node 22.9.0)
+#       Evidence and host smoke matrix: docs/OPENCODE_BUILD.md
+# Status: required for the iPhoneOS bundle; the unpatched desktop Node build is unchanged.
+
+diff --git a/packages/cli/script/build-node.ts b/packages/cli/script/build-node.ts
+index 92330fd..da11354 100644
+--- a/packages/cli/script/build-node.ts
++++ b/packages/cli/script/build-node.ts
+@@ -39,6 +39,11 @@ const allTargets = [
+   nodeTarget("linux", "arm64"),
+   nodeTarget("linux", "x64"),
+   nodeTarget("darwin", "arm64"),
++  // iPhoneOS: same Vite/Node code path as Darwin ARM64, but the asset collector
++  // drops every native desktop payload and the prelude is the non-SEA iOS one.
++  // Bundle-only builds have no host Node for this target, so upstream's own host
++  // smoke is skipped and the workflow runs the stock-host smoke matrix instead.
++  nodeTarget("ios", "arm64"),
+   nodeTarget("win32", "arm64"),
+   nodeTarget("win32", "x64"),
+ ]
+diff --git a/packages/cli/script/node-assets.ts b/packages/cli/script/node-assets.ts
+index 3022022..895b129 100644
+--- a/packages/cli/script/node-assets.ts
++++ b/packages/cli/script/node-assets.ts
+@@ -19,6 +19,7 @@ export type NodeAsset = {
+ }
+ 
+ export async function collectNodeAssets(target: NodeTarget) {
++  if (target.ios) return collectIosNodeAssets()
+   const opencodePty = await resolveOpencodePty({
+     platform: target.platform,
+     arch: target.arch,
+@@ -56,6 +57,31 @@ export async function collectNodeAssets(target: NodeTarget) {
+   return unique
+ }
+ 
++// iPhoneOS has no prebuilt Node native addons (@lydell/node-pty-*, @parcel/watcher-*,
++// @ff-labs/fff-*, ffi-rs), no persistent-PTY binary, and the shipped runtime is
++// compiled with WebAssembly disabled. Stage only the platform-independent payloads
++// the CLI can use: attention sounds, the photon wasm artifact (optional - it is
++// kept for a future runtime with WebAssembly, image processing degrades without it)
++// and the OpenTUI tree-sitter JS/wasm payloads. Native desktop binaries are
++// intentionally omitted so the artifact never ships a macOS dylib/addon that
++// cannot load on iOS.
++async function collectIosNodeAssets() {
++  const parserAssets = getNodeAssets({ platform: "darwin", arch: "arm64" }).filter(
++    (asset) => !asset.key.endsWith(".dylib"),
++  )
++  const assets: NodeAsset[] = [
++    ...parserAssets,
++    { key: photonWasmAsset, source: fileURLToPath(import.meta.resolve(photonWasmAsset)) },
++    ...attentionSoundAssets.map((key) => ({
++      key,
++      source: path.resolve(dir, "../ui/src/assets/audio", path.basename(key)),
++    })),
++  ]
++  const unique = [...new Map(assets.map((asset) => [asset.key, asset])).values()]
++  await Promise.all(unique.map((asset) => stat(asset.source)))
++  return unique
++}
++
+ export async function hashNodeAssets(assets: readonly NodeAsset[]) {
+   const hash = createHash("sha256")
+   for (const asset of assets.toSorted((left, right) => left.key.localeCompare(right.key))) {
+diff --git a/packages/cli/src/node/target.ts b/packages/cli/src/node/target.ts
+index 4fba2d4..7d79492 100644
+--- a/packages/cli/src/node/target.ts
++++ b/packages/cli/src/node/target.ts
+@@ -1,4 +1,4 @@
+-const platforms = ["darwin", "linux", "win32"] as const
++const platforms = ["darwin", "linux", "win32", "ios"] as const
+ 
+ export type NodeTarget = ReturnType<typeof nodeTarget>
+ 
+@@ -9,23 +9,29 @@ export function nodeTarget(platform: string, arch: string) {
+ 
+   const targetPlatform = platform as (typeof platforms)[number]
+   const targetArch = arch as "arm64" | "x64"
+-  const nodePtyPackage = `@lydell/node-pty-${targetPlatform}-${targetArch}`
+-  const parcelWatcherPackage = `@parcel/watcher-${targetPlatform}-${targetArch}${targetPlatform === "linux" ? "-glibc" : ""}`
+-  const fffPackage = `@ff-labs/fff-bin-${targetPlatform}-${targetArch}${targetPlatform === "linux" ? "-gnu" : ""}`
+-  const fffFfiPackage = `@yuuang/ffi-rs-${targetPlatform}-${targetArch}${targetPlatform === "linux" ? "-gnu" : targetPlatform === "win32" ? "-msvc" : ""}`
++  // iPhoneOS reuses the Darwin runtime code paths but ships no prebuilt desktop
++  // Node addons (node-pty, parcel watcher, fff/ffi-rs) and no persistent-PTY
++  // binary. Package names stay Darwin-derived so shared tooling type-checks; the
++  // iOS branch of the asset collector never stages these native payloads.
++  const nativePlatform = targetPlatform === "ios" ? "darwin" : targetPlatform
++  const nodePtyPackage = `@lydell/node-pty-${nativePlatform}-${targetArch}`
++  const parcelWatcherPackage = `@parcel/watcher-${nativePlatform}-${targetArch}${nativePlatform === "linux" ? "-glibc" : ""}`
++  const fffPackage = `@ff-labs/fff-bin-${nativePlatform}-${targetArch}${nativePlatform === "linux" ? "-gnu" : ""}`
++  const fffFfiPackage = `@yuuang/ffi-rs-${nativePlatform}-${targetArch}${nativePlatform === "linux" ? "-gnu" : nativePlatform === "win32" ? "-msvc" : ""}`
+   const opencodePtyAsset = targetPlatform === "win32" ? "opencode-pty/opencode-pty.exe" : "opencode-pty/opencode-pty"
+ 
+   return {
+     platform: targetPlatform,
++    ios: targetPlatform === "ios",
+     arch: targetArch,
+     nodePtyPackage,
+     nodePtyEntryAsset: `${nodePtyPackage}/lib/index.js`,
+     parcelWatcherPackage,
+     parcelWatcherAsset: `${parcelWatcherPackage}/watcher.node`,
+     fffPackage,
+-    fffAsset: `${fffPackage}/${targetPlatform === "darwin" ? "libfff_c.dylib" : targetPlatform === "win32" ? "fff_c.dll" : "libfff_c.so"}`,
++    fffAsset: `${fffPackage}/${nativePlatform === "darwin" ? "libfff_c.dylib" : nativePlatform === "win32" ? "fff_c.dll" : "libfff_c.so"}`,
+     fffFfiPackage,
+-    fffFfiAsset: `${fffFfiPackage}/ffi-rs.${targetPlatform}-${targetArch}${targetPlatform === "linux" ? "-gnu" : targetPlatform === "win32" ? "-msvc" : ""}.node`,
++    fffFfiAsset: `${fffFfiPackage}/ffi-rs.${nativePlatform}-${targetArch}${nativePlatform === "linux" ? "-gnu" : nativePlatform === "win32" ? "-msvc" : ""}.node`,
+     opencodePtyAsset,
+   }
+ }
+diff --git a/packages/cli/vite.node.config.ts b/packages/cli/vite.node.config.ts
+index 071e244..c274383 100644
+--- a/packages/cli/vite.node.config.ts
++++ b/packages/cli/vite.node.config.ts
+@@ -28,7 +28,7 @@ function rawTextPlugin(modelsSnapshot?: string): Plugin {
+ /** The web UI archive's SEA asset key. The prelude leaves it in place, and the server reads it from SEA memory. */
+ export const appArchiveAsset = "app-archive.bin"
+ 
+-function appAssetsPlugin(): Plugin {
++function appAssetsPlugin(ios: boolean): Plugin {
+   return {
+     name: "opencode:app-assets",
+     resolveId(id) {
+@@ -36,6 +36,13 @@ function appAssetsPlugin(): Plugin {
+     },
+     load(id) {
+       if (id !== "\0virtual:opencode-app-assets") return
++      // iPhoneOS: no SEA and Node 22.9's node:sea exports neither getRawAsset nor
++      // getAssetKeys, so importing node:sea here would fail module linking. The
++      // archive is read from the installed assets directory instead.
++      if (ios)
++        return `import { readFileSync } from "node:fs"
++import path from "node:path"
++export default () => readFileSync(path.join(process.env.OPENCODE_NODE_ASSETS_DIR, ${JSON.stringify(appArchiveAsset)}))`
+       return `import { readFileSync } from "node:fs"
+ import path from "node:path"
+ import { getRawAsset, isSea } from "node:sea"
+@@ -107,6 +114,26 @@ ${code.slice(start)}`
+   }
+ }
+ 
++// Node 22.9 (the iPhoneOS runtime) stores the raw Content-Length header string in
++// ServerResponse._contentLength, so @effect/platform-node enabling
++// strictContentLength makes every response throw ERR_HTTP_CONTENT_LENGTH_MISMATCH
++// even when the lengths match (Node fixed the header/byte comparison in later
++// lines). The device runtime is pinned to 22.9, so the iOS build skips the flag;
++// the server still sets and validates Content-Length itself.
++function iosNodeHttpPlugin(): Plugin {
++  return {
++    name: "opencode:ios-node-http",
++    enforce: "pre",
++    transform(code, id) {
++      const file = id.replaceAll("\\", "/").split("?")[0]!
++      if (!file.endsWith("/@effect/platform-node/dist/NodeHttpServer.js")) return
++      const transformed = code.replace("nodeResponse.strictContentLength = true;", "")
++      if (transformed === code) this.error("Failed to disable strictContentLength for the Node 22.9 iOS runtime")
++      return transformed
++    },
++  }
++}
++
+ const resolve = {
+   alias: [
+     { find: /^solid-js\/store$/, replacement: "solid-js/store/dist/store.js" },
+@@ -126,7 +153,40 @@ const output = (entryFileNames: string, banner?: string) => ({
+   banner,
+ })
+ 
++// iPhoneOS prelude: no SEA, no module.registerHooks, no node:sea import and no
++// native addon paths. Node 22.9 (the shipped runtime) is missing all of those or
++// cannot dlopen macOS binaries, so the generated bundle must start with nothing
++// but stock Node builtins. Assets are read from a real directory; the launcher may
++// override the root with OPENCODE_NODE_ASSETS_DIR. Optional native features are
++// left unconfigured so the port's optional-native patches take the documented
++// graceful fallback instead of pointing at a payload that cannot load on iOS.
++function iosNodePrelude() {
++  return `#!/usr/bin/env -S node --experimental-sqlite --disable-warning=ExperimentalWarning
++// opencode-ios-prelude: non-SEA / Node 22.9-safe bootstrap for iPhoneOS
++import __cjs_mod__ from "node:module"
++import { fileURLToPath as __ocFileURLToPath } from "node:url"
++const __filename = import.meta.filename
++const __dirname = import.meta.dirname
++const require = __cjs_mod__.createRequire(import.meta.url)
++process.env.OPENCODE_PRELUDE = "opencode-ios-prelude-v1"
++const __ocAssetRoot =
++  process.env.OPENCODE_NODE_ASSETS_DIR ?? __ocFileURLToPath(new URL("./assets/", import.meta.url))
++process.env.OPENCODE_NODE_ASSETS_DIR = __ocAssetRoot
++process.env.OTUI_ASSET_ROOT = __ocAssetRoot
++if (!process.env.OPENCODE_IOS) process.env.OPENCODE_IOS = "1"
++// Rootless iOS has no POSIX tools in /bin: shells, git, rg and friends live under
++// the jailbreak prefix. Guarantee that prefix is on PATH (the launcher normally
++// sets it) before any tool lookup or child process runs.
++if (process.platform === "ios") {
++  const __ocIosPaths = ["/var/jb/bin", "/var/jb/usr/bin", "/var/jb/usr/sbin", "/var/jb/sbin"]
++  const __ocPathEntries = (process.env.PATH ?? "").split(":").filter(Boolean)
++  const __ocMissingPaths = __ocIosPaths.filter((dir) => !__ocPathEntries.includes(dir))
++  if (__ocMissingPaths.length > 0) process.env.PATH = [...__ocMissingPaths, ...__ocPathEntries].join(":")
++}`
++}
++
+ function nodePrelude(input: NodeBuildInput) {
++  if (input.target.ios) return iosNodePrelude()
+   const nodePtySpawnHelper =
+     input.target.platform === "darwin"
+       ? `${input.target.nodePtyPackage}/prebuilds/darwin-${input.target.arch}/spawn-helper`
+@@ -260,7 +320,8 @@ export function mainConfig(input: NodeBuildInput): UserConfig {
+   return defineConfig({
+     root: dir,
+     plugins: [
+-      appAssetsPlugin(),
++      appAssetsPlugin(input.target.ios),
++      ...(input.target.ios ? [iosNodeHttpPlugin()] : []),
+       rawTextPlugin(input.modelsSnapshot),
+       runtimeRequirePlugin(),
+       fffNodePlugin(),
+@@ -284,10 +345,20 @@ export function mainConfig(input: NodeBuildInput): UserConfig {
+       FFF_LIBC: input.target.platform === "linux" ? JSON.stringify("gnu") : "undefined",
+       "process.env.WS_NO_BUFFER_UTIL": JSON.stringify("1"),
+     },
+-    ssr: { noExternal: true },
++    // iPhoneOS: keep the photon wasm-bindgen module external. Inlining it into the
++    // single-file bundle makes Rollup evaluate its module body at startup, where it
++    // unconditionally reads photon_rs_bg.wasm and instantiates WebAssembly - but the
++    // shipped runtime is compiled with WebAssembly disabled, and the image pipeline
++    // already guards the import behind a runtime "is the wasm artifact available"
++    // check that is false on iOS. External keeps it a true lazy dynamic import.
++    ssr: input.target.ios
++      ? { noExternal: true, external: ["@silvia-odwyer/photon-node"] }
++      : { noExternal: true },
+     build: {
+       ssr: "src/node/index.ts",
+-      target: "node26",
++      // iPhoneOS runs Node 22.9; only emit syntax that Node 22.9 supports (the
++      // upstream Node target is 26).
++      target: input.target.ios ? "node22" : "node26",
+       outDir: "dist-node",
+       emptyOutDir: false,
+       minify: true,

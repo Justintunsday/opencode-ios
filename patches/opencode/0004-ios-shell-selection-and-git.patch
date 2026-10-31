@@ -1,0 +1,92 @@
+# OpenCode iOS port patch -- 0004
+# Title: iOS shell selection and git resolution for rootless jailbreak
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Files: packages/core/src/shell/select.ts
+#        packages/core/src/util/git-executable.ts
+# Why: a rootless (Dopamine) iOS install has no /bin/sh, /bin/bash or /bin/zsh; POSIX
+#      shells live under /var/jb/bin and /var/jb/usr/bin. The agent shell tool spawns an
+#      explicit shell executable with -c, so resolution must return a path that exists on
+#      the device instead of the /bin/zsh (darwin) or /bin/sh (other unix) defaults, which
+#      fail with ENOENT. git is not part of the bootstrap either; resolve it through PATH
+#      and fail with an actionable message when it is missing.
+# Test: host unit check with process.platform overridden to 'ios' resolves /var/jb/bin/sh
+#       and ShellSelect.args returns ['-c', command]; on-device shell/git verified separately.
+# Status: required for on-device shell/git functionality; device-verified separately.
+
+diff --git a/packages/core/src/shell/select.ts b/packages/core/src/shell/select.ts
+index 6645454..e178eb8 100644
+--- a/packages/core/src/shell/select.ts
++++ b/packages/core/src/shell/select.ts
+@@ -107,10 +107,29 @@ function win(options?: Options, bin?: string) {
+   )
+ }
+ 
++// Rootless jailbroken iOS has no /bin/sh, /bin/bash or /bin/zsh: shells come from
++// the Procursus/ElleKit prefix under /var/jb. Resolve them explicitly instead of
++// relying on PATH or on Node's hardcoded /bin/sh default, which does not exist on
++// the device (spawn fails with ENOENT before any command runs).
++const IOS_SHELLS = [
++  "/var/jb/bin/sh",
++  "/var/jb/usr/bin/sh",
++  "/var/jb/bin/bash",
++  "/var/jb/usr/bin/bash",
++  "/var/jb/bin/zsh",
++  "/var/jb/usr/bin/zsh",
++  "/bin/sh",
++  "/bin/bash",
++  "/bin/zsh",
++] as const
++
+ async function unix() {
+   const text = await readFile("/etc/shells", "utf8").catch(() => "")
+-  if (text) return Array.from(new Set(text.split("\n").filter((line) => line.trim() && !line.startsWith("#"))))
+-  return ["/bin/bash", "/bin/zsh", "/bin/sh"]
++  const shells = text
++    ? Array.from(new Set(text.split("\n").filter((line) => line.trim() && !line.startsWith("#"))))
++    : ["/bin/bash", "/bin/zsh", "/bin/sh"]
++  if (process.platform !== "ios") return shells
++  return Array.from(new Set([...shells, ...IOS_SHELLS]))
+ }
+ 
+ function select(file: string | undefined, options?: Options, opts?: { compatible?: boolean }, bin?: string) {
+@@ -132,6 +151,13 @@ export function gitbash(options?: Options, bin?: string) {
+ }
+ 
+ function fallback(bin?: string) {
++  if (process.platform === "ios") {
++    const shell = IOS_SHELLS.find((file) => stat(file)?.isFile())
++    if (shell) return shell
++    // Last resort: the launcher's PATH prefix must provide a shell; a bare path
++    // still produces a clear ENOENT instead of silently trying /bin/sh.
++    return "/var/jb/bin/sh"
++  }
+   if (process.platform === "darwin") return "/bin/zsh"
+   const bash = findExecutable("bash", bin)
+   if (bash) return bash
+diff --git a/packages/core/src/util/git-executable.ts b/packages/core/src/util/git-executable.ts
+index 1a9cf92..cb0c6c7 100644
+--- a/packages/core/src/util/git-executable.ts
++++ b/packages/core/src/util/git-executable.ts
+@@ -51,9 +51,18 @@ export function resolveGitExecutable(
+   )
+ }
+ 
+-export const gitExecutable = lazy(() =>
+-  resolveGitExecutable(
++export const gitExecutable = lazy(() => {
++  // iPhoneOS: git is not part of the OS or the rootless bootstrap. Resolve it
++  // through PATH (the launcher prepends /var/jb/bin and /var/jb/usr/bin) and
++  // fail with an actionable message when it is absent instead of returning a
++  // bare "git" that surfaces as a generic ENOENT.
++  if (process.platform === "ios") {
++    const git = which("git")
++    if (!git) throw new Error("git is not installed; install it with `apt install git` (rootless: /var/jb/usr/bin/apt)")
++    return git
++  }
++  return resolveGitExecutable(
+     process.platform,
+     process.platform === "win32" || process.platform === "darwin" ? which("git") : null,
+-  ),
+-)
++  )
++})

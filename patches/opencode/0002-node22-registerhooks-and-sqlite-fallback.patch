@@ -1,0 +1,120 @@
+# OpenCode iOS port patch -- 0002
+# Title: Node 22.9 fallbacks for module.registerHooks and --experimental-sqlite
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Files: packages/cli/src/util/process.ts
+#        packages/plugin/src/source.node.ts
+#        packages/util/src/runtime/import.node.ts
+# Why: Node 22.9 predates module.registerHooks (added in Node 22.15). A named ESM import
+#      of a missing builtin export throws a SyntaxError at module link time, before any
+#      try/catch can run, and the single-file Rollup bundle evaluates these modules at
+#      startup. Use a namespace import plus a guarded call; without the hook, plugin
+#      package/local entrypoints still load but live reload of a local plugin's relative
+#      import graph degrades, and directory-based plugin resolution falls back to a
+#      CommonJS resolve anchored at the plugin directory.
+#      Also propagate --experimental-sqlite to self-spawned server children: on Node 22.9
+#      node:sqlite requires the flag, so without it every command that starts the server
+#      fails with ERR_UNKNOWN_BUILTIN_MODULE.
+# Test: node --experimental-sqlite opencode.mjs models / auth list / session list on
+#       stock Node 22.9.0 (these start the server child process).
+# Status: required for the iPhoneOS runtime; safe on Node 24/26 (flag accepted, hook present).
+
+diff --git a/packages/cli/src/util/process.ts b/packages/cli/src/util/process.ts
+index 4721a12..3e9078a 100644
+--- a/packages/cli/src/util/process.ts
++++ b/packages/cli/src/util/process.ts
+@@ -18,6 +18,11 @@ function nodeFlags() {
+     if (
+       arg === "--experimental-ffi" ||
+       arg === "--use-system-ca" ||
++      // iPhoneOS ships Node 22.9 where node:sqlite requires this flag. Child
++      // server processes are spawned with process.execPath and must receive it
++      // too, otherwise the server exits with ERR_UNKNOWN_BUILTIN_MODULE on
++      // every command that starts it. Newer Node lines accept the flag.
++      arg === "--experimental-sqlite" ||
+       arg === "--enable-source-maps" ||
+       arg === "--no-addons"
+     )
+diff --git a/packages/plugin/src/source.node.ts b/packages/plugin/src/source.node.ts
+index 24c2b02..9235d80 100644
+--- a/packages/plugin/src/source.node.ts
++++ b/packages/plugin/src/source.node.ts
+@@ -1,10 +1,17 @@
+-import { registerHooks } from "node:module"
++import * as nodeModule from "node:module"
+ import path from "node:path"
+ import { fileURLToPath } from "node:url"
+ import { localSource } from "./source.js"
+ import { missingPackageTarget } from "./source.package.js"
+ import { Host } from "./host.js"
+ 
++// iPhoneOS ships Node 22.9, which predates module.registerHooks (Node 22.15).
++// Fall back to a plain fresh dynamic import: package plugins and local plugin
++// files still load, but live reload of a local plugin's relative import graph
++// degrades because the fresh-import query parameter is only honoured by the
++// resolver hook. Documented in docs/OPENCODE_BUILD.md.
++const registerHooks = nodeModule.registerHooks
++
+ let generation = Date.now()
+ 
+ export async function prepareSource(entrypoint: string, track: (file: string, directory?: boolean) => void) {
+@@ -14,7 +21,7 @@ export async function prepareSource(entrypoint: string, track: (file: string, di
+     url.searchParams.set("__opencode_reload", version)
+     return url.href
+   }
+-  const hook = registerHooks({
++  const hook = registerHooks?.({
+     resolve(specifier, context, nextResolve) {
+       if (!context.parentURL || new URL(context.parentURL).searchParams.get("__opencode_reload") !== version)
+         return nextResolve(specifier, context)
+@@ -48,5 +55,5 @@ export async function prepareSource(entrypoint: string, track: (file: string, di
+     },
+   })
+   const specifier = fresh(entrypoint)
+-  return { version: specifier, load: () => Host.load(specifier), dispose: () => hook.deregister() }
++  return { version: specifier, load: () => Host.load(specifier), dispose: () => hook?.deregister() }
+ }
+diff --git a/packages/util/src/runtime/import.node.ts b/packages/util/src/runtime/import.node.ts
+index 1a7a3c2..2bdcc9e 100644
+--- a/packages/util/src/runtime/import.node.ts
++++ b/packages/util/src/runtime/import.node.ts
+@@ -1,9 +1,17 @@
+ import { Script, constants } from "node:vm"
+-import { registerHooks } from "node:module"
++import * as nodeModule from "node:module"
+ import { statSync } from "node:fs"
+ import path from "node:path"
+ import { pathToFileURL } from "node:url"
+ 
++// iPhoneOS ships Node 22.9, which predates module.registerHooks (Node 22.15).
++// Without it, package resolution for plugin entrypoints falls back to a
++// CommonJS resolve anchored at the plugin directory. Package exports still apply
++// (the "require" condition wins); extension-less local files are not resolved,
++// which only degrades plugin local-directory discovery (documented in
++// docs/OPENCODE_BUILD.md).
++const registerHooks = nodeModule.registerHooks
++
+ export async function importModule(specifier: string) {
+   const imported = (await new Script(`import(${JSON.stringify(specifier)})`, {
+     importModuleDynamically: constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+@@ -18,6 +26,7 @@ export async function importModule(specifier: string) {
+ }
+ 
+ export function resolveModule(specifier: string, directory: string) {
++  if (!registerHooks) return resolveModuleWithoutHooks(specifier, directory)
+   // Node only accepts import.meta.resolve's parent URL behind an experimental
+   // flag. Scope this synchronous resolution to the caller's package directory
+   // through the supported resolver hook instead.
+@@ -52,6 +61,13 @@ export function resolveModule(specifier: string, directory: string) {
+   }
+ }
+ 
++function resolveModuleWithoutHooks(specifier: string, directory: string) {
++  const require = nodeModule.createRequire(path.join(directory, "package.json"))
++  const resolved = require.resolve(path.isAbsolute(specifier) ? specifier : specifier)
++  statSync(resolved)
++  return pathToFileURL(resolved).href
++}
++
+ function missing(error: unknown) {
+   return (
+     error instanceof Error &&

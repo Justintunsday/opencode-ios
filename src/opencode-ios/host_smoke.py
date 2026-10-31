@@ -292,6 +292,12 @@ def main() -> int:
     parser.add_argument("--versions", nargs="+", default=["22.9.0", "24.22.2", "26.4.0"])
     parser.add_argument("--require-version", default="22.9.0")
     parser.add_argument("--keep-workdir", action="store_true")
+    parser.add_argument(
+        "--work-root",
+        default="",
+        help="directory to create the throw-away HOME/cwd under (default: the system temp dir; useful on "
+        "hosts where the system temp dir is not writable by child processes)",
+    )
     args = parser.parse_args()
 
     bundle_dir = os.path.abspath(args.bundle_dir)
@@ -300,9 +306,12 @@ def main() -> int:
     if not os.path.isdir(os.path.join(bundle_dir, "assets")):
         raise SystemExit(f"no assets/ in {bundle_dir}")
     os.makedirs(args.cache_dir, exist_ok=True)
+    work_root = args.work_root or None
+    if work_root:
+        os.makedirs(work_root, exist_ok=True)
 
-    home = tempfile.mkdtemp(prefix="opencode-smoke-home-")
-    workdir = tempfile.mkdtemp(prefix="opencode-smoke-cwd-")
+    home = tempfile.mkdtemp(prefix="opencode-smoke-home-", dir=work_root)
+    workdir = tempfile.mkdtemp(prefix="opencode-smoke-cwd-", dir=work_root)
     env = smoke_environment(home)
     log(f"throw-away HOME: {home}")
 
