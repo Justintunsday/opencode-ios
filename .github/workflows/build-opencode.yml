@@ -1,0 +1,154 @@
+name: Build OpenCode CLI iOS bundle
+
+# Builds the OpenCode CLI as a Vite ESM bundle (`opencode.mjs` + `assets/`)
+# for the native iPhoneOS Node.js 22.9.0 runtime, using upstream's official
+# Node distribution path (`packages/cli/script/build-node.ts --bundle-only`).
+#
+# The smoke tests in this workflow run the bundle on *stock host Node.js*
+# binaries downloaded from nodejs.org on the macOS runner. They prove the
+# bundle loads and the CLI starts; they are NOT device verification. Device
+# execution remains user-verified (see docs/OPENCODE_BUILD.md).
+#
+# Artifact contract (consumed by package-rootless.yml / test-port.yml):
+#   opencode-cli-node-ios/
+#     opencode.mjs
+#     assets/**
+#     bundle-manifest.json
+#     SHA256SUMS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-opencode.yml'
+      - 'scripts/build-opencode-bundle.sh'
+      - 'patches/opencode/**'
+      - 'src/opencode-ios/**'
+      - 'UPSTREAM.lock'
+  pull_request:
+    paths:
+      - '.github/workflows/build-opencode.yml'
+      - 'scripts/build-opencode-bundle.sh'
+      - 'patches/opencode/**'
+      - 'src/opencode-ios/**'
+      - 'UPSTREAM.lock'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-opencode-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: CLI Node bundle (host smoke only, not device verification)
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      # Bundle target: the Darwin arm64 code path of upstream's Node build.
+      # The iOS prelude is selected by OPENCODE_IOS (patch series, not upstream).
+      OPENCODE_TARGET: darwin-arm64
+      OPENCODE_IOS: '1'
+      # Stock host Node versions used for smoke testing. 22.9.0 is the version
+      # the shipped iPhoneOS runtime is compiled from; 24.x/26.4.0 are
+      # informational (upstream's supported Node build is 26.4.0).
+      OPENCODE_NODE_MATRIX: '22.9.0 24.22.2 26.4.0'
+      # Version whose `--version`/`--help` must pass for this job to be green.
+      # Before the iOS patch series lands the bundle only runs on Node 26.4.0;
+      # after the patch series lands this becomes 22.9.0 (the device runtime).
+      OPENCODE_SMOKE_REQUIRED: '26.4.0'
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+
+      - name: Show pinned upstream versions
+        run: |
+          grep -E '^OPENCODE_(REPO|REF|VERSION)=' UPSTREAM.lock
+          uname -a
+
+      - name: Fetch pinned upstream OpenCode
+        run: bash scripts/build-opencode-bundle.sh fetch
+
+      - name: Apply iOS patch series
+        run: bash scripts/build-opencode-bundle.sh patches
+
+      - name: Set up Bun (upstream build tool only, not the iOS runtime)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - name: Cache bun downloads and stock Node runtimes
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            dist/node-runtimes
+            upstream-src/opencode/packages/cli/.cache/node
+          key: opencode-bundle-${{ runner.os }}-${{ hashFiles('UPSTREAM.lock') }}-${{ hashFiles('upstream-src/opencode/bun.lock') }}
+
+      - name: Install upstream dependencies
+        run: bash scripts/build-opencode-bundle.sh install
+
+      - name: Build Vite Node bundle (--bundle-only, no SEA)
+        run: bash scripts/build-opencode-bundle.sh build
+
+      - name: Stage iOS artifact
+        run: bash scripts/build-opencode-bundle.sh stage
+
+      - name: Host-Node smoke matrix (not device verification)
+        run: bash scripts/build-opencode-bundle.sh smoke
+
+      - name: Write bundle-manifest.json and SHA256SUMS
+        run: bash scripts/build-opencode-bundle.sh manifest
+
+      - name: Verify artifact checksums
+        run: bash scripts/build-opencode-bundle.sh verify
+
+      - name: Show artifact summary
+        run: |
+          set -euo pipefail
+          du -sh dist/opencode-cli-node-ios
+          find dist/opencode-cli-node-ios -type f | sort | sed -n '1,40p'
+          echo '--- SHA256SUMS ---'
+          cat dist/opencode-cli-node-ios/SHA256SUMS
+          echo '--- manifest summary ---'
+          python3 - <<'PY'
+          import json
+          with open('dist/opencode-cli-node-ios/bundle-manifest.json') as f:
+              m = json.load(f)
+          print(json.dumps({
+              'upstream': m['upstream'],
+              'patches': {'count': m['patches']['count'], 'series_sha256': m['patches']['series_sha256']},
+              'build': {k: m['build'][k] for k in ('target', 'ios_prelude', 'bun_version')},
+              'bundle': {
+                  'opencode_mjs_sha256': m['bundle']['opencode_mjs']['sha256'],
+                  'opencode_mjs_bytes': m['bundle']['opencode_mjs']['bytes'],
+                  'assets_count': m['bundle']['assets']['count'],
+                  'asset_categories': m['bundle']['assets']['categories'],
+              },
+              'smoke_required_passed': m['verification_status']['host_smoke_required_passed'],
+              'smoke_required_node_version': m['verification_status']['host_smoke_required_node_version'],
+              'device_verified': m['verification_status']['device_verified'],
+          }, indent=2))
+          PY
+
+      - name: Upload opencode-cli-node-ios artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-cli-node-ios
+          path: dist/opencode-cli-node-ios/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build metadata (not part of the artifact contract)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-build-metadata
+          path: |
+            dist/opencode-build/
+          if-no-files-found: warn
+          retention-days: 14
