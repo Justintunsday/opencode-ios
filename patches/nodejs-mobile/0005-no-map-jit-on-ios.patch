@@ -1,0 +1,62 @@
+# =============================================================================
+# nodejs-mobile: do NOT use MAP_JIT on iOS (plain mprotect W^X)
+# =============================================================================
+#
+# Base:   nodejs-mobile/nodejs-mobile update22-9-0
+#         commit 106c51f95d55d1010de56a2ffd09bfb4ba819a47
+# Depends: 0001..0004 (applied first, in filename order)
+# Applied: by .github/workflows/build-runtime.yml with `git apply`.
+#
+# Device evidence that drove this patch (iPhone SE 2, iOS 16.1.1, Dopamine
+# rootless):
+#   * v3 (MAP_JIT reservation + V8_HAS_PTHREAD_JIT_WRITE_PROTECT=0):
+#     EXC_BAD_ACCESS / SIGBUS (exit 138) on generated-code execution; the JIT
+#     region was `max rwx, current rw-` because MAP_JIT pages were toggled with
+#     plain mprotect and never became executable.
+#   * v4 (MAP_JIT + V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1):
+#     EXC_BREAKPOINT / SIGTRAP (exit 133): V8::FatalProcessOutOfMemory from
+#     CodeRange::InitReservation - V8 tries to mprotect the whole ~128MB code
+#     range to RWX, which the iOS kernel denies. Also fails with full 9-key
+#     entitlements, so no signing set can make RWX mprotect work on iOS 16.
+#   * Reference: a JIT-enabled community Node 18 binary (V8 10.2) runs JIT +
+#     WebAssembly on the same device with only the 2-key entitlement set; V8 10.2
+#     does not use MAP_JIT on iOS.
+#
+# Fix: skip MAP_JIT on iOS. V8 then uses ordinary PROT_NONE reservations and
+# plain mprotect W^X (kReadWrite for writing / kReadExecute for execution) for
+# JIT and wasm code, exactly like V8 10.2 / Node 18. This patch is the only
+# memory-model change; V8_HAS_PTHREAD_JIT_WRITE_PROTECT remains 0 on iOS device
+# (macOS-only, as in 0001/PR #150), so the platform-ios.cc/dlsym code from 0004
+# is compiled out. Entitlements go back to the device-verified 2-key set
+# (platform-application + com.apple.private.security.no-sandbox).
+# =============================================================================
+
+--- a/deps/v8/src/base/platform/platform-posix.cc
++++ b/deps/v8/src/base/platform/platform-posix.cc
+@@ -139,7 +139,16 @@
+     flags |= MAP_LAZY;
+ #endif  // V8_OS_QNX
+   }
+-#if V8_OS_DARWIN
++#if defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)
++  // nodejs-mobile-build-fixes: MAP_JIT is required on macOS arm64, but NOT on
++  // iOS. On the target iOS device the kernel denies RWX mprotect of MAP_JIT
++  // reservations (V8 then aborts in CodeRange::InitReservation with
++  // "Failed to reserve virtual memory for CodeRange"), and mixing MAP_JIT with
++  // plain mprotect leaves code pages rw- and traps with SIGBUS on first
++  // execution. Use ordinary PROT_NONE reservations + plain mprotect W^X on iOS
++  // (the V8 10.2 / Node 18 memory model, device-proven to run JIT + WebAssembly
++  // on this iPhone). See patch 0005 and docs/RUNTIME_BUILD.md.
++  //
+   // MAP_JIT is required to obtain writable and executable pages when the
+   // hardened runtime/memory protection is enabled, which is optional (via code
+   // signing) on Intel-based Macs but mandatory on Apple silicon ones. See also
+@@ -147,7 +156,7 @@
+   if (access == OS::MemoryPermission::kNoAccessWillJitLater) {
+     flags |= MAP_JIT;
+   }
+-#endif  // V8_OS_DARWIN
++#endif  // defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)
+   return flags;
+ }
+ 

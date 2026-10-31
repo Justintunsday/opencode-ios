@@ -25,13 +25,17 @@
 # (device evidence in docs/RUNTIME_BUILD.md). patches/nodejs-mobile/0003 restores
 # upstream v8_enable_webassembly behaviour.
 #
-# iOS JIT memory handling is fixed by patches/nodejs-mobile/0004: V8 12.4
-# reserves JIT code space with MAP_JIT but its RwxMemoryWriteScope compiles to
-# no-ops on iOS device unless V8_HAS_PTHREAD_JIT_WRITE_PROTECT is enabled; the
-# v3 build therefore trapped with SIGBUS on generated code. Patch 0004 enables
-# the scope for iOS arm64 and resolves pthread_jit_write_protect_np via dlsym
-# (the public iPhoneOS SDK does not export it at link time). The tentative
-# device-test entitlement set is 4 keys (see scripts/ios-runtime/entitlements.plist).
+# iOS JIT memory model (patch 0005): do NOT use MAP_JIT on iOS. The iOS kernel
+# denies RWX mprotect of MAP_JIT reservations (v4 aborted with SIGTRAP /
+# FatalProcessOutOfMemory in CodeRange::InitReservation) and mixing MAP_JIT with
+# plain mprotect leaves code pages rw- (v3 SIGBUS on generated code). On iOS the
+# build therefore uses the V8 10.2 / Node 18 model: ordinary PROT_NONE
+# reservations + plain mprotect W^X, with V8_HAS_PTHREAD_JIT_WRITE_PROTECT left 0
+# on iOS device (macOS-only). A JIT-enabled Node 18 reference binary with only
+# the 2-key entitlement set runs JIT+wasm on this exact iPhone. patches
+# 0004 (platform-ios.cc dlsym thunk + gyp source) is compiled out / inert and is
+# kept for link-correctness and a future MAP_JIT experiment. Entitlements are
+# the device-verified 2-key set (see scripts/ios-runtime/entitlements.plist).
 #
 # Environment overrides:
 #   NODE_SRC   nodejs-mobile checkout          (default: <repo>/nodejs-mobile)
@@ -81,7 +85,7 @@ require_tools() {
 require_patched_source() {
   [[ -d "$NODE_SRC" ]] || die "nodejs-mobile source not found: $NODE_SRC"
   [[ -f "$NODE_SRC/configure.py" ]] || die "$NODE_SRC does not look like nodejs-mobile"
-  # One stable marker per patch in the series (0001..0004). Keep in sync with
+  # One stable marker per patch in the series (0001..0005). Keep in sync with
   # patches/nodejs-mobile/*.patch: a missing marker means the series was not
   # applied (or a patch changed without updating this function).
   grep -q 'kPathSeparator = std::filesystem::path::preferred_separator' \
@@ -93,12 +97,12 @@ require_patched_source() {
   grep -q "v8_enable_webassembly'\] = 0 if options.v8_lite_mode else 1" \
     "$NODE_SRC/configure.py" \
     || die "patch series not applied: 0003 marker (configure.py v8_enable_webassembly) missing"
-  grep -q 'nodejs-mobile-build-fixes: enable pthread_jit_write_protect' \
-    "$NODE_SRC/deps/v8/src/base/build_config.h" \
-    || die "patch series not applied: 0004 marker (build_config.h pthread_jit_write_protect) missing"
   grep -q 'pthread_jit_write_protect_np' \
     "$NODE_SRC/deps/v8/src/base/platform/platform-ios.cc" \
-    || die "patch series not applied: 0004 marker (platform-ios.cc dlsym) missing"
+    || die "patch series not applied: 0004 marker (platform-ios.cc dlsym thunk) missing"
+  grep -q 'defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)' \
+    "$NODE_SRC/deps/v8/src/base/platform/platform-posix.cc" \
+    || die "patch series not applied: 0005 marker (platform-posix.cc no-MAP_JIT-on-iOS) missing"
 }
 
 node_version_from_source() {
@@ -400,26 +404,38 @@ validate_static() {
     die "no WebAssembly evidence found; see $wasm_evidence"
   fi
   log "[$stage] WebAssembly present: enabled ($wasm_signals/3 signals); JIT enabled (no --jitless)"
-  # iOS JIT memory handling (patch 0004): V8 must flip MAP_JIT pages through
-  # pthread_jit_write_protect_np (resolved by dlsym in platform-ios.cc). Without
-  # the patched build, JIT code pages stay read-write and executing generated
-  # code traps with SIGBUS on device (v3 device evidence).
-  log "[$stage] iOS JIT memory-handling audit (MAP_JIT / pthread_jit_write_protect_np)"
-  if ! LC_ALL=C grep -aq 'pthread_jit_write_protect_np' "$bin"; then
-    die "binary does not reference pthread_jit_write_protect_np (patch 0004 missing): device JIT would trap with SIGBUS"
+  # iOS JIT memory model (patch 0005): the shipped binary must use the no-MAP_JIT
+  # / plain-mprotect path. With V8_HAS_PTHREAD_JIT_WRITE_PROTECT=0 on iOS device
+  # the platform-ios.cc dlsym thunk (patch 0004) is compiled out, so the
+  # pthread_jit_write_protect_np string must be ABSENT from the binary. Its
+  # presence would mean the MAP_JIT path was enabled, which device testing
+  # showed aborts (v4 SIGTRAP / FatalProcessOOM) or traps with SIGBUS (v3).
+  log "[$stage] iOS JIT memory-model audit (no MAP_JIT on iOS; plain mprotect W^X)"
+  grep -q 'defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)' \
+    "$NODE_SRC/deps/v8/src/base/platform/platform-posix.cc" \
+    || die "platform-posix.cc is missing the patch-0005 MAP_JIT guard"
+  if LC_ALL=C grep -aq 'pthread_jit_write_protect_np' "$bin"; then
+    die "binary references pthread_jit_write_protect_np: the MAP_JIT/pthread W^X path is enabled, which aborts on iOS device (v4 evidence). Patch 0005 must keep V8_HAS_PTHREAD_JIT_WRITE_PROTECT=0 on iOS."
   fi
-  grep -aE 'SetJitWriteProtected' "$nm_file" | head -n 3 | tee "$DIST/jit-write-protect-$stage.txt" || true
-  log "[$stage] JIT write-protect reference present (patch 0004 compiled in)"
-  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU + WebAssembly + JIT W^X linked)"
+  {
+    echo "== platform-posix.cc MAP_JIT guard =="
+    grep -n 'defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)' "$NODE_SRC/deps/v8/src/base/platform/platform-posix.cc" || true
+    echo "== binary must NOT reference pthread_jit_write_protect_np =="
+    if LC_ALL=C grep -aq 'pthread_jit_write_protect_np' "$bin"; then echo "PRESENT (bad)"; else echo "absent (good: plain mprotect W^X path)"; fi
+    echo "== V8_HAS_PTHREAD_JIT_WRITE_PROTECT (build_config.h, iOS device must be 0) =="
+    grep -A2 'V8_HOST_ARCH_ARM64' "$NODE_SRC/deps/v8/src/base/build_config.h" | head -n 6 || true
+  } | tee "$DIST/jit-memory-model-$stage.txt"
+  log "[$stage] JIT memory model OK: no MAP_JIT on iOS, plain mprotect W^X (V8 10.2-style), 2-key entitlements"
+  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU + WebAssembly; iOS JIT memory model audited)"
 }
 
-# ldid ad-hoc signing with the tentative v4 entitlement set:
-#   platform-application + com.apple.private.security.no-sandbox +
-#   dynamic-codesigning + com.apple.security.cs.allow-unsigned-executable-memory
-# The 2-key pair is device-verified for the earlier interpreted-only build; MAP_JIT
-# JIT needs dynamic-codesigning on iOS. The exact minimal subset is being
-# confirmed on device and any reduction is a signing-only change. See
-# docs/RUNTIME_BUILD.md and scripts/ios-runtime/entitlements.plist.
+# ldid ad-hoc signing with the DEVICE-VERIFIED 2-key entitlement set:
+#   platform-application + com.apple.private.security.no-sandbox
+# No JIT-specific entitlements are needed: the shipped iOS memory model is plain
+# mprotect W^X without MAP_JIT, and a JIT-enabled Node 18 reference binary runs
+# on this exact iPhone with only these two keys. Extra JIT keys were either
+# insufficient or harmful on this device. See docs/RUNTIME_BUILD.md and
+# scripts/ios-runtime/entitlements.plist.
 sign_binary() {
   local bin="$1"
   command -v ldid >/dev/null 2>&1 || die "ldid not installed (brew install ldid)"
@@ -439,8 +455,6 @@ import sys
 expected = {
         "platform-application",
         "com.apple.private.security.no-sandbox",
-        "dynamic-codesigning",
-        "com.apple.security.cs.allow-unsigned-executable-memory",
     }
 path = sys.argv[1]
 try:
@@ -454,12 +468,14 @@ except Exception as exc:  # noqa: BLE001 - report and fall back to text checks
         sys.exit(f"ERROR: signature is missing required entitlement(s): {', '.join(missing)}")
     for forbidden in (
         "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
         "com.apple.security.cs.disable-library-validation",
+        "dynamic-codesigning",
     ):
         if forbidden in text:
             sys.exit(f"ERROR: signature carries the rejected entitlement {forbidden!r} "
                      "(device-verified to cause SIGKILL 137)")
-    print("entitlements: exactly the four tentative v4 keys are present")
+    print("entitlements: exactly the two device-verified keys are present")
     sys.exit(0)
 
 keys = set(data) if isinstance(data, dict) else set()
@@ -468,7 +484,7 @@ if keys != expected:
         "ERROR: signed entitlements must be exactly "
         f"{sorted(expected)}, got {sorted(keys)}"
     )
-print("entitlements: exactly the four tentative v4 keys are present:", sorted(keys))
+print("entitlements: exactly the two device-verified keys are present:", sorted(keys))
 PY
 
   # Informational: codesign may or may not be able to read an ldid signature.
@@ -478,7 +494,7 @@ PY
   else
     warn "codesign could not read the ldid signature (informational only; ldid -e is authoritative)"
   fi
-  log "signing OK (platform-application + no-sandbox + dynamic-codesigning + allow-unsigned-executable-memory)"
+  log "signing OK (platform-application + com.apple.private.security.no-sandbox)"
 }
 
 # Keep runtime-manifest.json compatible with package-rootless.yml's capability
@@ -654,23 +670,23 @@ manifest = {
         "entitlements_sha256": sha256(dist / "entitlements.plist"),
     },
     "runtime_policy": {
-        "v8_jit": "enabled: JIT compiled in and on by default. iOS MAP_JIT/W^X handling is "
-                  "fixed by patch 0004 (V8_HAS_PTHREAD_JIT_WRITE_PROTECT on iOS arm64 + "
-                  "pthread_jit_write_protect_np resolved via dlsym). Device evidence: the "
-                  "earlier interpreted-only v2 build ran with the 2-key entitlement set; this "
-                  "JIT build uses the tentative 4-key set (platform-application + no-sandbox + "
-                  "dynamic-codesigning + allow-unsigned-executable-memory) pending device "
-                  "confirmation of the minimal subset.",
+        "v8_jit": "enabled: JIT compiled in and on by default, using the plain-mprotect W^X "
+                  "memory model on iOS (patch 0005: no MAP_JIT on iOS, "
+                  "V8_HAS_PTHREAD_JIT_WRITE_PROTECT stays macOS-only). Device evidence: a "
+                  "JIT-enabled Node 18 reference binary (V8 10.2, same memory model) runs JIT "
+                  "and WebAssembly on the target iPhone SE 2 with only the 2-key entitlement "
+                  "set; the v3/v4 MAP_JIT experiments aborted on this device.",
         "webassembly": "enabled: V8 WebAssembly + Liftoff compiled in; required by Node's "
-                       "built-in fetch/undici wasm llhttp parser at startup. The earlier "
-                       "interpreted-only v2 build confirmed wasm availability with only the "
-                       "2-key set; this JIT build uses the tentative 4-key set (see v8_jit) "
-                       "together with the patch-0004 W^X fix.",
-        "jit_memory": "MAP_JIT code space with pthread_jit_write_protect_np toggling through "
-                      "V8's RwxMemoryWriteScope (V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1 for iOS "
-                      "arm64, patch 0004); the symbol is resolved with dlsym at runtime because "
-                      "the public iPhoneOS SDK does not export it at link time. The v3 device "
-                      "SIGBUS on generated code was caused by this scope being compiled out.",
+                       "built-in fetch/undici wasm llhttp parser at startup. WebAssembly runs "
+                       "on the same no-MAP_JIT/plain-mprotect W^X path as JIT (patch 0005); the "
+                       "device-proven reference configuration is the 2-key entitlement set.",
+        "jit_memory": "iOS uses ordinary PROT_NONE reservations + plain mprotect W^X for JIT "
+                      "and wasm code (page-allocator maps kNoAccessWillJitLater to kNoAccess "
+                      "because V8_HAS_PTHREAD_JIT_WRITE_PROTECT is 0 on iOS device). MAP_JIT is "
+                      "skipped on iOS (patch 0005) because iOS denies RWX mprotect of MAP_JIT "
+                      "reservations (v4 SIGTRAP/FatalProcessOOM in CodeRange::InitReservation) "
+                      "and MAP_JIT + plain mprotect mixing traps with SIGBUS (v3). This is the "
+                      "V8 10.2 / Node 18 memory model, device-proven on this iPhone.",
         "intl": {
             "mode": "full-icu",
             "configure_flag": "--with-intl=full-icu",
@@ -693,20 +709,19 @@ manifest = {
         "entitlements": [
             "platform-application",
             "com.apple.private.security.no-sandbox",
-            "dynamic-codesigning",
-            "com.apple.security.cs.allow-unsigned-executable-memory",
         ],
-        "entitlements_status": "tentative: pending device confirmation of the exact minimal "
-                               "subset for MAP_JIT JIT; any later reduction is a signing-only "
-                               "change (cheap cached re-run).",
+        "entitlements_status": "device-verified minimal set (2 keys); the shipped runtime uses "
+                               "the no-MAP_JIT/plain-mprotect JIT memory model, and a "
+                               "JIT-enabled Node 18 reference binary runs with only these keys.",
         "entitlements_note": (
-            "The 2-key pair (platform-application + com.apple.private.security.no-sandbox) is "
-            "device-verified for the earlier interpreted-only v2 build; on this device an old "
-            "4-key JIT set WITHOUT no-sandbox was SIGKILLed (exit 137), which is why "
-            "no-sandbox is retained. MAP_JIT JIT additionally needs dynamic-codesigning on "
-            "iOS; allow-unsigned-executable-memory is included for writable-code-page "
-            "fallbacks. allow-jit and disable-library-validation are deliberately omitted. "
-            "This 4-key set is the tentative working set for v4 and is re-verified on device."
+            "The 2-key set has been device-verified repeatedly on the target iPhone "
+            "(platform-application + com.apple.private.security.no-sandbox): the v2 "
+            "interpreted-only runtime ran with it, and a JIT-enabled reference Node 18 binary "
+            "runs JIT + WebAssembly with it. The loader SIGKILLs (exit 137) this runtime with "
+            "platform-application alone or with the old 4-key JIT set without no-sandbox. "
+            "dynamic-codesigning/allow-unsigned/allow-jit are NOT needed once MAP_JIT is not "
+            "used (patch 0005); adding JIT-specific keys did not help the MAP_JIT abort and is "
+            "rejected by the CI signing gate."
         ),
         "node_cli_flags_available": {
             "--experimental-sqlite": True,
@@ -728,28 +743,26 @@ manifest = {
         "entitlement_keys": [
             "platform-application",
             "com.apple.private.security.no-sandbox",
-            "dynamic-codesigning",
-            "com.apple.security.cs.allow-unsigned-executable-memory",
         ],
-        "entitlements_status": "tentative (pending device matrix for the JIT build)",
-        "entitlements_device_verified": False,
+        "entitlements_status": "device-verified minimal set (2 keys)",
+        "entitlements_device_verified": True,
         "revalidated_after_signing": True,
         "codesign_could_read_signature": (dist / "codesign-entitlements.xml").stat().st_size > 0,
     },
     "device_status": "UNVERIFIED ON DEVICE",
     "device_status_note": (
-        "The 2-key entitlement pair is device-verified for the earlier interpreted-only "
-        "build; this v4 JIT artifact uses a tentative 4-key set (adds dynamic-codesigning + "
-        "allow-unsigned-executable-memory for MAP_JIT) that is being device-verified. Earlier "
+        "The 2-key entitlement set is device-verified, and a JIT-enabled Node 18 reference "
+        "binary runs JIT + WebAssembly on the target iPhone SE 2 with only these keys. Earlier "
         "22.9.0 builds of this source were device-verified to run but were rejected by the CLI "
-        "first for missing Intl/\\p{} (fixed with full-icu), then for missing WebAssembly in "
-        "Node fetch/undici (fixed by enabling V8 JIT+WebAssembly), and v3 then trapped with "
-        "SIGBUS on generated code because V8's iOS W^X handling was compiled out (fixed by "
-        "patch 0004). This v4 artifact is the rebuild for all three blockers; its device "
-        "execution is pending external verification. GitHub-hosted macOS runners cannot "
-        "execute iPhoneOS binaries; all payload checks in CI are static (Mach-O "
-        "platform/minos, dylib linkage, ldid signature, ICU/WebAssembly/JIT W^X audits). See "
-        "docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
+        "first for missing Intl/\\p{} (fixed with full-icu) and then for missing WebAssembly in "
+        "Node fetch/undici (fixed by enabling V8 JIT+WebAssembly); the MAP_JIT variants then "
+        "aborted on the device (v3 SIGBUS on generated code, v4 SIGTRAP/FatalProcessOOM in "
+        "CodeRange::InitReservation). Patch 0005 switches iOS to the V8 10.2-style plain "
+        "mprotect W^X model with no MAP_JIT. This v5 artifact is the rebuild for all four "
+        "blockers; its device execution is pending external verification. GitHub-hosted macOS "
+        "runners cannot execute iPhoneOS binaries; all payload checks in CI are static (Mach-O "
+        "platform/minos, dylib linkage, ldid signature, ICU/WebAssembly/JIT-memory-model "
+        "audits). See docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
     ),
 }
 
@@ -780,9 +793,9 @@ write_validation_report() {
     echo "- Mach-O: iPhoneOS arm64 executable, minos <= 16.1.1 (scripts/check_macho.py PASS)"
     echo "- Dylib linkage: iOS system libraries/frameworks only (no Homebrew, no macOS-only libs)"
     echo "- V8: JIT enabled (no --jitless) and WebAssembly enabled (required by Node fetch/undici)"
-    echo "- V8 iOS JIT memory: MAP_JIT/W^X handled by patch 0004 (pthread_jit_write_protect_np)"
+    echo "- V8 iOS JIT memory: no MAP_JIT on iOS; plain mprotect W^X (patch 0005, V8 10.2-style)"
     echo "- ICU: full-icu statically linked (ECMA-402 Intl + V8 \\p{...} regexps)"
-    echo "- ldid signing: ad-hoc signature with the tentative 4-key v4 entitlement set; re-validated after signing (exact minimal subset pending device matrix)"
+    echo "- ldid signing: ad-hoc signature with the device-verified 2-key entitlement set; re-validated after signing"
     echo "- Device execution: **UNVERIFIED ON DEVICE** (GitHub-hosted runners cannot run iOS binaries)"
     echo
     echo "## file(1)"

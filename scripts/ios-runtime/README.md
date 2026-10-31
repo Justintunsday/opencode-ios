@@ -30,17 +30,19 @@ ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.plist \
      /var/jb/usr/lib/opencode/runtime/node
 ```
 
-The v4 runtime has JIT + WebAssembly enabled, so its plist is the **tentative
-4-key set**: `platform-application` + `com.apple.private.security.no-sandbox` +
-`dynamic-codesigning` + `com.apple.security.cs.allow-unsigned-executable-memory`.
+The runtime is JIT + WebAssembly enabled, and uses the **device-verified 2-key
+set**: `platform-application` + `com.apple.private.security.no-sandbox`.
 
-- The 2-key pair alone is device-verified for the earlier interpreted-only build,
-  but MAP_JIT JIT additionally needs `dynamic-codesigning` on iOS.
-- `platform-application` + `no-sandbox` are mandatory: an old JIT set without
-  `no-sandbox` was SIGKILLed (exit 137) at load.
-- `allow-jit` and `disable-library-validation` are intentionally absent.
-- The exact minimal subset for the JIT build is being confirmed on device; a
-  reduction is a signing-only change (cheap cached re-run).
+- The shipped iOS memory model is plain `mprotect` W^X with **no MAP_JIT**
+  (patch 0005, the V8 10.2 / Node 18 model) - a JIT-enabled reference Node 18
+  binary runs JIT + wasm on this exact iPhone with only the 2-key set.
+- `platform-application` + `no-sandbox` are mandatory: `platform-application`
+  alone and an old JIT set without `no-sandbox` were SIGKILLed (exit 137).
+- Additional JIT keys (`dynamic-codesigning`, `allow-jit`,
+  `allow-unsigned-executable-memory`, `disable-library-validation`) are NOT
+  needed and are hard-rejected by the CI signing gate; on this device extra keys
+  never fixed the MAP_JIT aborts (those were a V8 memory-model bug, see
+  docs/RUNTIME_BUILD.md).
 
 Do not improvise entitlements: on the target device the loader is strict (137 for
 wrong sets).
@@ -80,9 +82,9 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 
 ## 3. Known limitations of this runtime build
 
-- **JIT + WebAssembly enabled** — with the tentative 4-key entitlement set and
-  the patched V8 iOS W^X handling (patch 0004). Re-sign only with the artifact's
-  own `entitlements.plist`.
+- **JIT + WebAssembly enabled** — with the device-verified 2-key entitlement set
+  and the no-MAP_JIT / plain-mprotect iOS memory model (patch 0005). Re-sign only
+  with the artifact's own `entitlements.plist`.
 - **ICU is required and compiled in** — `--with-intl=full-icu`, statically
   linked (all locales). The first no-ICU build was device-run but the CLI failed
   with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu: Invalid
@@ -90,6 +92,9 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 - **WebAssembly is required and compiled in** — Node 22.9's built-in
   `fetch()`/undici instantiates a wasm llhttp parser at startup; the earlier
   no-wasm runtime failed with `ReferenceError: WebAssembly is not defined`.
+- **iOS JIT memory model** — no `MAP_JIT` on iOS; V8 uses ordinary PROT_NONE
+  reservations + plain `mprotect` W^X (patch 0005). MAP_JIT variants aborted on
+  the target device (SIGBUS / SIGTRAP) even with JIT entitlements.
 - **Not executed by CI** — all CI checks are static (Mach-O platform/minos,
   arch, dylib linkage, ICU/WebAssembly audits, ldid signature).
 - **Native addons** — only addons that are the same architecture (`arm64`) and
