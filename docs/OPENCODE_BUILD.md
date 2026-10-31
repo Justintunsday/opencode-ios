@@ -4,8 +4,8 @@ Status: **CI build + host-Node smoke verified; device execution pending the ICU 
 (`UNVERIFIED ON DEVICE`). First device attempts found that the initial iPhoneOS runtime was
 built `--with-intl=none`, which makes V8 reject the bundle's Unicode property escapes at
 parse time and leaves `Intl` undefined — a runtime capability gap, not a CLI patch issue
-(see §11). The runtime is being rebuilt with ICU (`--with-intl=small-icu`, the in-tree
-option); the CLI artifact is otherwise device-ready and package-integration-proven.
+(see §11). The runtime is being rebuilt with ICU (`--with-intl=full-icu` from Node's canned
+full-ICU source); the CLI artifact is otherwise device-ready and package-integration-proven.
 
 This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
@@ -225,11 +225,11 @@ exec /var/jb/usr/lib/opencode/runtime/node \
 - `--experimental-sqlite` is **required**: on Node 22.9 `node:sqlite` (used for
   `DatabaseSync`, session storage) is flag-gated. Do **not** pass `--experimental-ffi` or
   `--use-system-ca`; neither exists on Node 22.9.0.
-- The runtime **must be built with ICU** (`--with-intl=small-icu`, the in-tree option; full-icu
-  would require vendoring an external ICU source tree). A runtime built `--with-intl=none`
-  cannot run the bundle at all: V8 without ICU rejects `\p{...}` regex property escapes at
-  parse time and `Intl` is undefined (device-reported; see §11). `build-runtime.yml` gates
-  on `v8_enable_i18n_support=1` and an ICU symbol audit so a no-ICU runtime is rejected.
+- The runtime **must be built with ICU** (`--with-intl=full-icu`, used by `build-runtime.yml`;
+  `small-icu` would also work). A runtime built `--with-intl=none` cannot run the bundle at
+  all: V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
+  undefined (device-reported; see §11). `build-runtime.yml` gates on
+  `v8_enable_i18n_support=1` and statically linked ICU so a no-ICU runtime is rejected.
 - The prelude sets `OPENCODE_NODE_ASSETS_DIR` to `<bundle dir>/assets` by default. If the
   wrapper sets it explicitly (recommended: `/var/jb/usr/lib/opencode/cli/assets`) the
   prelude respects the override. `OTUI_ASSET_ROOT` is set from the same root.
@@ -311,20 +311,20 @@ catch it), and (b) the ECMA-402 `Intl` object is absent. This is a runtime capab
 the CLI patch series is not implicated (none of the six patches uses `Intl` or `\p{...}`).
 
 Primary fix (owned by the runtime build): rebuild Node 22.9.0 with
-`--with-intl=small-icu` (in-tree ICUs) or full-icu (needs external ICU source). ICU is
-linked either way (so V8 regex property escapes work and
+`--with-intl=full-icu` (the option `build-runtime.yml` uses) or `small-icu`. Both link ICU
+(so V8 regex property escapes work and
 `Intl.Segmenter`/`DateTimeFormat`/`NumberFormat`/`ListFormat`/`Collator` exist); `\p{...}`
-support depends on ICU's Unicode property data, which small-icu already includes. The
-runtime build now also validates `v8_enable_i18n_support=1` so a no-ICU runtime cannot be
-packaged.
+support depends on ICU's Unicode property data, which both configurations include. Node's
+configure treats the pinned tree's `deps/icu-small` (which carries `README-FULL-ICU.txt`) as
+the **canned full-ICU source** (`canned_is_full`); the full-icu CI build compiled ICU 75 for
+iPhoneOS (`obj.target/icui18n`, `obj.target/icuucx`, host ICU tools, `libicui18n.a`/
+`libicuuc.a` linked), so no external ICU source is needed in this tree. The runtime build
+also validates `v8_enable_i18n_support=1` so a no-ICU runtime cannot be packaged.
 
-Note on the full-icu attempt: the pinned nodejs-mobile tree (and Node v22.9.0 release
-sources) ship only `deps/icu-small`, not `deps/icu`; a `--with-intl=full-icu` build therefore
-cannot statically link ICU from this tree (full-icu requires an external ICU source via
-`--with-icu-path`). A CI attempt failed the runtime's ICU symbol audit for exactly this
-reason. `--with-intl=small-icu`, built from the in-tree `deps/icu-small`, is the supported
-in-tree configuration and is sufficient for the CLI (ECMA-402 basic formatting, `\p{}`
-property escapes, normalization).
+An intermediate runtime run failed that validation's ICU symbol-grep heuristic: ICU symbols
+carry hidden visibility in the iOS build, so a `nm -gU`-style grep misses them even though
+the libraries are linked. That was a false negative in the runtime-build audit, since
+corrected by the runtime owner; it has no CLI impact.
 
 ### Measured exposure in the run-4 artifact
 
