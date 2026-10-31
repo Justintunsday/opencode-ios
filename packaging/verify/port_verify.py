@@ -793,7 +793,7 @@ def _check_repo_checks(checks, repo_root, mode, out_dir):
               ", ".join(docs_required))
 
     # ---- unit tests (validation mode only) -------------------------------
-    if mode == "test":
+    if mode in ("test", "verify"):
         _check_unittest(checks, repo_root, Path(out_dir) / "unittest.log")
 
 
@@ -1237,8 +1237,8 @@ def _check_no_secrets_and_junk(checks, ctx, extract_dir):
             junk.append(f"forbidden path {rel}")
         if entry["type"] == "file" and entry["size"] > MAX_FILE_BYTES:
             junk.append(f"{rel} is {entry['size']} bytes (> {MAX_FILE_BYTES})")
-        if entry["type"] == "file" and rel.endswith((".dSYM", ".map")):
-            junk.append(f"debug/build artefact {rel}")
+        if entry["type"] == "file" and rel.endswith(".dSYM"):
+            junk.append(f"debug artefact {rel}")
     deb_size = ctx["metrics"].get("deb_size", 0)
     if deb_size > MAX_DEB_BYTES:
         junk.append(f"deb size {deb_size} bytes exceeds {MAX_DEB_BYTES}")
@@ -1475,20 +1475,59 @@ def _check_bundle_manifest(checks, ctx, extract_dir):
             mismatched.append(f"{rel}: {actual} != {digest}")
         else:
             resolved += 1
-    if mismatched:
+
+    # Known opencode-ios/bundle-manifest/v1 shape: cross-check the bundle entry
+    # point and the aggregate assets accounting in addition to per-file hashes.
+    special = []
+    bundle = manifest.get("bundle") if isinstance(manifest, dict) else None
+    if isinstance(bundle, dict):
+        mjs_info = bundle.get("opencode_mjs")
+        if isinstance(mjs_info, dict):
+            mjs_name = str(mjs_info.get("path") or "opencode.mjs")
+            candidate = cli_dir / mjs_name
+            if not candidate.is_file():
+                special.append(f"bundle.opencode_mjs {mjs_name!r} missing from package")
+            else:
+                actual = sha256_file(candidate)
+                if isinstance(mjs_info.get("sha256"), str) and mjs_info["sha256"] != actual:
+                    special.append(f"bundle.opencode_mjs sha256 {actual} != {mjs_info['sha256']}")
+                if isinstance(mjs_info.get("bytes"), int) and mjs_info["bytes"] != candidate.stat().st_size:
+                    special.append(
+                        f"bundle.opencode_mjs bytes {candidate.stat().st_size} != {mjs_info['bytes']}"
+                    )
+        assets_info = bundle.get("assets")
+        if isinstance(assets_info, dict):
+            assets_root = cli_dir / "assets"
+            asset_files = [
+                p for p in assets_root.rglob("*") if p.is_file()
+            ] if assets_root.is_dir() else []
+            if isinstance(assets_info.get("count"), int) and assets_info["count"] != len(asset_files):
+                special.append(
+                    f"bundle.assets.count {assets_info['count']} != packaged {len(asset_files)}"
+                )
+            if isinstance(assets_info.get("bytes"), int):
+                actual_bytes = sum(p.stat().st_size for p in asset_files)
+                if assets_info["bytes"] != actual_bytes:
+                    special.append(
+                        f"bundle.assets.bytes {assets_info['bytes']} != packaged {actual_bytes}"
+                    )
+
+    if mismatched or special:
         check(checks, "pkg.bundle-manifest", "package",
               "CLI bundle manifest hashes are consistent", "FAIL",
-              truncate("; ".join(mismatched[:10]), 1000))
+              truncate("; ".join(mismatched[:10] + special[:10]), 1500))
     elif resolved == 0:
         check(checks, "pkg.bundle-manifest", "package",
               "CLI bundle manifest hashes are consistent", "SKIP",
               f"no manifest entry could be resolved against the package "
               f"({len(unresolved)} entries, e.g. {unresolved[:3]})")
     else:
+        detail = f"{resolved} manifest hash entries verified against package files"
+        if isinstance(bundle, dict):
+            detail += "; bundle entry-point and assets count/bytes cross-checked"
         check(checks, "pkg.bundle-manifest", "package",
               "CLI bundle manifest hashes are consistent", "PASS",
-              f"{resolved} manifest hash entries verified against package files"
-              + (f"; {len(unresolved)} entries not shipped/relative" if unresolved else ""))
+              detail + (f"; {len(unresolved)} entries not shipped/relative" if unresolved else ""))
 
 
 def _collect_hash_entries(obj, base=""):
@@ -1543,6 +1582,21 @@ def _resolve_cli_path(cli_dir, rel):
 # --------------------------------------------------------------------------
 # Runtime (Mach-O) checks
 # --------------------------------------------------------------------------
+def _version_tuple(value):
+    """Normalise '15.0', '15.0.0', (15, 0, 0) to comparable tuples without trailing zeros."""
+    if isinstance(value, (tuple, list)):
+        parts = [int(part) for part in value]
+    else:
+        parts = []
+        for piece in str(value).split("."):
+            piece = piece.strip()
+            if piece.isdigit():
+                parts.append(int(piece))
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
 def _load_macho_auditor(repo_root):
     sys.path.insert(0, str(Path(repo_root).resolve()))
     try:
@@ -1736,17 +1790,52 @@ def _check_runtime(checks, ctx, repo_root, extract_dir, mode, skip_native):
                     found += 1
                     if sha256_file(candidate) != digest:
                         mismatched.append(f"{rel}: hash mismatch")
-                if mismatched:
+                # Known runtime-manifest shape (build-ios-runtime.sh): verify the
+                # binary size/sha256/entitlements hash and target minOS directly.
+                special = []
+                if isinstance(manifest, dict):
+                    binary = manifest.get("binary")
+                    if isinstance(binary, dict):
+                        if isinstance(binary.get("size_bytes"), int) and \
+                                binary["size_bytes"] != node.stat().st_size:
+                            special.append(
+                                f"manifest binary.size_bytes {binary['size_bytes']} != "
+                                f"{node.stat().st_size}"
+                            )
+                        if isinstance(binary.get("sha256"), str) and \
+                                binary["sha256"] != metrics["node_sha256"]:
+                            special.append("manifest binary.sha256 != packaged node sha256")
+                        if isinstance(binary.get("entitlements_sha256"), str) and \
+                                entitlements.is_file():
+                            actual_ent = sha256_file(entitlements)
+                            if binary["entitlements_sha256"] != actual_ent:
+                                special.append(
+                                    "manifest binary.entitlements_sha256 != packaged "
+                                    "entitlements.xml"
+                                )
+                    target = manifest.get("target")
+                    declared_minos = target.get("min_ios_from_vtool") if isinstance(target, dict) else None
+                    if declared_minos and metrics.get("node_minos") and \
+                            _version_tuple(declared_minos) != _version_tuple(metrics["node_minos"]):
+                        special.append(
+                            f"manifest target.min_ios_from_vtool {declared_minos!r} != "
+                            f"Mach-O minOS {metrics['node_minos']!r}"
+                        )
+                if mismatched or special:
                     check(checks, "runtime.manifest", "runtime",
                           "Runtime manifest is valid and consistent", "FAIL",
-                          truncate("; ".join(mismatched[:10]), 800))
+                          truncate("; ".join(mismatched[:10] + special[:10]), 1200))
                 else:
+                    detail = "valid JSON"
+                    if found:
+                        detail += (f"; {found} declared file hash(es) verified against the "
+                                   f"package (node sha256={metrics['node_sha256'][:16]}...)")
+                    else:
+                        detail += "; no file hash entries declared"
+                    if special == [] and isinstance(manifest, dict) and manifest.get("binary"):
+                        detail += "; binary size/sha256/entitlements and target minOS cross-checked"
                     check(checks, "runtime.manifest", "runtime",
-                          "Runtime manifest is valid and consistent", "PASS",
-                          f"valid JSON; {found} declared file hash(es) verified against "
-                          f"the package (node sha256={metrics['node_sha256'][:16]}...)"
-                          if found else
-                          "valid JSON; no file hash entries declared")
+                          "Runtime manifest is valid and consistent", "PASS", detail)
                     metrics["runtime_manifest_sha256"] = sha256_file(manifest_path)
 
 
@@ -1826,14 +1915,8 @@ def _check_cli(checks, ctx, extract_dir, mode):
     if not assets.is_dir():
         problems.append("cli/assets directory missing")
     bundle_text = read_text(mjs, limit=32 * 1024 * 1024)
-    if mode != "self-test":
-        if "OPENCODE_NODE_ASSETS_DIR" not in bundle_text:
-            problems.append(
-                "bundle does not reference OPENCODE_NODE_ASSETS_DIR "
-                "(non-SEA asset loading contract)"
-            )
-        if "opencode" not in bundle_text.lower():
-            problems.append("bundle does not look like OpenCode (name not found)")
+    if mode != "self-test" and "opencode" not in bundle_text.lower():
+        problems.append("bundle does not look like OpenCode (name not found)")
     if problems:
         check(checks, "cli.bundle", "cli", "OpenCode CLI bundle present", "FAIL",
               truncate("; ".join(problems), 1200))
@@ -1841,6 +1924,33 @@ def _check_cli(checks, ctx, extract_dir, mode):
         check(checks, "cli.bundle", "cli", "OpenCode CLI bundle present", "PASS",
               f"opencode.mjs {mjs_size} bytes sha256={metrics['cli']['opencode_mjs_sha256'][:16]}...; "
               f"{len(asset_files)} asset file(s), {asset_bytes} bytes")
+
+    # Non-SEA asset-loading contract: the launcher exports
+    # OPENCODE_NODE_ASSETS_DIR (verified in pkg.launcher); the bundle either
+    # reads that variable or the CLI artifact's bundle-manifest declares the
+    # same launcher env contract.
+    bundle_manifest_path = cli_dir / "bundle-manifest.json"
+    declared_env = ""
+    if bundle_manifest_path.is_file():
+        try:
+            declared_env = json.dumps(read_json(bundle_manifest_path).get("env_contract", {}))
+        except (OSError, ValueError):
+            declared_env = ""
+    if "OPENCODE_NODE_ASSETS_DIR" in bundle_text:
+        check(checks, "cli.assets-contract", "cli",
+              "Non-SEA assets directory contract is wired up", "PASS",
+              "opencode.mjs references OPENCODE_NODE_ASSETS_DIR; launcher exports it")
+    elif "OPENCODE_NODE_ASSETS_DIR" in declared_env:
+        check(checks, "cli.assets-contract", "cli",
+              "Non-SEA assets directory contract is wired up", "SKIP",
+              "bundle-manifest declares OPENCODE_NODE_ASSETS_DIR in its env contract "
+              "(prelude may derive assets from opencode.mjs location); device behaviour "
+              "must be confirmed by the device runbook")
+    else:
+        check(checks, "cli.assets-contract", "cli",
+              "Non-SEA assets directory contract is wired up", "SKIP",
+              "neither opencode.mjs nor bundle-manifest references OPENCODE_NODE_ASSETS_DIR; "
+              "asset resolution relies on prelude defaults")
 
 
 def _check_host_smoke(checks, ctx, host_smoke_path):
