@@ -72,13 +72,19 @@ Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 `UPSTREAM.lock`). The exact SHA-256 of the published `.deb` is recorded in
 `SHA256SUMS` and inside `package-report.json`.
 
-> **Shipping status (2026-10-31):** a CI-green **intermediate** package has been
-> built and validated (package run `41185611403`), but it is **not shippable**:
-> it was assembled against a WebAssembly-disabled runtime, so on the device every
-> CLI command fails with `ReferenceError: WebAssembly is not defined` (Node's
-> built-in fetch/undici needs wasm llhttp). The final package requires the v3
-> runtime with full-ICU + WebAssembly + JIT enabled; packaging CI now rejects
-> wasm-disabled/JIT-less runtime artifacts. Only install a `.deb` whose
+> **Shipping status (2026-10-31):** the final CI candidate is green and ready for
+> device installation: package run
+> <https://github.com/Justintunsday/opencode-ios/actions/runs/41202900005>
+> (artifact `OpenCode-iOS-rootless`, id `13042384872`), `.deb` size 52,933,564
+> bytes, SHA-256
+> `cf5db02aedb680ac0f3f31013c7e824bc43a2ee79f41cf34e92659b93f022647`, built from
+> the v3 runtime (full-ICU + WebAssembly + JIT enabled, 2-key entitlements) and
+> including the optional iPhoneOS `rg` at `/var/jb/usr/bin/rg`.
+> `package-report.json` / `verification-report.json` show `ci_status=PASS` with
+> `device_status=UNVERIFIED ON DEVICE`; the on-device runbook (section 10) has not
+> yet been recorded. An earlier intermediate package (run `41185611403`, `.deb`
+> sha `13a0483d...`) used a WASM-disabled runtime and **must not** be installed:
+> it fails with `ReferenceError: WebAssembly is not defined`. Always check that
 > `package-report.json` shows `runtime.build-profile` PASS with
 > "WebAssembly enabled; JIT enabled".
 
