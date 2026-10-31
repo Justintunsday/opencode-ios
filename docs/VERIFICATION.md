@@ -9,11 +9,11 @@ this repository claims on-device success.
 | Evidence class | Environment | Status |
 | --- | --- | --- |
 | Static package validation (Mach-O, dylibs, paths, permissions, metadata, manifests, entitlements policy) | GitHub Actions `macos-15` runner | **CI-verified** when the workflows are green |
-| Runtime capability gating (full-ICU + WebAssembly + JIT required; no-ICU and wasm-disabled/JIT-less runtime artifacts rejected) | GitHub Actions `macos-15` runner | **CI-verified** |
+| Runtime capability gating (full-ICU + WebAssembly + JIT required; iOS V8 W^X patch 0004 required for JIT; no-ICU / wasm-disabled / pre-W^X runtime artifacts rejected) | GitHub Actions `macos-15` runner | **CI-verified** |
 | Host-runtime JS smoke (`--version`, `--help`, launcher argv forwarding) | GitHub Actions `macos-15` runner, host Node.js 22.9.0 (nodejs.org, checksum-pinned) | **CI-verified** when the workflows are green |
 | Compile of the native iPhoneOS runtime | GitHub Actions `macos-15` runner + iPhoneOS SDK | **CI-verified** (build-runtime workflow) |
 | Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — see *Interim device evidence* below |
-| Native runtime binary execution (node `--version`, `process.platform`, sqlite/fs/TLS/child_process, JIT+WebAssembly with 2-key entitlements) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — final runtime (v3, JIT+WASM) built; packaged CLI still awaiting the device run |
+| Native runtime binary execution (node `--version`, `process.platform`, sqlite/fs/TLS/child_process, JIT+WebAssembly) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — v4 W^X runtime built and packaged; packaged CLI device run pending |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device | **UNVERIFIED ON DEVICE** — requires the user runbook below |
 
 > **UNVERIFIED ON DEVICE — requires real iPhone SE 2 (iOS 16.1.1, Dopamine rootless).**
@@ -22,32 +22,29 @@ this repository claims on-device success.
 > device (entitlements, rootless shells, dpkg script handling, runtime capability
 > requirements) are recorded separately and do **not** verify the packaged CLI.
 
-### Latest CI-verified build — SUPERSEDED BY DEVICE RESULT (v4 W^X fix in progress)
+### Latest CI-verified build — v4 (iOS JIT W^X), device verification pending
 
-Both CI workflows were green on the same artifact, produced from the v3 runtime
-(full-ICU + WebAssembly + JIT, 2-key entitlements). **Device testing of the v3
-JIT-enabled runtime then trapped with SIGBUS when executing V8-generated code**,
-independent of the entitlement set; runtime-engineer is rebuilding with patch
-`0004-ios-jit-write-protect.patch` (V8 `MAP_JIT` + `pthread_jit_write_protect` on
-iOS arm64) and a tentative 4-key JIT entitlement set. The artifact below is kept
-for CI provenance but is **not shippable**; the final table will be updated once
-the v4 runtime, package and device run are green.
+Both CI workflows are green on the same artifact, produced from the v4 runtime
+(full-ICU + WebAssembly + JIT, patch `0004-ios-jit-write-protect.patch`, tentative
+4-key JIT entitlement set). The v3 JIT build (without the W^X patch) trapped with
+SIGBUS on V8-generated code on device and is superseded.
 
 | Item | Value |
 | --- | --- |
-| Package workflow run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41202900005> |
-| Package artifact | `OpenCode-iOS-rootless`, artifact id `13042384872`, 52,953,183 bytes |
-| `.deb` | `OpenCode-iOS-rootless.deb`, 52,933,564 bytes |
-| `.deb` SHA-256 | `cf5db02aedb680ac0f3f31013c7e824bc43a2ee79f41cf34e92659b93f022647` |
-| Version / arch | `2.2.5-1` / `iphoneos-arm64`, Installed-Size 163,980 KiB |
-| Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642> (v3: full-ICU + WebAssembly + JIT enabled, 2-key entitlements) |
-| Runtime node | sha256 `5808d7027cdfcbb138668243fd61b221efcc810e67d5411da15b432a6f4c1876`, 106,822,656 bytes, Mach-O iPhoneOS arm64 minOS 14.0, dylibs only `libSystem.B.dylib`/`libc++.1.dylib` |
+| Package workflow run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218342323> |
+| Package artifact | `OpenCode-iOS-rootless`, artifact id `13047999069`, 52,934,458 bytes |
+| `.deb` | `OpenCode-iOS-rootless.deb`, 52,914,772 bytes |
+| `.deb` SHA-256 | `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4` |
+| Version / arch | `2.2.5-1` / `iphoneos-arm64`, Installed-Size 164,008 KiB |
+| Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41207449703> (v4: full-ICU/ICU 75 + WebAssembly + JIT enabled; `source.patches` includes 0004-ios-jit-write-protect.patch) |
+| Runtime node | sha256 `48eecd595ad94c433dafc5573bd528f4a947c7fe5e57f59cedd139890839ec66`, 106,842,032 bytes, Mach-O iPhoneOS arm64 minOS 14.0, dylibs only `libSystem.B.dylib`/`libc++.1.dylib` |
+| Runtime entitlements | tentative 4-key set: `platform-application`, `com.apple.private.security.no-sandbox`, `dynamic-codesigning`, `com.apple.security.cs.allow-unsigned-executable-memory` (required pair present; extras reported, pending device minimisation) |
 | Optional bundled `rg` | `/var/jb/usr/bin/rg` from `ios-ripgrep`: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b`, 6,624,992 bytes, iPhoneOS arm64 minOS 10.0, iOS system libraries only |
 | CLI artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41192939688> |
-| Package validation | `ci_status=PASS`, 45 PASS / 0 FAIL / 0 SKIP |
-| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41203040598> (artifact `port-verification`, id `13043027716`) |
+| Package validation | `ci_status=PASS`, 45 PASS / 0 FAIL / 0 SKIP; gates include "WebAssembly enabled; JIT enabled; iOS V8 W^X patch (0004) declared" |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218528704> (artifact `port-verification`, id `13048839513`) |
 | Verification result | `ci_status=PASS`, 46 PASS / 0 FAIL / 0 SKIP; `device_status=UNVERIFIED ON DEVICE` |
-| Device status | **device-trapped: SIGBUS on V8 generated code (v3); superseded, do not ship** |
+| Device status | `UNVERIFIED ON DEVICE` — this is the artifact to install for the v4 device run |
 
 **Artifact identity across docs commits.** The packaged documentation is part of
 the `.deb`, so CI rebuilds triggered by documentation-only commits produce
@@ -55,11 +52,12 @@ byte-different `.debs` (different SHA-256) even though the runtime, CLI bundle a
 launcher code are identical. The pinned run above identifies a specific artifact;
 later green runs on docs commits are pipeline evidence only.
 
-Pipeline history: the earlier CI-green package
-(run `41185611403`, `.deb` sha `13a0483d...`) was an **intermediate build** that
-used the WASM-disabled runtime and fails on device with
-`ReferenceError: WebAssembly is not defined`; it is **superseded and not
-shippable**. The packaging capability gate now rejects such runtime artifacts.
+Pipeline history: the v3 package (run `41202900005`, `.deb` sha `cf5db02a...`)
+passed all CI checks but trapped with SIGBUS on V8-generated code on the device
+(no W^X patch), and the earlier intermediate package
+(run `41185611403`, `.deb` sha `13a0483d...`) used a WASM-disabled runtime and
+failed with `ReferenceError: WebAssembly is not defined`. Both are superseded and
+not shippable; the packaging capability gates now reject such runtime artifacts.
 
 ## Where the evidence lives
 
@@ -73,10 +71,10 @@ Latest successful runs (filled in from the artifacts; also recorded in
 
 | Workflow | Run | Artifact |
 | --- | --- | --- |
-| `build-runtime.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642> (v3: full-ICU + WebAssembly + JIT enabled, 2-key entitlements) | `ios-node-runtime` |
+| `build-runtime.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41207449703> (v4: full-ICU + WebAssembly + JIT + W^X patch 0004) | `ios-node-runtime` |
 | `build-opencode.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41192939688> | `opencode-cli-node-ios` |
-| `package-rootless.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41202900005> | `OpenCode-iOS-rootless` |
-| `test-port.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41203040598> | `port-verification` |
+| `package-rootless.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218342323> | `OpenCode-iOS-rootless` |
+| `test-port.yml` | <https://github.com/Justintunsday/opencode-ios/actions/runs/41218528704> | `port-verification` |
 
 Authoritative, self-describing source of truth: the `package-report.json` inside
 the package artifact. It lists every file with path/mode/size/SHA-256, the
@@ -205,9 +203,11 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | WebAssembly | `undefined` on the intermediate JIT-less runtime (WebAssembly was disabled) |
 | Dylib linkage on device | only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib` |
 | Re-sign with shipped 2-key entitlements (`ldid -S`) | PASS; old 4-key signature SIGKILLed (137) |
+| v4 runtime built (patch 0004 W^X, tentative 4-key JIT set) | CI-green (run `41207449703`): node sha256 `48eecd59…`, `source.patches` includes `0004-ios-jit-write-protect.patch`, manifest marks entitlements tentative / device-unverified; packaged as run `41218342323`. **Device run pending** — the v3 SIGBUS trap is what patch 0004 targets. |
 | ICU-enabled iOS Node reference | the community reference Node 18.20.4 binary on the same iPhone reports `process.versions.icu = 74.2` and `typeof Intl === "object"`, confirming an ICU-enabled iOS Node build works on this exact device |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
-| **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`); the v3 runtime (JIT+WASM+full-ICU) has since been built and packaged. The packaged CLI's own device run is still pending. |
+| **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |
+| **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 
 ### Recording template (copy per device run)
 

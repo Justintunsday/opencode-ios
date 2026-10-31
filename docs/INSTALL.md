@@ -72,19 +72,22 @@ Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 `UPSTREAM.lock`). The exact SHA-256 of the published `.deb` is recorded in
 `SHA256SUMS` and inside `package-report.json`.
 
-> **Shipping status (2026-10-31):** the v3-runtime package (run `41202900005`,
-> `.deb` SHA-256
-> `cf5db02aedb680ac0f3f31013c7e824bc43a2ee79f41cf34e92659b93f022647`) passed
-> every CI check but **is superseded and not shippable**: device testing trapped
-> with **SIGBUS in V8-generated code** (a V8 iOS W^X memory-permission bug,
-> independent of entitlements). runtime-engineer is rebuilding the runtime with
-> patch `0004-ios-jit-write-protect.patch` (V8 `MAP_JIT`/`pthread_jit_write_protect`)
-> and a tentative 4-key JIT entitlement set; the final `.deb` will be rebuilt from
-> that v4 runtime and re-verified. Do not install the v3 artifact; wait for the
-> v4-based package and its `package-report.json` (`ci_status=PASS`,
-> device run recorded). Earlier intermediate packages (WASM-disabled runtime,
-> `.deb` sha `13a0483d...`) are likewise not shippable
-> (`ReferenceError: WebAssembly is not defined`).
+> **Shipping status (2026-11-01):** the v4-runtime package is the current
+> candidate: package run
+> <https://github.com/Justintunsday/opencode-ios/actions/runs/41218342323>
+> (artifact `OpenCode-iOS-rootless`, id `13047999069`), `.deb` 52,914,772 bytes,
+> SHA-256
+> `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`, built from
+> the v4 runtime (full-ICU + WebAssembly + JIT + patch
+> `0004-ios-jit-write-protect.patch`, tentative 4-key JIT entitlement set) and
+> including the optional iPhoneOS `rg`. CI status is `PASS` (45/0/0 package checks,
+> 46/0/0 verification checks) but the **on-device run is still pending**, so the
+> packaged CLI remains `UNVERIFIED ON DEVICE` until the maintainer records it in
+> `docs/VERIFICATION.md`. Do **not** install the superseded v3-runtime package
+> (run `41202900005`, `.deb` sha `cf5db02a...`): device testing trapped with
+> SIGBUS in V8-generated code (pre-W^X). Earlier WASM-disabled packages
+> (`.deb` sha `13a0483d...`) fail with
+> `ReferenceError: WebAssembly is not defined` and are likewise not shippable.
 
 ## 3. Transfer the package to the device
 
