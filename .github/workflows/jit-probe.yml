@@ -1,8 +1,12 @@
-name: iOS JIT memory probe dylib
+name: iOS JIT memory probe
 
-# Builds a tiny arm64-apple-ios dylib that reports, at injection time, which
-# executable-memory primitives are permitted on the jailbroken target device.
-# It is a diagnostic artifact only; it is never shipped in the .deb.
+# Builds two diagnostic arm64-apple-ios artifacts that report which
+# executable-memory primitives are permitted on the jailbroken target device:
+#   - `libjitprobe.dylib` (DYLD_INSERT_LIBRARIES experiment)
+#   - `jitprobe` executable (runs directly, signed with the shipped 2-key
+#     entitlement set) -- the reliable path on iOS where DYLD injection is
+#     ignored for platform binaries.
+# Diagnostic artifacts only; never shipped in the .deb.
 
 on:
   workflow_dispatch:
@@ -16,32 +20,40 @@ permissions:
 
 jobs:
   build:
-    name: Build iOS JIT probe dylib (diagnostic only)
+    name: Build iOS JIT probe (diagnostic only)
     runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build dylib for arm64-apple-ios
+      - name: Build dylib and executable for arm64-apple-ios
         run: |
           set -euo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           mkdir -p dist
           xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
             -O2 -Wall -Wextra -dynamiclib -o dist/libjitprobe.dylib scripts/jit-probe/probe.c
-          file dist/libjitprobe.dylib
-          xcrun otool -L dist/libjitprobe.dylib
+          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
+            -O2 -Wall -Wextra scripts/jit-probe/main.c -o dist/jitprobe
+          file dist/libjitprobe.dylib dist/jitprobe
+          xcrun otool -L dist/jitprobe
       - name: Sign with ldid and validate
         run: |
           set -euo pipefail
           brew install ldid >/dev/null 2>&1 || true
           ldid -S dist/libjitprobe.dylib
-          python3 scripts/check_macho.py dist/libjitprobe.dylib --max-minos 16.1.1 || true
-          shasum -a 256 dist/libjitprobe.dylib | tee dist/SHA256SUMS
+          cp scripts/ios-runtime/entitlements.plist dist/entitlements.plist
+          ldid -Sdist/entitlements.plist dist/jitprobe
+          ldid -e dist/jitprobe > dist/entitlements-signed.xml
+          python3 scripts/check_macho.py dist/jitprobe --max-minos 16.1.1
+          shasum -a 256 dist/libjitprobe.dylib dist/jitprobe | tee dist/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ios-jit-probe
           path: |
             dist/libjitprobe.dylib
+            dist/jitprobe
+            dist/entitlements.plist
+            dist/entitlements-signed.xml
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
