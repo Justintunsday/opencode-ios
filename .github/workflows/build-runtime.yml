@@ -161,6 +161,30 @@ jobs:
           restore-keys: |
             ios-node-${{ env.NODE_VERSION }}-${{ env.NODE_MOBILE_COMMIT }}-xcode${{ env.XCODE_VERSION }}-e${{ inputs.cache_epoch || '1' }}-
 
+      - name: Normalize source mtimes so the restored build cache is incremental
+        # A fresh git checkout stamps every file with "now", which is newer than
+        # every cached .o/.a file, so make would rebuild the entire tree even on
+        # a cache hit. Stamp the pristine tree with an old date; on a prefix
+        # (patch-changed) restore, re-stamp only the files the patch rewrote so
+        # exactly those translation units and their dependents rebuild.
+        env:
+          CACHE_HIT: ${{ steps.cache-build.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          src="$NODEJS_MOBILE_DIR"
+          if [ ! -d "$src/out/Release" ]; then
+            echo "no cached build tree restored; skipping mtime normalization"
+            exit 0
+          fi
+          find "$src" -path "$src/out" -prune -o -type f -exec touch -t 200001010000 {} +
+          if [ "${CACHE_HIT:-}" = "true" ]; then
+            echo "exact cache hit: patched tree identical to cached build; cached objects stay valid"
+          else
+            echo "prefix cache restore: re-stamping files rewritten by the patch series"
+            ( cd "$src"; git diff --name-only | while read -r f; do [ -f "$f" ] && touch "$f"; done )
+            ( cd "$src"; git diff --name-only )
+          fi
+
       - name: Configure Node.js 22.9.0 for iPhoneOS arm64 (fast gate)
         # Runs ./configure (which also generates out/Makefile via the bundled
         # gyp) and fails in minutes on patch/flag/toolchain errors.

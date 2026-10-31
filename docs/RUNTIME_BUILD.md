@@ -187,6 +187,13 @@ signature, re-sign on device with the bundled `entitlements.plist` (see
   (`if: always()`, `continue-on-error: true`) and the save step is skipped on
   an exact cache hit. `mozilla-actions/sccache-action@v0.0.6` is enabled for
   parity with the upstream nodejs-mobile recipe.
+- mtime normalization: a fresh `git` checkout stamps every source file with
+  "now", newer than any cached `.o`, which would force a full rebuild despite
+  the cache. Before configure, the workflow stamps the pristine source tree to
+  a fixed old timestamp (2000-01-01); on a prefix restore it re-stamps the files
+  rewritten by the patch series so exactly those units and their dependents
+  rebuild. On an exact key hit the tree is identical to the cached build and
+  nothing is rebuilt.
 - The final validation/signing/packaging steps run on a cache hit too (only the
   compile is skipped).
 - CI cannot execute iOS binaries; therefore **no workflow claims device
