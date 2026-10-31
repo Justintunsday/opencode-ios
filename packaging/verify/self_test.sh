@@ -105,10 +105,13 @@ expect_failure_with_message \
         --opencode-dir "$EMPTY/opencode" \
         --out-dir "$WORK_DIR/negative-out"
 
+# A >32-byte non-Mach-O file: check_macho must reject it as not Mach-O.
+printf 'this is definitely not a Mach-O executable, just some text padding %s\n' \
+    '0123456789012345678901234567890123456789' > "$WORK_DIR/not-a-macho.txt"
 expect_failure_with_message \
-    "check_macho rejects a macOS binary as the iOS runtime" \
+    "check_macho rejects a non-Mach-O file" \
     "Not a thin little-endian arm64 Mach-O executable" \
-    "$PYTHON" "$ROOT/scripts/check_macho.py" "$WORK_DIR/tiny.c" --max-minos 16.1.1
+    "$PYTHON" "$ROOT/scripts/check_macho.py" "$WORK_DIR/not-a-macho.txt" --max-minos 16.1.1
 
 info "scripts self-test fixtures and negative tests PASSED"
 info "self-test work dir: $WORK_DIR"
