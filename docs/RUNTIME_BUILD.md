@@ -209,19 +209,24 @@ compatibility.
   (gyp generation) all run before the long `make`.
 - Aggressive caching: `actions/cache/restore` + `actions/cache/save` for
   `nodejs-mobile/out/Release`, keyed on Node version + nodejs-mobile commit +
-  Xcode version + patch sha256 + `cache_epoch`, with a prefix `restore-keys`
-  fallback so a failed run's partially built tree makes the next run
-  incremental. The cache is saved even when the job fails
-  (`if: always()`, `continue-on-error: true`) and the save step is skipped on
-  an exact cache hit. `mozilla-actions/sccache-action@v0.0.6` is enabled for
-  parity with the upstream nodejs-mobile recipe.
-- mtime normalization: a fresh `git` checkout stamps every source file with
-  "now", newer than any cached `.o`, which would force a full rebuild despite
-  the cache. Before configure, the workflow stamps the pristine source tree to
-  a fixed old timestamp (2000-01-01); on a prefix restore it re-stamps the files
-  rewritten by the patch series so exactly those units and their dependents
-  rebuild. On an exact key hit the tree is identical to the cached build and
-  nothing is rebuilt.
+  Xcode version + patch-series sha256 + `cache_epoch`, with a prefix
+  `restore-keys` fallback so a failed run's partially built tree makes the next
+  run incremental. The cache is saved even when the job fails
+  (`if: always()`, `continue-on-error: true`) and the save step is skipped on an
+  exact cache hit. Only build inputs are in the key: signing-only files
+  (`entitlements.plist`) do not invalidate the compiled tree.
+  `mozilla-actions/sccache-action@v0.0.6` is enabled for parity with the
+  upstream nodejs-mobile recipe.
+- mtime + build-input fingerprint normalization: a fresh `git` checkout stamps
+  every source file with "now", newer than any cached `.o`, which would force a
+  full rebuild despite the cache. `scripts/build-ios-runtime.sh
+  normalize-cache` stamps the pristine tree to 2000-01-01 and then compares the
+  current build-inputs fingerprint (patch-series sha256 + configure-flag sha256,
+  stored in the cached tree by `configure`) against the cached one: identical ->
+  keep objects (fast no-op make), patch changed -> re-stamp only the files the
+  patch rewrote (incremental rebuild), configure flags changed -> stamp
+  everything to now (correct full rebuild). On an exact cache-key hit nothing is
+  rebuilt.
 - The final validation/signing/packaging steps run on a cache hit too (only the
   compile is skipped).
 - CI cannot execute iOS binaries; therefore **no workflow claims device

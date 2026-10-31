@@ -85,6 +85,71 @@ node_version_from_source() {
   printf '%s.%s.%s' "$major" "$minor" "$patch"
 }
 
+# Stable fingerprint of everything that changes the compiled object tree: the
+# patch-series content and the configure flag set. It is stored inside the
+# cached build tree (out/Release/.runtime-build-inputs) so a later run can tell
+# whether restored objects are still valid or must be rebuilt.
+build_inputs_fingerprint() {
+  local patch_sha flags_sha
+  patch_sha="$(cat "$ROOT"/patches/nodejs-mobile/*.patch | shasum -a 256 | awk '{print $1}')"
+  flags_sha="$(printf '%s\n' "${CONFIGURE_FLAGS[@]}" | shasum -a 256 | awk '{print $1}')"
+  printf 'patch_sha=%s\nflags_sha=%s\n' "$patch_sha" "$flags_sha"
+}
+
+# Prepare a restored out/Release cache for an incremental `make`.
+#
+# A fresh `git checkout` stamps every source file with "now", which is newer
+# than every cached .o, so make would rebuild the entire tree even though the
+# cache is valid. We therefore stamp the pristine tree to a fixed old time and
+# then decide, from the build-inputs fingerprint stored in the cached tree,
+# whether the restored objects still correspond to this patch series/flags:
+#   - fingerprint matches  -> keep objects (only configure/make no-op)
+#   - patch changed        -> re-stamp only the files the patch rewrote
+#   - flags changed        -> stamp everything to now (correct full rebuild)
+cmd_normalize_cache() {
+  local cache_hit="${1:-false}"
+  require_patched_source
+  if [[ ! -d "$NODE_SRC/out/Release" ]]; then
+    log "no restored out/Release build tree; nothing to normalize"
+    return 0
+  fi
+  log "normalizing source mtimes for incremental reuse of the restored build tree (cache_hit=$cache_hit)"
+  find "$NODE_SRC" -path "$NODE_SRC/out" -prune -o -type f -exec touch -t 200001010000 {} +
+
+  local marker="$NODE_SRC/out/Release/.runtime-build-inputs"
+  if [[ ! -f "$marker" ]]; then
+    warn "cached tree has no build-inputs fingerprint (older cache); re-stamping files rewritten by the patch series"
+    (
+      cd "$NODE_SRC"
+      git diff --name-only | while read -r f; do [ -f "$f" ] && touch "$f"; done
+      git diff --name-only
+    )
+    return 0
+  fi
+
+  local cur cached cur_patch cur_flags cached_patch cached_flags
+  cur="$(build_inputs_fingerprint)"
+  cached="$(cat "$marker")"
+  cur_patch="$(printf '%s\n' "$cur" | sed -n 's/^patch_sha=//p')"
+  cur_flags="$(printf '%s\n' "$cur" | sed -n 's/^flags_sha=//p')"
+  cached_patch="$(printf '%s\n' "$cached" | sed -n 's/^patch_sha=//p')"
+  cached_flags="$(printf '%s\n' "$cached" | sed -n 's/^flags_sha=//p')"
+
+  if [[ "$cur_patch" == "$cached_patch" && "$cur_flags" == "$cached_flags" ]]; then
+    log "restored tree was built from identical patch series + configure flags; keeping cached objects"
+  elif [[ "$cur_patch" == "$cached_patch" ]]; then
+    warn "configure flags changed; stamping all sources to now to force a correct full rebuild"
+    find "$NODE_SRC" -path "$NODE_SRC/out" -prune -o -type f -exec touch {} +
+  else
+    warn "patch series changed; re-stamping only the files rewritten by the patch (incremental rebuild)"
+    (
+      cd "$NODE_SRC"
+      git diff --name-only | while read -r f; do [ -f "$f" ] && touch "$f"; done
+      git diff --name-only
+    )
+  fi
+}
+
 cmd_configure() {
   require_tools
   require_patched_source
@@ -103,6 +168,10 @@ cmd_configure() {
   log "config.mk: $(grep -E '^(BUILDTYPE|NODE_TARGET_TYPE)=' config.mk | tr '\n' ' ')"
   log "config.gypi target variables: $(grep -E "'(OS|node_target_type|node_use_node_snapshot|node_use_node_code_cache)':" config.gypi | tr -d ' ' | tr '\n' ' ')"
   grep -q "'OS': 'ios'" config.gypi || die "config.gypi does not select OS=ios"
+  mkdir -p out/Release
+  build_inputs_fingerprint > out/Release/.runtime-build-inputs
+  log "build-inputs fingerprint stored in out/Release/.runtime-build-inputs:"
+  cat out/Release/.runtime-build-inputs
   log "configure OK: gyp makefiles generated for iPhoneOS arm64 (node executable target)"
 }
 
@@ -554,8 +623,12 @@ cmd_package() {
 
 usage() {
   cat <<'USAGE'
-usage: scripts/build-ios-runtime.sh {configure|build|package|all|--help}
+usage: scripts/build-ios-runtime.sh {normalize-cache <cache_hit>|configure|build|package|all|--help}
 
+  normalize-cache <cache_hit>
+             prepare a restored out/Release cache for incremental make (mtime
+             normalization + patch/flag fingerprint check); cache_hit is the
+             actions/cache hit value ("true"/"false"/empty)
   configure  run nodejs-mobile ./configure for iPhoneOS arm64 (generates gyp makefiles)
   build      run make -j N (produces out/Release/node; 40-90 min first cold build)
   package    locate/link `node`, ldid-sign, statically validate, write manifest/checksums
@@ -564,10 +637,11 @@ USAGE
 }
 
 case "${1:-}" in
-  configure) cmd_configure ;;
-  build)     cmd_build ;;
-  package)   cmd_package ;;
-  all)       cmd_configure; cmd_build; cmd_package ;;
-  -h|--help|help) usage ;;
+  normalize-cache) cmd_normalize_cache "${2:-false}" ;;
+  configure)       cmd_configure ;;
+  build)           cmd_build ;;
+  package)         cmd_package ;;
+  all)             cmd_configure; cmd_build; cmd_package ;;
+  -h|--help|help)  usage ;;
   *) usage; die "unknown subcommand: ${1:-<none>}" ;;
 esac

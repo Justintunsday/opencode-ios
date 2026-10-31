@@ -145,13 +145,16 @@ jobs:
       - name: Enable sccache
         uses: mozilla-actions/sccache-action@v0.0.6
 
-      - name: Compute patch hash for cache key
+      - name: Compute patch hash for the cache key
         id: cache-inputs
         run: |
           set -euo pipefail
-          patch_sha="$(shasum -a 256 patches/nodejs-mobile/*.patch | awk '{print $1}')"
+          # Only build inputs (patch series content) are part of the cache key;
+          # SIGNING/validation files (e.g. entitlements.plist) do not change the
+          # compiled objects, so a signing-only change must still hit the cache.
+          patch_sha="$(cat patches/nodejs-mobile/*.patch | shasum -a 256 | awk '{print $1}')"
           echo "patch_sha256=$patch_sha" >> "$GITHUB_OUTPUT"
-          echo "patch sha256: $patch_sha"
+          echo "patch series sha256: $patch_sha"
 
       - name: Restore nodejs-mobile out/Release build cache
         id: cache-build
@@ -165,26 +168,14 @@ jobs:
       - name: Normalize source mtimes so the restored build cache is incremental
         # A fresh git checkout stamps every file with "now", which is newer than
         # every cached .o/.a file, so make would rebuild the entire tree even on
-        # a cache hit. Stamp the pristine tree with an old date; on a prefix
-        # (patch-changed) restore, re-stamp only the files the patch rewrote so
-        # exactly those translation units and their dependents rebuild.
+        # a cache hit. The script stamps the pristine tree with an old date and
+        # uses the build-inputs fingerprint stored in the cached tree to decide
+        # whether restored objects are still valid, patch files must be
+        # re-stamped (incremental rebuild) or everything must rebuild (changed
+        # configure flags). See docs/RUNTIME_BUILD.md section 7.
         env:
           CACHE_HIT: ${{ steps.cache-build.outputs.cache-hit }}
-        run: |
-          set -euo pipefail
-          src="$NODEJS_MOBILE_DIR"
-          if [ ! -d "$src/out/Release" ]; then
-            echo "no cached build tree restored; skipping mtime normalization"
-            exit 0
-          fi
-          find "$src" -path "$src/out" -prune -o -type f -exec touch -t 200001010000 {} +
-          if [ "${CACHE_HIT:-}" = "true" ]; then
-            echo "exact cache hit: patched tree identical to cached build; cached objects stay valid"
-          else
-            echo "prefix cache restore: re-stamping files rewritten by the patch series"
-            ( cd "$src"; git diff --name-only | while read -r f; do [ -f "$f" ] && touch "$f"; done )
-            ( cd "$src"; git diff --name-only )
-          fi
+        run: bash scripts/build-ios-runtime.sh normalize-cache "${CACHE_HIT:-false}"
 
       - name: Configure Node.js 22.9.0 for iPhoneOS arm64 (fast gate)
         # Runs ./configure (which also generates out/Makefile via the bundled
