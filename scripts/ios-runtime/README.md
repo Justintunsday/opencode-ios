@@ -29,6 +29,14 @@ ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.plist \
      /var/jb/usr/lib/opencode/runtime/node
 ```
 
+That plist carries exactly the two device-verified keys
+`platform-application` + `com.apple.private.security.no-sandbox`. Do **not** add
+JIT/executable-memory entitlements (`dynamic-codesigning`, `allow-jit`,
+`allow-unsigned-executable-memory`, `disable-library-validation`): on the target
+device those sets are SIGKILLed (exit 137) by the iOS loader, even together with
+`platform-application`. This runtime is jitless and has no WebAssembly, so it
+does not need them.
+
 ## 2. Smoke tests (device — required before claiming runtime works)
 
 Run in NewTerm or over SSH. The runtime is built with V8 `--jitless` and without

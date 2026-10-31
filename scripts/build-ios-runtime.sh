@@ -212,7 +212,10 @@ validate_static() {
   log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only)"
 }
 
-# ldid ad-hoc signing with the minimal entitlement set.
+# ldid ad-hoc signing with the minimal, device-verified entitlement set.
+# Exactly platform-application + com.apple.private.security.no-sandbox are
+# verified to run on the target jailbroken device; anything else tested was
+# SIGKILLed (exit 137) by the iOS loader. See docs/RUNTIME_BUILD.md.
 sign_binary() {
   local bin="$1"
   command -v ldid >/dev/null 2>&1 || die "ldid not installed (brew install ldid)"
@@ -222,14 +225,44 @@ sign_binary() {
   log "embedded entitlements (ldid -e):"
   ldid -e "$bin" > "$DIST/entitlements-signed.xml" 2>&1 || true
   cat "$DIST/entitlements-signed.xml"
-  grep -q 'dynamic-codesigning' "$DIST/entitlements-signed.xml" \
-    || die "signature is missing the dynamic-codesigning entitlement"
-  grep -q 'com.apple.security.cs.allow-jit' "$DIST/entitlements-signed.xml" \
-    || die "signature is missing com.apple.security.cs.allow-jit"
-  grep -q 'com.apple.security.cs.allow-unsigned-executable-memory' "$DIST/entitlements-signed.xml" \
-    || die "signature is missing com.apple.security.cs.allow-unsigned-executable-memory"
-  grep -q 'com.apple.security.cs.disable-library-validation' "$DIST/entitlements-signed.xml" \
-    || die "signature is missing com.apple.security.cs.disable-library-validation"
+
+  # Exact-set check: the signed binary must carry exactly the two device-verified
+  # keys. This is a hard gate - the previous 4-key JIT set was SIGKILLed.
+  python3 - "$DIST/entitlements-signed.xml" <<'PY'
+import plistlib
+import sys
+
+expected = {"platform-application", "com.apple.private.security.no-sandbox"}
+path = sys.argv[1]
+try:
+    with open(path, "rb") as f:
+        data = plistlib.load(f)
+except Exception as exc:  # noqa: BLE001 - report and fall back to text checks
+    print(f"WARNING: could not parse ldid -e output as a plist ({exc}); using text checks")
+    text = open(path, encoding="utf-8", errors="replace").read()
+    missing = [k for k in expected if k not in text]
+    if missing:
+        sys.exit(f"ERROR: signature is missing required entitlement(s): {', '.join(missing)}")
+    for forbidden in (
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-library-validation",
+        "dynamic-codesigning",
+    ):
+        if forbidden in text:
+            sys.exit(f"ERROR: signature carries the rejected entitlement {forbidden!r} "
+                     "(device-verified to cause SIGKILL 137)")
+    print("entitlements: exactly the two device-verified keys are present")
+    sys.exit(0)
+
+keys = set(data) if isinstance(data, dict) else set()
+if keys != expected:
+    sys.exit(
+        "ERROR: signed entitlements must be exactly "
+        f"{sorted(expected)}, got {sorted(keys)}"
+    )
+print("entitlements: exactly the two device-verified keys are present:", sorted(keys))
+PY
 
   # Informational: codesign may or may not be able to read an ldid signature.
   if codesign -d --entitlements :- "$bin" >"$DIST/codesign-entitlements.xml" \
@@ -238,7 +271,7 @@ sign_binary() {
   else
     warn "codesign could not read the ldid signature (informational only; ldid -e is authoritative)"
   fi
-  log "signing OK"
+  log "signing OK (platform-application + com.apple.private.security.no-sandbox)"
 }
 
 write_manifest() {
@@ -366,11 +399,17 @@ manifest = {
         "webassembly": "disabled: PR #150 sets v8_enable_webassembly=0 in configure.py "
                        "(jitless iOS build); WebAssembly is NOT available on this runtime",
         "entitlements": [
-            "com.apple.security.cs.allow-jit",
-            "com.apple.security.cs.allow-unsigned-executable-memory",
-            "com.apple.security.cs.disable-library-validation",
-            "dynamic-codesigning",
+            "platform-application",
+            "com.apple.private.security.no-sandbox",
         ],
+        "entitlements_note": (
+            "Exactly these two keys were verified ON DEVICE (iPhone SE 2 / iOS 16.1.1 / "
+            "Dopamine rootless, 2026-10-31) as the minimal working set. The loader SIGKILLs "
+            "(exit 137) this runtime with platform-application alone or with the previous "
+            "4-key JIT set (allow-jit, allow-unsigned-executable-memory, "
+            "disable-library-validation, dynamic-codesigning); JIT entitlements are omitted "
+            "because this runtime is jitless and has no WebAssembly."
+        ),
         "node_cli_flags_available": {
             "--experimental-sqlite": True,
             "--experimental-vm-modules": True,
@@ -388,14 +427,21 @@ manifest = {
     "signing": {
         "tool": "ldid",
         "command": "ldid -S<entitlements.plist> node",
+        "entitlement_keys": [
+            "platform-application",
+            "com.apple.private.security.no-sandbox",
+        ],
+        "entitlements_device_verified": True,
         "revalidated_after_signing": True,
         "codesign_could_read_signature": (dist / "codesign-entitlements.xml").stat().st_size > 0,
     },
     "device_status": "UNVERIFIED ON DEVICE",
     "device_status_note": (
-        "GitHub-hosted macOS runners cannot execute iPhoneOS binaries. Every check in this "
-        "artifact is static (Mach-O platform/minos, dylib linkage, ldid signature). Actual "
-        "execution on the jailbroken iPhone must be performed by the user; see "
+        "The entitlement set in this artifact is DEVICE-VERIFIED on the target iPhone "
+        "(platform-application + com.apple.private.security.no-sandbox run; the old 4-key JIT "
+        "set is SIGKILLed with exit 137). Execution of THIS 22.9.0 build on the device is still "
+        "pending; GitHub-hosted macOS runners cannot execute iPhoneOS binaries. All payload "
+        "checks in CI are static (Mach-O platform/minos, dylib linkage, ldid signature). See "
         "docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
     ),
 }

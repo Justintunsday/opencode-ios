@@ -3,24 +3,24 @@
 <plist version="1.0">
 <dict>
 	<!--
-	  Minimal entitlement set used to ldid-sign the iPhoneOS arm64 Node.js
-	  runtime. See docs/RUNTIME_BUILD.md ("Signing and entitlements") for the
-	  per-entitlement justification and limitations.
+	  MINIMAL, DEVICE-VERIFIED entitlement set for the iPhoneOS arm64 Node.js
+	  runtime on a jailbroken (Dopamine rootless / ElleKit) device.
 
-	  The shipped runtime is built with V8 --jitless and without WebAssembly,
-	  so it does not require executable memory at runtime. These entitlements
-	  are attached so the same binary can load on-device native addons and can
-	  be re-enabled for JIT/WASM experiments without re-signing policy changes.
-	  They are honoured on jailbroken (Dopamine/ElleKit) devices; they are not
-	  a claim of App Store / stock-iOS compatibility.
+	  Exactly these two keys are required. On-device matrix (iPhone SE 2,
+	  iPhone12,8, iOS 16.1.1, 2026-10-31, Lead-run):
+	    - this 2-key set                                   -> RUNS (version check OK, exit 0)
+	    - platform-application alone                       -> SIGKILL (exit 137)
+	    - + dynamic-codesigning (+ allow-jit etc.)         -> SIGKILL (exit 137)
+	    - platform-application + com.apple.private.security.no-sandbox -> RUNS
+	  The runtime is built jitless and without WebAssembly, so JIT / executable
+	  memory entitlements are not needed and are deliberately omitted.
+
+	  See docs/RUNTIME_BUILD.md ("Signing and entitlements") for the full
+	  evidence matrix and scripts/ios-runtime/README.md for re-signing on device.
 	-->
-	<key>com.apple.security.cs.allow-jit</key>
+	<key>platform-application</key>
 	<true/>
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
-	<key>dynamic-codesigning</key>
+	<key>com.apple.private.security.no-sandbox</key>
 	<true/>
 </dict>
 </plist>

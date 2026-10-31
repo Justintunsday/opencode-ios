@@ -118,29 +118,57 @@ entry point as Node's `src/node_main.cc`). The chosen path is recorded as
 `fallback-link`). In CI the normal executable path is expected; the fallback
 exists so a late link failure still yields a testable runtime.
 
-## 5. Signing and entitlements
+## 5. Signing and entitlements (device-verified minimal set)
 
 `ldid -S<scripts/ios-runtime/entitlements.plist> node` (ad-hoc signing, required
-for jailbroken iOS to load the binary from `/var/jb`). Statically validation is
-re-run **after** signing because signing adds a `LC_CODE_SIGNATURE` load command.
+for jailbroken iOS to load a binary from `/var/jb`). Static validation is re-run
+**after** signing because signing adds a `LC_CODE_SIGNATURE` load command, and
+the signed binary's entitlement set is checked for exactly the two required keys.
 
-Entitlements carried by the artifact, and why:
+The entitlement set shipped in `scripts/ios-runtime/entitlements.plist` is
+exactly:
 
-| Entitlement | Why it is present |
+```xml
+<key>platform-application</key><true/>
+<key>com.apple.private.security.no-sandbox</key><true/>
+```
+
+This set is **device-verified**, not assumed. On the target device (iPhone SE 2,
+iPhone12,8, iOS 16.1.1 20B101, Dopamine rootless + ElleKit 1.2, 2026-10-31) an
+existing iPhoneOS Node binary was re-signed with each candidate set and run:
+
+| Entitlement set | Device result |
 | --- | --- |
-| `com.apple.security.cs.allow-jit` | would permit V8 JIT on a jailbroken device; **not required by the shipped `--jitless` runtime**, kept so a future non-jitless build only needs a rebuild, not a signing-policy change |
-| `com.apple.security.cs.allow-unsigned-executable-memory` | same: future JIT/WASM experimentation; not needed while jitless |
-| `com.apple.security.cs.disable-library-validation` | lets the runtime load ad-hoc-signed / unsigned native addons built on-device (rootless jailbreak context) |
-| `dynamic-codesigning` | jailbreak-scoped code-signing allowance used by the precedent Node-for-iOS packages |
+| `platform-application` + `com.apple.private.security.no-sandbox` | **RUNS** (`node --version` OK, exit 0) |
+| `platform-application` only | SIGKILL (exit 137) |
+| `platform-application` + `dynamic-codesigning` | SIGKILL (exit 137) |
+| `platform-application` + `dynamic-codesigning` + `allow-jit` + `allow-unsigned-executable-memory` + `disable-library-validation` (previous 4-key set) | SIGKILL (exit 137) |
+| previous 4-key set alone (without `platform-application`) | SIGKILL (exit 137) |
+| full 9-key test set (adds `get-task-allow`, `com.apple.private.cs.debugger`, `com.apple.private.skip-library-validation`, ...) | RUNS (but not minimal) |
 
-Why this set and not more: the runtime in this artifact executes no JIT and no
-WebAssembly (§6), so none of these are needed for the shipped configuration. The
-set is deliberately limited to the four precedented entitlements; it is not a
-claim of stock-iOS/App-Store compatibility. On a jailbroken device ldid
-signatures with these entitlements are honoured; if the loader rejects the
-signature, re-sign on device with the bundled `entitlements.plist` (see
-`scripts/ios-runtime/README.md`).
+> The earlier 4-key JIT/executable-memory set (`com.apple.security.cs.allow-jit`,
+> `...allow-unsigned-executable-memory`, `...disable-library-validation`,
+> `dynamic-codesigning`) is **wrong for this artifact**: it is SIGKILLed by the
+> loader (exit 137) even together with `platform-application`. It was replaced
+> before the final artifact; only the two-key set above ships.
 
+Why exactly these two keys:
+
+- `platform-application` - marks the binary as a platform-scoped tool so the
+  jailbroken iOS loader treats it as a first-class executable (required; without
+  it the process is killed before `main`).
+- `com.apple.private.security.no-sandbox` - the runtime needs the jailbroken
+  filesystem layout (`/var/jb/...`, user home, child processes); the sandbox
+  otherwise kills it.
+- **No JIT / executable-memory entitlements** are needed because this runtime is
+  built `--jitless` and without WebAssembly. They are deliberately omitted, and
+  the CI sign step rejects them if they ever reappear in the signed
+  entitlements.
+
+If the device loader rejects the signature, re-sign on device with the bundled
+`entitlements.plist` (see `scripts/ios-runtime/README.md`). This is a
+jailbreak-rootless scenario; it is not a claim of stock-iOS/App-Store
+compatibility.
 ## 6. Runtime policy (what the CLI engineer can rely on)
 
 - **`process.platform === "ios"`.** `node.gyp` defines
@@ -231,9 +259,11 @@ fabricated.
    working.
 2. **No JIT / no WebAssembly** — see §6. CPU-bound JS will be slower; WASM
    features must be feature-detected by the CLI.
-3. **Signing is ldid ad-hoc with the entitlement set above** — behaviour under
-   Dopamine/ElleKit loader is expected to match the precedent packages but is
-   device-verified only after the device test.
+3. **Signing is ldid ad-hoc with the device-verified 2-key set**
+   (`platform-application` + `com.apple.private.security.no-sandbox`). The
+   entitlement requirement itself was verified on the target device (the old
+   4-key JIT set is SIGKILLed); execution of *this* 22.9.0 artifact on the device
+   is still pending external device verification.
 4. **Patch is a subset of PR #150** — the omitted workflow/gitignore/android
    hunks are not needed here; if nodejs-mobile merges PR #150 upstream, this
    repository should re-pin and drop the patch.
