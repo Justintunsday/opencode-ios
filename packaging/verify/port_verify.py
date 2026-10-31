@@ -1892,10 +1892,13 @@ def _check_runtime_profile(checks, ctx, extract_dir):
     """Reject runtime artifacts built with a profile the CLI cannot use.
 
     Device-verified requirement: the OpenCode CLI bundle uses Unicode property
-    escapes and Intl, so a runtime configured `--with-intl=none` fails at parse
-    time on device (`SyntaxError: Invalid regular expression: /[\\p{Mark}...]/gu`).
-    The manifest records the configure flags, so the package pipeline can reject
-    such artifacts before they reach a device.
+    escapes and Intl (including Intl.Segmenter at module top level), so a runtime
+    configured `--with-intl=none` fails at parse time on device
+    (`SyntaxError: Invalid regular expression: /[\\p{Mark}...]/gu`). The manifest
+    records the configure flags, so the package pipeline can reject such artifacts
+    before they reach a device. The intended profile is --with-intl=full-icu
+    (small-icu trims Intl data and Intl.Segmenter is known to misbehave on
+    small-icu builds), so full-icu is reported as the preferred build.
     """
     runtime_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/runtime"
     manifest_path = runtime_dir / "runtime-manifest.json"
@@ -1922,19 +1925,19 @@ def _check_runtime_profile(checks, ctx, extract_dir):
     flags = [str(flag) for flag in flags]
     metrics["runtime_configure_flags"] = flags
     problems = []
+    full_icu = any("--with-intl=full-icu" in flag for flag in flags)
+    other_icu = any("--with-intl=small-icu" in flag for flag in flags)
     if any("--with-intl=none" in flag for flag in flags):
         problems.append(
             "runtime was configured with --with-intl=none: Intl is unavailable and "
             "V8 rejects the Unicode property escapes used by the OpenCode CLI bundle "
-            "(device-verified parse failure). Rebuild with --with-intl=small-icu."
+            "(device-verified parse failure). Rebuild with --with-intl=full-icu "
+            "(preferred; small-icu only if it demonstrably supports Intl.Segmenter)."
         )
-    elif not any(
-        "--with-intl=small-icu" in flag or "--with-intl=full-icu" in flag
-        for flag in flags
-    ):
+    elif not (full_icu or other_icu):
         problems.append(
-            "runtime does not declare --with-intl=small-icu/full-icu; the CLI "
-            "requires Intl support."
+            "runtime does not declare an ICU build (--with-intl=full-icu); the CLI "
+            "requires Intl support, including Intl.Segmenter."
         )
     if not any("--dest-os=ios" in flag for flag in flags):
         problems.append("--dest-os=ios missing from configure flags")
@@ -1949,9 +1952,16 @@ def _check_runtime_profile(checks, ctx, extract_dir):
               "Runtime build profile is usable by the CLI", "FAIL",
               truncate("; ".join(problems), 1200))
     else:
+        detail = "configure flags: " + truncate(", ".join(flags), 700)
+        if full_icu:
+            detail += "; full-icu build (preferred for Intl.Segmenter)"
+        else:
+            detail += (
+                "; small-icu build accepted, but full-icu is the device requirement "
+                "for Intl.Segmenter — confirm on device"
+            )
         check(checks, "runtime.build-profile", "runtime",
-              "Runtime build profile is usable by the CLI", "PASS",
-              "configure flags: " + truncate(", ".join(flags), 700))
+              "Runtime build profile is usable by the CLI", "PASS", detail)
 
 
 def _check_optional_ripgrep(checks, ctx, extract_dir, skip_native, mode):
