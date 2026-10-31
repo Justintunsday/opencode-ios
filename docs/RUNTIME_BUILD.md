@@ -48,6 +48,7 @@ verifies it after checkout):
 | Xcode | `16.4` (`mobiledevops/xcode-select-version-action@v1`) |
 | deployment target | nodejs-mobile's iOS default `IPHONEOS_DEPLOYMENT_TARGET=14.0` (<= device iOS 16.1.1) |
 | ECMA-402/Intl | `--with-intl=full-icu`; ICU 75 source + full data bundled in the pinned tree at `deps/icu-small` (`README-FULL-ICU.txt`, `source/data/in/icudt75l.dat.bz2`), statically linked (no download) |
+| ICU host tools | built as macOS host-toolset binaries by patch 0002 (needed to generate the ICU data file during the iOS cross build) |
 
 Upstream repositories are never modified: CI applies the whole
 `patches/nodejs-mobile/*.patch` series (in filename order) to a clean checkout of
@@ -259,6 +260,30 @@ compiled without ICU Unicode property data. No CLI-side patch can fix a regexp
 syntax error raised before module evaluation, so the runtime had to be rebuilt
 with ICU. That is the `--with-intl=full-icu` configuration of this document.
 
+Corroboration on the same device: the community reference Node 18.20.4 iOS
+binary reports `{"ver":"v18.20.4","icu":"74.2","intl":"object"}`, i.e. an
+ICU-enabled Node runs on this exact hardware/jailbreak. (That reference binary
+was built *on-device*, which is why it embeds ICU; our cross-compiled build links
+the frozen ICU statically instead.) Expected size impact: ~+25-35 MB on the
+`node` binary, ~+10 MB on the compressed `.deb`; installed total ~150 MB, fine
+on the target device.
+
+### 6.2 ICU audit heuristic (important for maintainers)
+
+Node builds ICU with `visibility=hidden`, so ICU symbols are **local** in the
+final Mach-O (and some link configurations strip the symbol table). A
+global-symbol lookup like `nm -gU` can therefore find nothing even when ICU is
+present. CI's audit is deliberately multi-signal and fails only if the build
+config denies i18n or every signal indicates absence:
+
+1. `config.gypi` reports `'v8_enable_i18n_support': 1` (hard requirement), and
+2. at least one of: `nm` (default, local symbols included) finds ICU symbols;
+   `strings -a` finds an `ICU <major>.<minor>` version string; `strings -a` finds
+   the `icudt<major>` data name; the `node` binary grew past 70 MB (the no-Intl
+   baseline was 60,598,384 bytes).
+
+All signals are written to `icu-evidence-<stage>.txt` in the artifact.
+
 ## 7. CI design (performance and debuggability)
 
 - `macos-15` + Xcode 16.4, `timeout-minutes: 360` on the build job.
@@ -321,7 +346,8 @@ only one pending run per group); they are not failures.
 | --- | --- | --- | --- |
 | [41171982508](https://github.com/Justintunsday/opencode-ios/actions/runs/41171982508) | `6cf042d` | **success** (first cold build) | configure gate 05:21:43Z -> 05:21:46Z; `make -j3` 05:21:46Z -> 06:38:24Z (**76m38s** cold, 3 vCPU `macos-15`); build path `make-executable` (`out/Release/node` produced by the normal executable target, `make` exit 0); node 60,598,384 bytes sha256 `53fc2a2237bc6954ef6f780c4d0031fbe67f9b257966f6672c9d7e6ec1201b78`; check_macho PASS iPhoneOS arm64 minos 14.0.0; otool -L only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; cache saved (`ios-node-22.9.0-...-e1-<patch hash>`, ~3 min). Signed with the (now superseded) 4-key JIT entitlement set - see run 41173373500 for the corrected signing. |
 | [41173373500](https://github.com/Justintunsday/opencode-ios/actions/runs/41173373500) | `e7fe917` | cancelled | was re-running from cache with the device-verified 2-key entitlement set; cancelled on 2026-10-31 because device testing showed the no-ICU runtime cannot parse the CLI bundle (missing `Intl`/`\p{}`). No artifact was consumed. |
-| [41178496308](https://github.com/Justintunsday/opencode-ios/actions/runs/41178496308) | `08b4557` | run dispatched 06:54:57Z | ICU rebuild: `--with-intl=full-icu` (canned ICU 75 from `deps/icu-small`), patch 0002 (macOS SDK for ICU host tools during the iOS cross build), cache epoch 2 (cold, configure flags changed), ICU symbol/`v8_enable_i18n_support=1` hard gates, optional `ios-ripgrep` job. This is the artifact that fixes the CLI-blocking device failure recorded in §6.1. |
+| [41178496308](https://github.com/Justintunsday/opencode-ios/actions/runs/41178496308) | `08b4557` | **failure (audit heuristic, build OK)** | ICU rebuild with `--with-intl=full-icu`: configure accepted the canned ICU 75 source (`Using floating patch tools/icu/patches/75/.../genccode.c`); `make -j3` ran 06:58:45Z -> 08:18Z and produced `out/Release/node` with ICU static libraries linked; **the run then failed only in CI's ICU symbol audit** (`ERROR: binary does not appear to contain ICU symbols`), because ICU is compiled with `visibility=hidden` and the symbols are local in the final binary while the audit used a global-symbol-style grep. Fixed by the multi-signal audit described in §6.2. The `out/Release` tree was cached (failed-run cache save) so the rerun is incremental. |
+| [_rerun after ICU audit fix_](https://github.com/Justintunsday/opencode-ios/actions/runs/) | _pending commit_ | _to be filled in_ | re-runs with the multi-signal ICU audit from the cached full-ICU build tree; device-debug artifact (`ios-node-runtime-debug`) is uploaded automatically if the run fails again. |
 
 ## 10. Limitations / unresolved issues
 

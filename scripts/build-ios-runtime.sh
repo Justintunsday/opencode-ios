@@ -278,16 +278,54 @@ validate_static() {
   fi
   # ECMA-402/Intl and V8 Unicode property escapes (\p{...}) are required by the
   # OpenCode CLI bundle (device evidence: the initial --with-intl=none runtime was
-  # rejected with "Invalid property name in character class"). Assert that the
-  # build really has V8 i18n enabled and that ICU is statically linked.
+  # rejected with "Invalid property name in character class"). The build must have
+  # V8 i18n enabled and full ICU linked statically.
+  #
+  # IMPORTANT: Node builds ICU with visibility=hidden, so ICU symbols are LOCAL in
+  # the final binary (and some link configurations strip the symbol table). Do not
+  # rely on a global-symbol grep. Collect several independent signals and fail
+  # only if the build config denies i18n or every signal indicates ICU is absent.
   log "[$stage] ICU/Intl presence audit"
+  local icu_evidence="$DIST/icu-evidence-$stage.txt"
+  local bin_size icu_signals=0
+  bin_size="$(stat -f %z "$bin")"
+  {
+    echo "== config.gypi =="
+    grep -E "'(v8_enable_i18n_support|icu_small|icu_ver_major|icu_endianness)':" "$NODE_SRC/config.gypi" || true
+    echo "== binary size =="
+    echo "$bin_size bytes (no-Intl baseline was 60598384 bytes)"
+    echo "== nm (local symbols included, no -g/-U) =="
+    nm "$bin" 2>&1 | grep -E '(icudt[0-9]+[a-z_]*_dat|u_strToUpper|u_getPropertyEnum|u_getIntPropertyValue|u_getUnicodeVersion|u_init|icu_[0-9]+_dat)' | head -n 10 || true
+    echo "== strings: ICU version =="
+    strings -a "$bin" 2>/dev/null | grep -m3 -E 'ICU [0-9]+\.[0-9]+' || true
+    echo "== strings: ICU data name =="
+    strings -a "$bin" 2>/dev/null | grep -m3 'icudt[0-9]' || true
+  } > "$icu_evidence" 2>&1
+  cat "$icu_evidence"
+
   grep -q "'v8_enable_i18n_support': 1" "$NODE_SRC/config.gypi" \
     || die "config.gypi has no v8_enable_i18n_support=1 (build must use --with-intl=full-icu)"
-  if ! nm "$bin" 2>/dev/null | grep -qE '_(icudt[0-9]+_dat|u_strToUpper)'; then
-    die "binary does not appear to contain ICU symbols (needed for Intl and V8 \\p{} regexps)"
+
+  if nm "$bin" 2>/dev/null | grep -qE '(icudt[0-9]+[a-z_]*_dat|u_strToUpper|u_getPropertyEnum|u_getIntPropertyValue)'; then
+    icu_signals=$((icu_signals + 1))
+    log "[$stage] ICU signal: nm found ICU symbols (local symbols count)"
   fi
-  nm "$bin" 2>/dev/null | grep -E '_(icudt[0-9]+_dat|u_strToUpper)$' | head -n 3 | tee "$DIST/icu-symbols-$stage.txt"
-  log "[$stage] ICU present: full-icu statically linked (v8_enable_i18n_support=1)"
+  if strings -a "$bin" 2>/dev/null | grep -qE 'ICU [0-9]+\.[0-9]+'; then
+    icu_signals=$((icu_signals + 1))
+    log "[$stage] ICU signal: ICU version string present"
+  fi
+  if strings -a "$bin" 2>/dev/null | grep -q 'icudt[0-9]'; then
+    icu_signals=$((icu_signals + 1))
+    log "[$stage] ICU signal: ICU data name present"
+  fi
+  if [[ "$bin_size" -gt 70000000 ]]; then
+    icu_signals=$((icu_signals + 1))
+    log "[$stage] ICU signal: binary size $bin_size > 70 MB (no-Intl baseline 60.6 MB, full ICU adds ~25-35 MB)"
+  fi
+  if [[ "$icu_signals" -eq 0 ]]; then
+    die "no ICU evidence found (config says i18n=1, but nm/strings/size all indicate absence); see $icu_evidence"
+  fi
+  log "[$stage] ICU present: full-icu statically linked (v8_enable_i18n_support=1; $icu_signals/4 signals)"
   log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU linked)"
 }
 

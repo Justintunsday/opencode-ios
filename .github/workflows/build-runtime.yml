@@ -194,6 +194,46 @@ jobs:
       - name: Sign, statically validate and package ios-node-runtime
         run: bash scripts/build-ios-runtime.sh package
 
+      - name: Best-effort device-debug binary (failed runs only)
+        # If static validation failed we still want the freshly built binary for
+        # immediate real-device testing (device is ground truth for ICU/Intl).
+        # This is NOT a validated artifact: it is ldid-signed best-effort and
+        # clearly marked DEBUG-ONLY.
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p dist/ios-node-runtime
+          if [ -f dist/ios-node-runtime/node ]; then
+            if command -v ldid >/dev/null 2>&1; then
+              ldid -Sscripts/ios-runtime/entitlements.plist dist/ios-node-runtime/node || true
+              ldid -e dist/ios-node-runtime/node > dist/ios-node-runtime/entitlements-signed.xml 2>&1 || true
+            fi
+            {
+              echo "DEBUG-ONLY artifact produced by a FAILED run."
+              echo "Static validation did NOT pass; do not package or publish this binary."
+              echo "Purpose: immediate device testing (re-sign on device if needed with entitlements.plist)."
+              echo "node sha256: $(shasum -a 256 dist/ios-node-runtime/node | awk '{print $1}')"
+              echo "node size: $(stat -f %z dist/ios-node-runtime/node) bytes"
+            } > dist/ios-node-runtime/DEBUG-README.txt
+            ls -l dist/ios-node-runtime || true
+          fi
+
+      - name: Upload ios-node-runtime-debug artifact (failed runs only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-node-runtime-debug
+          path: |
+            dist/ios-node-runtime/node
+            dist/ios-node-runtime/DEBUG-README.txt
+            dist/ios-node-runtime/entitlements.plist
+            dist/ios-node-runtime/entitlements-signed.xml
+            dist/ios-node-runtime/validation-report.txt
+            dist/ios-node-runtime/icu-evidence-*.txt
+            dist/build-make.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Check whether the build tree exists for caching
         id: outdir
         if: always()
@@ -265,6 +305,7 @@ jobs:
             dist/ios-node-runtime/vtool-signed.txt
             dist/ios-node-runtime/otool-L-signed.txt
             dist/ios-node-runtime/entitlements-signed.xml
+            dist/ios-node-runtime/icu-evidence-signed.txt
             dist/ios-node-runtime/build-summary.txt
           if-no-files-found: error
           retention-days: 30
