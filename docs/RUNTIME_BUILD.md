@@ -1,6 +1,7 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
-Status: **CI build of the `node` CLI (full-icu) + static Mach-O audit.**
+Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly) + static
+Mach-O audit; the v3 artifact is CI-green and awaiting device verification.**
 A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
 target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
 but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
@@ -386,6 +387,11 @@ Device execution remains **UNVERIFIED ON DEVICE**. Note that the Rust
 instead of `LC_BUILD_VERSION`, so the vtool check accepts either; the strict
 platform/arch/minos validation is done by `scripts/check_macho.py`.
 
+Green build evidence (run 41193603642): `ios-ripgrep` contains `rg` 6,624,992
+bytes sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b`,
+Mach-O arm64 platform IOS, ldid ad-hoc signed (no entitlements), with
+`ripgrep-manifest.json` and `SHA256SUMS`.
+
 ## 9. CI run log / evidence
 
 This section records the actual GitHub Actions runs for this workflow. Every
@@ -404,7 +410,7 @@ only one pending run per group); they are not failures.
 | [41184686029](https://github.com/Justintunsday/opencode-ios/actions/runs/41184686029) | `e803c8b` | **success** (ICU artifact) | exact `out/Release` cache hit from the failed run, so `make` was incremental (run 08:27:57Z -> 08:39:01Z); ICU audit passed with 4/4 signals; **node 97,286,800 bytes, sha256 `790cb43296dbed51a6375d82eca5a5a178808ca9fb3fecbabbd2daf547adaac2`**; `v8_enable_i18n_support=1`, `icu_small=false`, ICU 75; `nm` local symbols `_icudt75_dat`, `_u_strToUpper_75`, `_u_getPropertyEnum_75`; otool -L still only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; 2-key entitlement signature. The optional `ios-ripgrep` job failed in that run only on the too-strict `platform IOS` vtool grep (the binary uses the legacy `LC_VERSION_MIN_IPHONEOS` command; `check_macho.py` had PASSed); job-level `continue-on-error` kept the run/artifact-consumption green, and §8 has the fix. |
 | [41185874714](https://github.com/Justintunsday/opencode-ios/actions/runs/41185874714) | `72da8ac` | cancelled | ICU-audit SIGPIPE/`pipefail` hardening + ripgrep vtool fix; cancelled on 2026-10-31 to free the macOS runner for the v3 (JIT+wasm) rebuild. The hardening is on `main` and ships with v3. |
 | [41193511671](https://github.com/Justintunsday/opencode-ios/actions/runs/41193511671) | `1df4b27` | cancelled (manifest wording) | first v3 dispatch (JIT+wasm). Cancelled ~2 min in, before any compile, because `runtime_policy.v8_jit` still contained the string `--v8-options=--jitless`; the packager capability gate fails any policy text containing `jitless` (§7), so the artifact could never be packaged. Replaced by `c20bf63` below; the binary build inputs were unchanged. |
-| [41193603642](https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642) | `c20bf63` | run started 10:40Z | **runtime v3: JIT + WebAssembly enabled.** Patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals), updates the manifest policy to gate-compatible `v8_jit=enabled:` / `webassembly=enabled:` text with iPhone SE 2 device evidence, and hard-fails the package step if the manifest drifts from the packager gate. Configure flags changed, so cache epoch 3 means a deliberate cold rebuild (~80-95 min). This fixes the last known device blocker (§6.3). |
+| [41193603642](https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642) | `c20bf63` | **success (v3 candidate)** | **runtime v3: JIT + WebAssembly enabled.** Patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals), gate-compatible manifest policy text with iPhone SE 2 device evidence, and an inline `check_manifest_profile_gate` (printed *"runtime-manifest.json capability profile is packager-gate compatible"*). Cold rebuild 10:45:16Z -> 12:40Z (~115 min on 3 vCPU with wasm+ICU); both jobs success, including optional `ios-ripgrep` (rg sha256 `6cc1cea8...`). **node 106,822,656 bytes sha256 `5808d7027cdfcbb138668243fd61b221efcc810e67d5411da15b432a6f4c1876`**; `[signed] WebAssembly present: enabled (2/3 signals); JIT enabled (no --jitless)`; `[signed] ICU present: full-icu statically linked (3/4 signals)`; otool -L still only libSystem/libc++; 2-key signature revalidated. This is the artifact handed to device verification (expected: `process.versions.icu` ~75.x, `typeof Intl==="object"`, `\p{L}` works, `typeof WebAssembly==="object"`, built-in fetch initialises). |
 
 ## 10. Limitations / unresolved issues
 
