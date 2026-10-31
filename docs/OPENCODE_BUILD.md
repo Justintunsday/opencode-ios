@@ -4,8 +4,9 @@ Status: **CI build + host-Node smoke verified; device execution pending the runt
 (`UNVERIFIED ON DEVICE`). First device attempts found that the initial iPhoneOS runtime was
 built `--with-intl=none`, which makes V8 reject the bundle's Unicode property escapes at
 parse time and leaves `Intl` undefined — a runtime capability gap, not a CLI patch issue
-(see §11). The runtime is being rebuilt with `--with-intl=small-icu`; the CLI artifact is
-otherwise device-ready and package-integration-proven.
+(see §11). The runtime is being rebuilt with `--with-intl=full-icu` (strongest ICU data set;
+small-icu would also suffice); the CLI artifact is otherwise device-ready and
+package-integration-proven.
 
 This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
@@ -225,10 +226,11 @@ exec /var/jb/usr/lib/opencode/runtime/node \
 - `--experimental-sqlite` is **required**: on Node 22.9 `node:sqlite` (used for
   `DatabaseSync`, session storage) is flag-gated. Do **not** pass `--experimental-ffi` or
   `--use-system-ca`; neither exists on Node 22.9.0.
-- The runtime **must be built with ICU** (`--with-intl=small-icu` or `full-icu`, Node's
+- The runtime **must be built with ICU** (`--with-intl=full-icu`, or `small-icu`; Node's
   standard configurations). A runtime built `--with-intl=none` cannot run the bundle at all:
   V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
-  undefined (device-reported; see §11). The `build-runtime.yml` runtime uses small-icu.
+  undefined (device-reported; see §11). `build-runtime.yml` now builds with `full-icu` and
+  its manifest/validation gate rejects no-ICU runtimes.
 - The prelude sets `OPENCODE_NODE_ASSETS_DIR` to `<bundle dir>/assets` by default. If the
   wrapper sets it explicitly (recommended: `/var/jb/usr/lib/opencode/cli/assets`) the
   prelude respects the override. `OTUI_ASSET_ROOT` is set from the same root.
@@ -310,10 +312,11 @@ catch it), and (b) the ECMA-402 `Intl` object is absent. This is a runtime capab
 the CLI patch series is not implicated (none of the six patches uses `Intl` or `\p{...}`).
 
 Primary fix (owned by the runtime build): rebuild Node 22.9.0 with
-`--with-intl=small-icu`. small-icu links ICU (so V8 regex property escapes work and
-`Intl.Segmenter`/`DateTimeFormat`/`NumberFormat`/`ListFormat`/`Collator` exist with
-root/English formatting data) and adds only a few MB to the runtime binary. `\p{...}`
-support depends on ICU's Unicode property data, which small-icu includes.
+`--with-intl=full-icu` (or `small-icu`). ICU is linked either way (so V8 regex property
+escapes work and `Intl.Segmenter`/`DateTimeFormat`/`NumberFormat`/`ListFormat`/`Collator`
+exist); `\p{...}` support depends on ICU's Unicode property data, which small-icu already
+includes, and the port's runtime uses the stronger `full-icu` data set. The runtime build
+now also validates `v8_enable_i18n_support=1` so a no-ICU runtime cannot be packaged.
 
 ### Measured exposure in the run-4 artifact
 
@@ -339,7 +342,7 @@ own sources (`packages/core/src/shell/scan.ts`, `packages/core/src/tool/plugin/e
 `packages/session-ui/...`). The top-level `Intl.Segmenter` sites are in merman/latex/tui
 modules that the single-file bundle evaluates at load.
 
-### Hedge if the small-icu rebuild fails (design only, not implemented)
+### Hedge if the ICU rebuild fails (design only, not implemented)
 
 This is deliberately **not implemented**; the ICU runtime is the correct fix. If it cannot
 be produced, the minimal on-device workaround has two parts:
@@ -366,9 +369,9 @@ be produced, the minimal on-device workaround has two parts:
    additional polyfills (another ~half day, higher risk).
 
 **Verdict:** the no-ICU hedge is 1–2 days of fragile build/transform work and approximates
-Unicode behaviour; rebuilding the runtime with small-icu (a supported Node configuration)
-fixes both failure classes exactly and keeps the CLI patch series unchanged. Only pursue the
-hedge if the small-icu runtime cannot be produced.
+Unicode behaviour; rebuilding the runtime with ICU (a supported Node configuration) fixes
+both failure classes exactly and keeps the CLI patch series unchanged. Only pursue the
+hedge if the ICU runtime cannot be produced.
 
 No device success is claimed in this section; it records a device-reported failure and a
 contingency analysis. The device verification matrix in §9 will be filled from the
