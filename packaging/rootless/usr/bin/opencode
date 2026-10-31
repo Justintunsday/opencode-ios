@@ -13,9 +13,12 @@
 # no network access and no credentials are involved here.
 #
 # Runtime defaults (see docs/VERIFICATION.md and docs/KNOWN_LIMITATIONS.md):
-#   * The Node.js 22.9.0 iPhoneOS runtime shipped in v1 is built with V8 JIT
-#     disabled (`--v8-options=--jitless`) and WebAssembly disabled. Do not
-#     expect TurboFan/WASM to be available on this runtime.
+#   * The shipped Node.js 22.9.0 iPhoneOS runtime is built with full ICU,
+#     WebAssembly and JIT enabled, signed with the device-verified 2-key
+#     entitlement set (platform-application + no-sandbox). WebAssembly/JIT are
+#     required: Node's built-in fetch/undici needs wasm llhttp, and a
+#     wasm-disabled runtime fails on device with
+#     "ReferenceError: WebAssembly is not defined" for every CLI command.
 #   * --experimental-sqlite is required on Node 22.9 for `node:sqlite`; the CLI
 #     bundle imports it.
 #   * --no-warnings / --disable-warning=ExperimentalWarning keep CLI output clean.
@@ -23,10 +26,10 @@
 #     a large session cannot push the process into jetsam before V8 GC notices.
 #
 # Optional environment overrides (all documented in docs/INSTALL.md):
-#   OPENCODE_IOS_JITLESS=1        add --jitless explicitly. The v1 runtime is
-#                                 already jitless, so this is diagnostic parity
-#                                 for future JIT-enabled runtimes; it cannot
-#                                 re-enable JIT.
+#   OPENCODE_IOS_JITLESS=1        add --jitless explicitly (debug/fallback only:
+#                                 disables JIT and WebAssembly, so network/fetch
+#                                 features of the CLI will not work; the runtime
+#                                 is shipped JIT+WASM enabled).
 #   OPENCODE_IOS_NODE_FLAGS=...   extra Node/V8 flags (word-split), e.g.
 #                                 OPENCODE_IOS_NODE_FLAGS="--trace-warnings"
 #   OPENCODE_IOS_MAX_OLD_SPACE_MB V8 old-space cap in MiB (default 1536)

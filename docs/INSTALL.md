@@ -31,7 +31,8 @@ Rootless environment facts (device-verified on the target iPhone):
 | `HOME` | SSH/NewTerm sessions run as `mobile` (uid 501) with `HOME=/var/jb/var/mobile`. Config/data therefore resolve to `/var/jb/var/mobile/.config/opencode` and `/var/jb/var/mobile/.local/share/opencode`. |
 | `PATH` | SSH default: `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`. The packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` so shells/tools spawned by the CLI resolve. |
 | `git` | **Not installed by default.** The package `Recommends: git`; install it with `sudo apt-get install -y git` (Procursus apt, git 2.39.1) for git tool support. |
-| Entitlements | The device-verified minimal runtime entitlement set is exactly `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient on this device. |
+| Entitlements | The device-verified minimal runtime entitlement set is exactly `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient on this device; the same 2-key set was device-proven to permit JIT and WebAssembly. |
+| Runtime capabilities | The shipped runtime must be **full-ICU** with **WebAssembly and JIT enabled** (Node 22.9's built-in fetch/undici requires wasm llhttp; a wasm-disabled runtime fails on device with `ReferenceError: WebAssembly is not defined`). Packaging CI rejects runtimes built `--with-intl=none` or with `--jitless`/WebAssembly disabled. |
 | Launcher shebang | `/var/jb/usr/bin/opencode` starts with `#!/var/jb/bin/sh` because the kernel execs it directly and `/bin/sh` does not exist. Maintainer scripts keep `#!/bin/sh`, which rootless Procursus `dpkg` handles (device-verified). |
 
 Node.js 22.9.0 is older than the Node version upstream OpenCode normally targets;
@@ -70,6 +71,16 @@ The artifact contains:
 Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 `UPSTREAM.lock`). The exact SHA-256 of the published `.deb` is recorded in
 `SHA256SUMS` and inside `package-report.json`.
+
+> **Shipping status (2026-10-31):** a CI-green **intermediate** package has been
+> built and validated (package run `41185611403`), but it is **not shippable**:
+> it was assembled against a WebAssembly-disabled runtime, so on the device every
+> CLI command fails with `ReferenceError: WebAssembly is not defined` (Node's
+> built-in fetch/undici needs wasm llhttp). The final package requires the v3
+> runtime with full-ICU + WebAssembly + JIT enabled; packaging CI now rejects
+> wasm-disabled/JIT-less runtime artifacts. Only install a `.deb` whose
+> `package-report.json` shows `runtime.build-profile` PASS with
+> "WebAssembly enabled; JIT enabled".
 
 ## 3. Transfer the package to the device
 
@@ -148,14 +159,17 @@ bug. The launcher shebang is `/var/jb/bin/sh` because rootless iOS has no
 `~/.profile`. Your session `HOME` is `/var/jb/var/mobile` (SSH/NewTerm), so config
 and sessions live beneath it.
 
-The v1 runtime is **built with V8 JIT disabled** (`--v8-options=--jitless`) and
-WebAssembly disabled for reliability on a rootless jailbreak. It does not need a
-JIT/executable-memory entitlement to start, so expect interpreter-level
-performance rather than desktop speed. Escape hatches (documented in
-`KNOWN_LIMITATIONS.md`):
+The shipped runtime is built with **full ICU and with WebAssembly + JIT
+enabled**, signed with the device-verified 2-key entitlement set. WebAssembly and
+JIT are required: Node 22.9's built-in fetch/undici needs wasm llhttp, and a
+jitless/no-wasm build fails with
+`ReferenceError: WebAssembly is not defined` for every CLI command. The
+`OPENCODE_IOS_JITLESS=1` escape hatch adds `--jitless` (debug/fallback only): it
+disables JIT and WebAssembly, so network/fetch-dependent commands will not work.
+Escape hatches (documented in `KNOWN_LIMITATIONS.md`):
 
 ```sh
-OPENCODE_IOS_JITLESS=1 opencode --version     # explicit parity with future builds
+OPENCODE_IOS_JITLESS=1 opencode --version     # debug only: disables JIT+WASM
 OPENCODE_IOS_MAX_OLD_SPACE_MB=1024 opencode   # lower V8 heap (2 GB devices)
 OPENCODE_IOS_NODE_FLAGS=--trace-warnings opencode   # extra Node/V8 flags
 ```
@@ -244,6 +258,8 @@ Success criteria:
 | shell in PATH | `OK   sh resolves in PATH: /var/jb/usr/bin/sh` |
 | HOME writable | `OK   HOME is writable: /var/jb/var/mobile` |
 | git (optional) | `OK   git present: git version 2.39.1` — or a `WARN ... install with: sudo apt-get install -y git` |
+| runtime capabilities | `OK   runtime capabilities: WebAssembly=object, v8_enable_webassembly=1, fetch=function, Intl=object` |
+| WebAssembly compilation | `OK   WebAssembly module compilation works (JIT/executable memory available)` |
 | `opencode --version` | exit 0 and the OpenCode version (2.2.5) printed |
 | `opencode --help` | exit 0 with a usage block |
 | argument forwarding | `OK   launcher forwards CLI arguments` |
@@ -270,7 +286,8 @@ test.
 
 | Symptom | Cause / fix |
 | --- | --- |
-| Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Entitlement/code-signature problem. The package ships the **device-verified minimal entitlement set**: `platform-application` + `com.apple.private.security.no-sandbox` (`runtime/entitlements.xml`). Re-sign the runtime with exactly those shipped entitlements, then retry: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`. Do **not** substitute the older allow-jit / allow-unsigned-executable-memory / disable-library-validation / dynamic-codesigning sets: those were empirically SIGKILLed on the target device (exit 137) even though the node binary is jitless. `ldid` is installed on the target device; it is not a package dependency. |
+| Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Entitlement/code-signature problem. The package ships the **device-verified minimal entitlement set**: `platform-application` + `com.apple.private.security.no-sandbox` (`runtime/entitlements.xml`). Re-sign the runtime with exactly those shipped entitlements, then retry: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`. Do **not** substitute the older allow-jit / allow-unsigned-executable-memory / disable-library-validation / dynamic-codesigning sets: those were empirically SIGKILLed on the target device (exit 137), while the 2-key set was device-proven to run the JIT+WebAssembly-enabled runtime. `ldid` is installed on the target device; it is not a package dependency. |
+| Every command fails with `ReferenceError: WebAssembly is not defined` | The runtime was built with WebAssembly disabled (device-verified on the intermediate package: Node's fetch/undici needs wasm llhttp) or `OPENCODE_IOS_JITLESS=1` is set in the environment. Install the final package built from a WebAssembly+JIT-enabled runtime (check `package-report.json` → `runtime.build-profile`: "WebAssembly enabled; JIT enabled") and unset `OPENCODE_IOS_JITLESS`. |
 | `bad option: --use-system-ca` / `--experimental-ffi` | A custom launcher/wrapper is passing Node flags that do not exist in Node 22.9. Use the installed launcher unmodified (it passes `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size` only). The device jitless runtime accepts `--jitless` fine; `--use-system-ca`/`--experimental-ffi` must never be passed. |
 | `/var/jb/bin/sh: not found` / `bad interpreter` when running `opencode` | Launcher was replaced or the package was edited by hand. Rootless iOS has no `/bin/sh`; the launcher must keep the `#!/var/jb/bin/sh` shebang. Reinstall the `.deb`. |
 | CLI fails with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu` or `Intl is undefined` | The runtime was built without ICU (`--with-intl=none`). Device-verified on the first no-ICU runtime build; the CLI bundle requires Intl/Unicode property escapes and `Intl.Segmenter`. Reinstall a package built from a full-ICU (`--with-intl=full-icu`) runtime — packaging CI rejects no-ICU runtime artifacts, and the bundle must not be patched. |

@@ -219,34 +219,67 @@ class CheckSummaryTest(unittest.TestCase):
 
 
 class RuntimeBuildProfileTest(unittest.TestCase):
-    def _run_profile_check(self, configure_flags):
+    GOOD_FLAGS = [
+        "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=full-icu",
+    ]
+    GOOD_POLICY = {
+        "intl": {"mode": "full-icu", "icu_version": "75"},
+        "webassembly": "enabled (V8 wasm)",
+        "v8_jit": "enabled",
+    }
+
+    def _run_profile_check(self, configure_flags=None, runtime_policy="default"):
+        if configure_flags is None:
+            configure_flags = list(self.GOOD_FLAGS)
+        if runtime_policy == "default":
+            runtime_policy = dict(self.GOOD_POLICY)
         with tempfile.TemporaryDirectory() as td:
             runtime = Path(td) / "var/jb/usr/lib/opencode/runtime"
             runtime.mkdir(parents=True)
             manifest = {"build": {"configure_flags": configure_flags}}
+            if runtime_policy is not None:
+                manifest["runtime_policy"] = runtime_policy
             (runtime / "runtime-manifest.json").write_text(json.dumps(manifest))
             checks = []
             ctx = {"metrics": {}}
             port_verify._check_runtime_profile(checks, ctx, td)
             return checks
 
-    def test_accepts_icu_jitless_ios_profile(self):
-        checks = self._run_profile_check([
-            "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=small-icu",
-            "--v8-options=--jitless",
-        ])
+    def test_accepts_full_icu_wasm_jit_profile(self):
+        checks = self._run_profile_check()
         self.assertEqual(checks[0]["status"], "PASS")
+        self.assertIn("WebAssembly enabled", checks[0]["evidence"])
 
     def test_rejects_with_intl_none(self):
         checks = self._run_profile_check([
             "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=none",
-            "--v8-options=--jitless",
         ])
         self.assertEqual(checks[0]["status"], "FAIL")
         self.assertIn("with-intl=none", checks[0]["evidence"])
 
+    def test_rejects_jitless_flag(self):
+        checks = self._run_profile_check(self.GOOD_FLAGS + ["--v8-options=--jitless"])
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("jitless", checks[0]["evidence"])
+
+    def test_rejects_disabled_webassembly(self):
+        policy = dict(self.GOOD_POLICY)
+        policy["webassembly"] = "disabled: jitless build has no wasm"
+        checks = self._run_profile_check(runtime_policy=policy)
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("WebAssembly must be enabled", checks[0]["evidence"])
+
+    def test_rejects_missing_webassembly_declaration(self):
+        policy = {
+            "intl": {"mode": "full-icu", "icu_version": "75"},
+            "v8_jit": "enabled",
+        }
+        checks = self._run_profile_check(runtime_policy=policy)
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("does not declare runtime_policy.webassembly", checks[0]["evidence"])
+
     def test_skips_without_configure_flags(self):
-        checks = self._run_profile_check([])
+        checks = self._run_profile_check(configure_flags=[])
         self.assertEqual(checks[0]["status"], "SKIP")
 
 

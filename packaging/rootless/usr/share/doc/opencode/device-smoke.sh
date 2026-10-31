@@ -4,6 +4,11 @@
 # Shebang is /var/jb/bin/sh because rootless iOS has no /bin/sh; invoking it as
 # `sh /var/jb/usr/share/doc/opencode/device-smoke.sh` works regardless.
 #
+# Checks (offline): package files, rootless shell/PATH/HOME/git, runtime
+# capabilities (WebAssembly+JIT+ICU), CLI --version/--help, argument forwarding.
+# Model-provider connectivity and real agent turns are not part of this offline
+# test; see docs/INSTALL.md.
+#
 # Run this ON THE iPHONE (NewTerm 3 or SSH), after installing
 # OpenCode-iOS-rootless.deb. It performs offline checks only: no provider API
 # calls, no credentials, no network access. A full agent run additionally
@@ -82,6 +87,31 @@ if command -v git >/dev/null 2>&1; then
     ok "git present: $(git --version 2>/dev/null | head -n 1)"
 else
     warn "git not installed (git tool features unavailable); install with: sudo apt-get install -y git"
+fi
+
+# 1c. Runtime capabilities required by the CLI. Node 22.9's built-in fetch/undici
+#     needs WebAssembly (wasm llhttp), and the CLI bundle needs Intl; a
+#     wasm-disabled runtime fails on device with "ReferenceError: WebAssembly is
+#     not defined". The shipped runtime must be full-icu + WebAssembly + JIT and
+#     signed with the 2-key entitlement set.
+RUNTIME_NODE=/var/jb/usr/lib/opencode/runtime/node
+if [ -x "$RUNTIME_NODE" ]; then
+    CAPS="$("$RUNTIME_NODE" -e 'process.stdout.write([typeof WebAssembly, process.config.variables.v8_enable_webassembly, typeof fetch, typeof Intl].join(","))' 2>&1)"
+    case "$CAPS" in
+        object,1,function,object)
+            ok "runtime capabilities: WebAssembly=object, v8_enable_webassembly=1, fetch=function, Intl=object"
+            ;;
+        *)
+            bad "runtime capabilities incomplete (got: $CAPS); WebAssembly+JIT+ICU are required by the CLI"
+            ;;
+    esac
+    if "$RUNTIME_NODE" -e "new WebAssembly.Module(Buffer.from('0061736d01000000','hex'))" >/dev/null 2>&1; then
+        ok "WebAssembly module compilation works (JIT/executable memory available)"
+    else
+        bad "WebAssembly module compilation failed (JIT/executable memory unavailable)"
+    fi
+else
+    bad "cannot check runtime capabilities: $RUNTIME_NODE missing"
 fi
 
 # 2. Mandatory CLI startup checks (offline).

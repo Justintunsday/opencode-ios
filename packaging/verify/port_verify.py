@@ -198,9 +198,32 @@ DEVICE_TESTS = [
     },
     {
         "id": "device.jitless",
-        "title": "Runtime starts without JIT/executable-memory entitlement",
-        "commands": ["opencode --version; echo exit=$?"],
-        "expected": "No 'Killed: 9'/bus error at startup; OPENCODE_IOS_JITLESS=1 also works.",
+        "title": "Runtime provides WebAssembly + JIT with the 2-key entitlements",
+        "commands": [
+            "/var/jb/usr/lib/opencode/runtime/node -e "
+            "\"console.log(typeof WebAssembly, process.config.variables.v8_enable_webassembly)\"",
+            "/var/jb/usr/lib/opencode/runtime/node -e "
+            "\"new WebAssembly.Module(Buffer.from('0061736d01000000','hex'));"
+            "console.log('wasm-ok')\"",
+        ],
+        "expected": "typeof WebAssembly is 'object', v8_enable_webassembly=1, "
+                    "'wasm-ok' prints (JIT/exec-memory works with the shipped 2-key "
+                    "entitlements; a wasm-disabled runtime makes the CLI fail with "
+                    "'ReferenceError: WebAssembly is not defined').",
+    },
+    {
+        "id": "device.wasm",
+        "title": "WebAssembly + fetch stack initialise (required by Node fetch/undici)",
+        "commands": [
+            "/var/jb/usr/lib/opencode/runtime/node -e "
+            "\"console.log(typeof WebAssembly, typeof fetch)\"",
+            "/var/jb/usr/lib/opencode/runtime/node -e "
+            "\"new WebAssembly.Module(Buffer.from('0061736d01000000','hex'));"
+            "console.log('wasm-ok')\"",
+        ],
+        "expected": "WebAssembly=object, fetch=function, 'wasm-ok' printed. Without "
+                    "this, every CLI command fails with 'ReferenceError: WebAssembly "
+                    "is not defined' (device-verified on the wasm-disabled build).",
     },
     {
         "id": "device.tui",
@@ -1889,42 +1912,49 @@ def _check_runtime(checks, ctx, repo_root, extract_dir, mode, skip_native):
 
 
 def _check_runtime_profile(checks, ctx, extract_dir):
-    """Reject runtime artifacts built with a profile the CLI cannot use.
+    """Reject runtime artifacts whose build/capabilities cannot run the CLI.
 
-    Device-verified requirement: the OpenCode CLI bundle uses Unicode property
-    escapes and Intl (including Intl.Segmenter at module top level), so a runtime
-    configured `--with-intl=none` fails at parse time on device
-    (`SyntaxError: Invalid regular expression: /[\\p{Mark}...]/gu`). The manifest
-    records the configure flags, so the package pipeline can reject such artifacts
-    before they reach a device. The intended profile is --with-intl=full-icu
-    (small-icu trims Intl data and Intl.Segmenter is known to misbehave on
-    small-icu builds), so full-icu is reported as the preferred build.
+    Device-verified requirements (iPhone SE 2, iOS 16.1.1, Dopamine rootless):
+    * the OpenCode CLI bundle uses Unicode property escapes and Intl (including
+      Intl.Segmenter), so `--with-intl=none` fails at parse time, and full-icu is
+      the intended build (small-icu trims Intl data and Intl.Segmenter is known
+      to misbehave);
+    * Node 22.9's built-in fetch/undici needs WebAssembly (wasm llhttp), and the
+      v1 jitless/no-wasm runtime made every CLI command fail on device with
+      `ReferenceError: WebAssembly is not defined`. The runtime must therefore be
+      built with WebAssembly and JIT enabled (and only the 2-key entitlements,
+      which the device proved are sufficient for JIT+WASM).
     """
     runtime_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/runtime"
     manifest_path = runtime_dir / "runtime-manifest.json"
     metrics = ctx["metrics"]
     if not manifest_path.is_file():
         check(checks, "runtime.build-profile", "runtime",
-              "Runtime build profile is usable by the CLI", "SKIP",
+              "Runtime build/capability profile is usable by the CLI", "SKIP",
               "runtime-manifest.json missing; cannot inspect configure flags")
         return
     try:
         manifest = read_json(manifest_path)
     except (OSError, ValueError) as exc:
         check(checks, "runtime.build-profile", "runtime",
-              "Runtime build profile is usable by the CLI", "FAIL",
+              "Runtime build/capability profile is usable by the CLI", "FAIL",
               f"cannot parse runtime-manifest.json: {exc}")
         return
     build = manifest.get("build") if isinstance(manifest, dict) else None
     flags = build.get("configure_flags") if isinstance(build, dict) else None
+    policy = manifest.get("runtime_policy") if isinstance(manifest, dict) else None
+    if not isinstance(policy, dict):
+        policy = {}
     if not isinstance(flags, list) or not flags:
         check(checks, "runtime.build-profile", "runtime",
-              "Runtime build profile is usable by the CLI", "SKIP",
+              "Runtime build/capability profile is usable by the CLI", "SKIP",
               "runtime-manifest.json does not declare build.configure_flags")
         return
     flags = [str(flag) for flag in flags]
     metrics["runtime_configure_flags"] = flags
     problems = []
+
+    # ---- ICU / Intl ------------------------------------------------------
     full_icu = any("--with-intl=full-icu" in flag for flag in flags)
     other_icu = any("--with-intl=small-icu" in flag for flag in flags)
     if any("--with-intl=none" in flag for flag in flags):
@@ -1939,29 +1969,82 @@ def _check_runtime_profile(checks, ctx, extract_dir):
             "runtime does not declare an ICU build (--with-intl=full-icu); the CLI "
             "requires Intl support, including Intl.Segmenter."
         )
+    intl_policy = policy.get("intl") if isinstance(policy.get("intl"), dict) else None
+    if intl_policy is not None:
+        intl_mode = str(intl_policy.get("mode", ""))
+        icu_version = str(intl_policy.get("icu_version", ""))
+        if "none" in intl_mode.lower() or intl_mode.lower() in ("", "unknown"):
+            problems.append(
+                f"runtime_policy.intl.mode={intl_mode!r}: an ICU build is required"
+            )
+        if not icu_version:
+            problems.append("runtime_policy.intl.icu_version is not declared")
+
+    # ---- WebAssembly (required by Node fetch/undici on 22.9) ------------
+    wasm_policy = policy.get("webassembly")
+    wasm_text = str(wasm_policy).lower() if wasm_policy is not None else ""
+    if wasm_policy is None:
+        problems.append(
+            "runtime-manifest.json does not declare runtime_policy.webassembly; the "
+            "runtime must declare and enable WebAssembly (Node's fetch/undici needs "
+            "wasm llhttp — a no-wasm runtime makes every CLI command fail with "
+            "'ReferenceError: WebAssembly is not defined', device-verified)."
+        )
+    elif "disabled" in wasm_text or "jitless" in wasm_text or "enabled" not in wasm_text:
+        problems.append(
+            f"runtime_policy.webassembly={wasm_policy!r}: WebAssembly must be enabled "
+            "(Node fetch/undici requires it; no-wasm runtime fails on device)."
+        )
+
+    # ---- JIT (required for Wasm code generation; 2-key entitlements suffice)
+    jit_policy = policy.get("v8_jit")
+    jit_text = str(jit_policy).lower() if jit_policy is not None else ""
+    if any("--v8-options=--jitless" in flag for flag in flags):
+        problems.append(
+            "--v8-options=--jitless is set: the shipped runtime must have JIT enabled "
+            "(device verified the 2-key entitlement set permits JIT; WebAssembly needs "
+            "executable memory)."
+        )
+    elif jit_policy is None:
+        problems.append(
+            "runtime-manifest.json does not declare runtime_policy.v8_jit; the runtime "
+            "must declare JIT enabled."
+        )
+    elif "disabled" in jit_text or "jitless" in jit_text or "enabled" not in jit_text:
+        problems.append(
+            f"runtime_policy.v8_jit={jit_policy!r}: JIT must be enabled for this runtime."
+        )
+
+    # ---- iOS target flags ------------------------------------------------
     if not any("--dest-os=ios" in flag for flag in flags):
         problems.append("--dest-os=ios missing from configure flags")
     if not any("--dest-cpu=arm64" in flag for flag in flags):
         problems.append("--dest-cpu=arm64 missing from configure flags")
-    if not any("--v8-options=--jitless" in flag for flag in flags):
-        problems.append(
-            "--v8-options=--jitless missing: the shipped v1 runtime must be jitless"
-        )
+
     if problems:
         check(checks, "runtime.build-profile", "runtime",
-              "Runtime build profile is usable by the CLI", "FAIL",
-              truncate("; ".join(problems), 1200))
+              "Runtime build/capability profile is usable by the CLI", "FAIL",
+              truncate("; ".join(problems), 1500))
     else:
-        detail = "configure flags: " + truncate(", ".join(flags), 700)
+        detail = "configure flags: " + truncate(", ".join(flags), 600)
         if full_icu:
-            detail += "; full-icu build (preferred for Intl.Segmenter)"
+            detail += "; full-icu (preferred for Intl.Segmenter)"
         else:
             detail += (
-                "; small-icu build accepted, but full-icu is the device requirement "
-                "for Intl.Segmenter — confirm on device"
+                "; small-icu accepted, but full-icu is the device requirement for "
+                "Intl.Segmenter — confirm on device"
             )
+        if intl_policy is not None:
+            detail += f"; ICU {intl_policy.get('icu_version', '?')}"
+        detail += "; WebAssembly enabled; JIT enabled"
+        metrics["runtime_capabilities"] = {
+            "intl_mode": (intl_policy or {}).get("mode"),
+            "icu_version": (intl_policy or {}).get("icu_version"),
+            "webassembly": wasm_policy,
+            "v8_jit": jit_policy,
+        }
         check(checks, "runtime.build-profile", "runtime",
-              "Runtime build profile is usable by the CLI", "PASS", detail)
+              "Runtime build/capability profile is usable by the CLI", "PASS", detail)
 
 
 def _check_optional_ripgrep(checks, ctx, extract_dir, skip_native, mode):
@@ -2812,6 +2895,22 @@ def cmd_fixture(args):
         "name": "self-test placeholder runtime (NOT Node.js)",
         "self_test": True,
         "note": "synthetic fixture used by the packaging scripts self-test; never shipped",
+        "build": {
+            "configure_flags": [
+                "--dest-os=ios",
+                "--dest-cpu=arm64",
+                "--with-intl=full-icu",
+            ]
+        },
+        "runtime_policy": {
+            "intl": {
+                "mode": "full-icu",
+                "configure_flag": "--with-intl=full-icu",
+                "icu_version": "self-test-placeholder",
+            },
+            "webassembly": "enabled (self-test placeholder)",
+            "v8_jit": "enabled (self-test placeholder)",
+        },
         "node": {"path": "node", "sha256": sha256_file(runtime / "node")},
         "entitlements": {"path": "entitlements.plist",
                          "sha256": sha256_file(runtime / "entitlements.plist")},
