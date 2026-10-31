@@ -67,6 +67,20 @@ OPENCODE_IOS=1
 PATH="$PREFIX/bin:$PREFIX/usr/bin:$PATH"
 export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS PATH
 
+# Optional jailbreak JIT shim (/var/jb/usr/lib/opencode/runtime/libjitshim.dylib).
+# Some iPhoneOS V8 builds need a small mprotect-RWX interposer to execute JIT
+# code on jailed hardware. The shim is injected only when it is actually shipped
+# in the package (presence-based); without it the launcher behaves normally.
+JITSHIM="$LIB/runtime/libjitshim.dylib"
+if [ -f "$JITSHIM" ]; then
+    if [ -n "${DYLD_INSERT_LIBRARIES:-}" ]; then
+        DYLD_INSERT_LIBRARIES="$DYLD_INSERT_LIBRARIES:$JITSHIM"
+    else
+        DYLD_INSERT_LIBRARIES="$JITSHIM"
+    fi
+    export DYLD_INSERT_LIBRARIES
+fi
+
 MAX_OLD_SPACE="${OPENCODE_IOS_MAX_OLD_SPACE_MB:-1536}"
 
 # Node flags must precede the entry script; CLI arguments follow the script

@@ -169,6 +169,14 @@ jobs:
           bash packaging/verify/resolve-artifact-run.sh \
             build-runtime.yml ios-ripgrep ripgrep "$RIPGREP_RUN_ID_INPUT" --optional
 
+      - name: Resolve optional ios-jit-shim artifact (skipped gracefully if absent)
+        id: resolve-jitshim
+        env:
+          JITSHIM_RUN_ID_INPUT: ""
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            build-runtime.yml,jit-probe.yml ios-jit-shim jitshim "$JITSHIM_RUN_ID_INPUT" --optional
+
       - name: Download ios-node-runtime artifact
         run: |
           set -euo pipefail
@@ -194,6 +202,15 @@ jobs:
             --repo "$GITHUB_REPOSITORY" -n ios-ripgrep -D .artifacts/ripgrep
           find .artifacts/ripgrep -maxdepth 2 -type f | sort
 
+      - name: Download optional ios-jit-shim artifact
+        if: ${{ steps.resolve-jitshim.outputs.jitshim_run_id != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/jitshim
+          gh run download "${{ steps.resolve-jitshim.outputs.jitshim_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n ios-jit-shim -D .artifacts/jitshim
+          find .artifacts/jitshim -maxdepth 2 -type f | sort
+
       - name: Install dpkg (Debian packaging tools)
         # Installed after artifact resolution/downloads so a missing upstream
         # artifact fails fast instead of spending time on Homebrew first.
@@ -209,6 +226,8 @@ jobs:
           OPENCODE_RUN_URL: ${{ steps.resolve-opencode.outputs.opencode_run_url }}
           RIPGREP_RUN_ID: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_id }}
           RIPGREP_RUN_URL: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}
+          JITSHIM_RUN_ID: ${{ steps.resolve-jitshim.outputs.jitshim_run_id }}
+          JITSHIM_RUN_URL: ${{ steps.resolve-jitshim.outputs.jitshim_run_url }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -225,6 +244,11 @@ jobs:
             set -- "$@" --ripgrep-dir .artifacts/ripgrep \
               --ripgrep-run-id "$RIPGREP_RUN_ID" \
               --ripgrep-run-url "$RIPGREP_RUN_URL"
+          fi
+          if [ -n "${JITSHIM_RUN_ID:-}" ] && [ -d .artifacts/jitshim ]; then
+            set -- "$@" --jitshim-dir .artifacts/jitshim \
+              --jitshim-run-id "$JITSHIM_RUN_ID" \
+              --jitshim-run-url "$JITSHIM_RUN_URL"
           fi
           "$@"
 
@@ -251,6 +275,9 @@ jobs:
             echo "CLI run:     ${{ steps.resolve-opencode.outputs.opencode_run_url }}"
             if [ -n "${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}" ]; then
               echo "ripgrep run: ${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}"
+            fi
+            if [ -n "${{ steps.resolve-jitshim.outputs.jitshim_run_url }}" ]; then
+              echo "jit-shim run: ${{ steps.resolve-jitshim.outputs.jitshim_run_url }}"
             fi
             echo ""
             if [ -f dist/verification-report.md ]; then

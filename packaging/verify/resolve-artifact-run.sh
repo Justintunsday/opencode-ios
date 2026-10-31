@@ -79,26 +79,31 @@ if [ -n "$PINNED" ]; then
     fi
     RUN_ID="$PINNED"
 else
-    if ! gh api "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}" >/dev/null 2>&1; then
-        if [ "$OPTIONAL" = "1" ]; then
-            optional_skip "${LABEL}: workflow '${WORKFLOW_FILE}' is not present in ${REPO} yet; optional component skipped."
-        fi
-        die "${LABEL}: workflow '${WORKFLOW_FILE}' is not present in ${REPO} yet. This pipeline consumes a successful upstream build that uploads '${ARTIFACT_NAME}'; refusing to fabricate inputs."
-    fi
     RUN_ID=""
-    for candidate in $(gh run list --repo "$REPO" --workflow "$WORKFLOW_FILE" \
-            --branch main --status success --limit 10 --json databaseId \
-            --jq '.[].databaseId' 2>/dev/null || true); do
-        if run_has_artifact "$candidate"; then
-            RUN_ID="$candidate"
-            break
+    TRIED=""
+    # WORKFLOW_FILE may be a comma-separated candidate list (e.g. optional
+    # artifacts published by either of two workflows); the first workflow that
+    # has a successful run with the artifact wins.
+    for workflow in $(printf '%s' "$WORKFLOW_FILE" | tr ',' ' '); do
+        [ -n "$workflow" ] || continue
+        TRIED="${TRIED}${TRIED:+, }${workflow}"
+        if ! gh api "repos/${REPO}/actions/workflows/${workflow}" >/dev/null 2>&1; then
+            continue
         fi
+        for candidate in $(gh run list --repo "$REPO" --workflow "$workflow" \
+                --branch main --status success --limit 10 --json databaseId \
+                --jq '.[].databaseId' 2>/dev/null || true); do
+            if run_has_artifact "$candidate"; then
+                RUN_ID="$candidate"
+                break 2
+            fi
+        done
     done
     if [ -z "$RUN_ID" ]; then
         if [ "$OPTIONAL" = "1" ]; then
-            optional_skip "${LABEL}: no successful '${WORKFLOW_FILE}' run on main currently has an unexpired '${ARTIFACT_NAME}' artifact; optional component skipped."
+            optional_skip "${LABEL}: no successful run of [${TRIED}] on main currently has an unexpired '${ARTIFACT_NAME}' artifact; optional component skipped."
         fi
-        die "${LABEL}: no successful '${WORKFLOW_FILE}' run on main currently has an unexpired '${ARTIFACT_NAME}' artifact. Wait for the upstream build workflow to go green (or pass an explicit run id via workflow_dispatch). Refusing to package placeholder binaries."
+        die "${LABEL}: no successful run of [${TRIED}] on main currently has an unexpired '${ARTIFACT_NAME}' artifact. Wait for the upstream build workflow to go green (or pass an explicit run id via workflow_dispatch). Refusing to package placeholder binaries."
     fi
 fi
 

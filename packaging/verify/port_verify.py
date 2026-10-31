@@ -89,6 +89,9 @@ OPTIONAL_DATA = {
     "var/jb/usr/share/doc/opencode/device-smoke.sh": {"type": "file", "mode": 0o755},
     "var/jb/usr/share/doc/opencode/KNOWN_LIMITATIONS.md": {"type": "file", "mode": 0o644},
     "var/jb/usr/bin/rg": {"type": "file", "mode": 0o755},
+    # Optional jailbreak JIT interposer (ios-jit-shim artifact). Injected by the
+    # launcher through DYLD_INSERT_LIBRARIES only when shipped.
+    "var/jb/usr/lib/opencode/runtime/libjitshim.dylib": {"type": "file", "mode": 0o755},
 }
 ALLOWED_DATA_PREFIXES = (
     "var/jb/usr/bin/",
@@ -100,6 +103,7 @@ EXECUTABLE_DATA = {
     "var/jb/usr/bin/rg",
     "var/jb/usr/share/doc/opencode/device-smoke.sh",
     "var/jb/usr/lib/opencode/runtime/node",
+    "var/jb/usr/lib/opencode/runtime/libjitshim.dylib",
 }
 
 CONTROL_REQUIRED_FIELDS = (
@@ -502,6 +506,19 @@ def cmd_sources(args):
             run_id=args.ripgrep_run_id or "",
             run_url=args.ripgrep_run_url or "",
         )
+    jitshim = {
+        "artifact": "ios-jit-shim",
+        "included": False,
+        "reason": "optional ios-jit-shim artifact not available; component skipped",
+    }
+    if getattr(args, "jitshim_dir", ""):
+        jitshim = artifact_summary(args.jitshim_dir, "ios-jit-shim")
+        jitshim.update(
+            included=True,
+            optional=True,
+            run_id=getattr(args, "jitshim_run_id", "") or "",
+            run_url=getattr(args, "jitshim_run_url", "") or "",
+        )
     lock = _parse_lock_file(args.lock)
     sources = {
         "schema": 1,
@@ -519,14 +536,16 @@ def cmd_sources(args):
             "runtime": runtime,
             "opencode_cli": opencode,
             "ripgrep": ripgrep,
+            "jitshim": jitshim,
         },
     }
     json_write(args.out, sources)
     print(
-        "sources: runtime files={}, cli files={}, ripgrep={} -> {}".format(
+        "sources: runtime files={}, cli files={}, ripgrep={}, jitshim={} -> {}".format(
             runtime["totals"]["files"],
             opencode["totals"]["files"],
             "included" if ripgrep.get("included") else "skipped",
+            "included" if jitshim.get("included") else "skipped",
             args.out,
         )
     )
@@ -561,6 +580,40 @@ def cmd_extract(args):
     }
     json_write(args.out, extracted)
     print(f"extract: {len(entries)} entries -> {dest} (manifest {args.out})")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# Mach-O metadata probe (for optional component preflight checks)
+# --------------------------------------------------------------------------
+def cmd_macho_info(args):
+    path = Path(args.path)
+    if not path.is_file():
+        print(json.dumps({"path": str(path), "is_macho": False,
+                          "error": "not a file"}))
+        return 1
+    info = _macho_info(path)
+    if info is None:
+        print(json.dumps({"path": str(path), "is_macho": False,
+                          "error": "not a Mach-O binary"}))
+        return 1
+    info = dict(info)
+    info.update(path=str(path), is_macho=True)
+    print(json.dumps(info, indent=2))
+    problems = []
+    if args.expect_platform and info.get("platform") != args.expect_platform:
+        problems.append(
+            f"platform {info.get('platform')!r} != expected {args.expect_platform!r}"
+        )
+    if args.expect_arch:
+        expected_cpu = {"arm64": hex(0x0100000C), "arm64e": hex(0x0100000C)}.get(
+            args.expect_arch.lower()
+        )
+        if expected_cpu and info.get("arch") != expected_cpu:
+            problems.append(f"arch {info.get('arch')!r} != expected arm64")
+    if problems:
+        print("ERROR: " + "; ".join(problems), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1135,6 +1188,16 @@ def _check_launcher(checks, ctx, extract_dir):
         problems.append("OPENCODE_IOS=1 not exported")
     if "OPENCODE_IOS_JITLESS" not in text:
         problems.append("OPENCODE_IOS_JITLESS escape hatch not documented")
+    if "DYLD_INSERT_LIBRARIES" not in text or "libjitshim.dylib" not in text:
+        problems.append(
+            "launcher must conditionally inject the optional libjitshim.dylib via "
+            "DYLD_INSERT_LIBRARIES when it is shipped"
+        )
+    if re.search(r"(?m)^\s*if\s+\[\s+-f\s+\"\$JITSHIM\"\s+\]", text) is None:
+        problems.append(
+            "launcher's JIT shim injection must be presence-based "
+            "(if [ -f \"$JITSHIM\" ]) so packages without the shim launch normally"
+        )
     for banned in ("--use-system-ca", "--experimental-ffi"):
         if banned in text:
             problems.append(f"{banned} must not be passed to Node 22.9 (invalid option)")
@@ -1148,9 +1211,10 @@ def _check_launcher(checks, ctx, extract_dir):
               truncate("; ".join(problems), 1200))
     else:
         check(checks, "pkg.launcher", "package", "Launcher script contract", "PASS",
-              "#!/bin/sh, exec, \"$@\" forwarding, --experimental-sqlite, --no-warnings, "
-              "assets/iOS env exports, JITless escape hatch; no invalid 22.9 flags, no uname, "
-              "no credentials")
+              "#!/var/jb/bin/sh, PATH prepend, exec, \"$@\" forwarding, "
+              "--experimental-sqlite, --no-warnings, assets/iOS env exports, "
+              "presence-based DYLD_INSERT_LIBRARIES for the optional JIT shim, "
+              "JITless escape hatch; no invalid 22.9 flags, no uname, no credentials")
 
 
 def _check_docs(checks, ctx, extract_dir):
@@ -1443,6 +1507,12 @@ def _check_verbatim_copy(checks, ctx, sources):
             # Artifact was uploaded with a parent directory; keep the assets/
             # suffix exactly (upstream asset trees may contain deeper "assets/".
             mappings.append(("cli/assets/" + rel.split("/assets/", 1)[1], entry))
+    # Optional jailbreak JIT shim artifact (renamed to the packaged dylib path).
+    jitshim = inputs.get("jitshim", {})
+    for entry in jitshim.get("files", []):
+        if Path(entry["path"]).name.endswith(".dylib"):
+            mappings.append(("runtime/libjitshim.dylib", entry))
+            break
     if not mappings:
         check(checks, "pkg.verbatim-copy", "package",
               "Deb files are byte-identical copies of the source artifacts", "SKIP",
@@ -2049,15 +2119,19 @@ def _check_runtime_profile(checks, ctx, extract_dir):
                     if isinstance(item, dict)] if isinstance(patches, list) else None)
     jit_enabled = _capability_enabled(jit_policy)
     wx_patch_declared = bool(
-        patch_files and any("jit-write-protect" in name.lower() for name in patch_files)
+        patch_files and any(
+            ("jit-write-protect" in name.lower()) or ("no-map-jit" in name.lower())
+            for name in patch_files
+        )
     )
     if patch_files is not None:
         metrics["runtime_patches"] = patch_files
         if jit_enabled and not wx_patch_declared:
             problems.append(
-                "JIT-enabled runtime manifest does not list the iOS V8 W^X patch "
-                "(patches/nodejs-mobile/0004-ios-jit-write-protect.patch); v3 builds "
-                "without it trapped SIGBUS on V8-generated code on the device."
+                "JIT-enabled runtime manifest does not list an iOS V8 W^X patch "
+                "(patches/nodejs-mobile/0004-ios-jit-write-protect.patch or "
+                "0005-no-map-jit-on-ios.patch); pre-W^X builds trapped with SIGBUS "
+                "on V8-generated code on the device."
             )
 
     if problems:
@@ -2133,6 +2207,90 @@ def _check_optional_ripgrep(checks, ctx, extract_dir, skip_native, mode):
               "Optional bundled ripgrep (ios-ripgrep) is valid if present", "PASS",
               f"iPhoneOS arm64 Mach-O, minOS={metrics['ripgrep'].get('minos', '?')}, "
               f"only iOS system libraries; sha256={metrics['ripgrep']['sha256'][:16]}...")
+
+
+# --------------------------------------------------------------------------
+# CLI checks
+# --------------------------------------------------------------------------
+def _check_optional_jitshim(checks, ctx, extract_dir, skip_native):
+    """Audit the optional jailbreak JIT interposer shim if it is shipped.
+
+    The shim (artifact `ios-jit-shim`) relaxes W^X for V8 JIT on jailed iOS; the
+    launcher injects it via DYLD_INSERT_LIBRARIES only when present. It is a
+    dylib (not an executable), so the executable Mach-O auditor does not apply.
+    """
+    runtime_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/runtime"
+    shim = runtime_dir / "libjitshim.dylib"
+    metrics = ctx["metrics"]
+    if not shim.is_file():
+        metrics["jitshim"] = {"included": False}
+        check(checks, "runtime.jitshim", "runtime",
+              "Optional jailbreak JIT shim (ios-jit-shim) is valid if present", "SKIP",
+              "optional ios-jit-shim artifact was not shipped; the launcher will "
+              "not set DYLD_INSERT_LIBRARIES (normal launch)")
+        return
+    metrics["jitshim"] = {
+        "included": True,
+        "sha256": sha256_file(shim),
+        "size": shim.stat().st_size,
+    }
+    info = _macho_info(shim) or {}
+    metrics["jitshim"].update(
+        platform=info.get("platform"),
+        arch=info.get("arch"),
+        filetype=info.get("filetype"),
+        minos=info.get("minos"),
+    )
+    problems = []
+    if info.get("platform") != "iOS":
+        problems.append(
+            f"Mach-O platform {info.get('platform')!r} (requires iPhoneOS/iOS)"
+        )
+    if info.get("filetype") != 6:
+        problems.append(
+            f"Mach-O filetype {info.get('filetype')!r} (requires MH_DYLIB=6)"
+        )
+    if info.get("arch") != hex(0x0100000C):
+        problems.append(f"Mach-O arch {info.get('arch')!r} (requires arm64)")
+    launcher = Path(extract_dir) / "var/jb/usr/bin/opencode"
+    if launcher.is_file():
+        launcher_text = read_text(launcher)
+        if "DYLD_INSERT_LIBRARIES" not in launcher_text or \
+                "libjitshim.dylib" not in launcher_text:
+            problems.append(
+                "launcher does not conditionally inject libjitshim.dylib via "
+                "DYLD_INSERT_LIBRARIES"
+            )
+    if skip_native:
+        metrics["jitshim"]["dylibs"] = None
+        if problems:
+            check(checks, "runtime.jitshim", "runtime",
+                  "Optional jailbreak JIT shim (ios-jit-shim) is valid if present",
+                  "FAIL", truncate("; ".join(problems), 1000))
+        else:
+            check(checks, "runtime.jitshim", "runtime",
+                  "Optional jailbreak JIT shim (ios-jit-shim) is valid if present",
+                  "SKIP", "shim present but native dylib audit skipped "
+                          "(--skip-native-audit)")
+        return
+    try:
+        libs = _otool_libs(shim)
+        violations = _validate_dylibs(libs)
+        if violations:
+            problems.append("dylib violations: " + "; ".join(violations[:5]))
+        metrics["jitshim"]["dylibs"] = libs
+    except RuntimeError as exc:
+        problems.append(str(exc))
+    if problems:
+        check(checks, "runtime.jitshim", "runtime",
+              "Optional jailbreak JIT shim (ios-jit-shim) is valid if present", "FAIL",
+              truncate("; ".join(problems), 1200))
+    else:
+        check(checks, "runtime.jitshim", "runtime",
+              "Optional jailbreak JIT shim (ios-jit-shim) is valid if present", "PASS",
+              f"iPhoneOS arm64 MH_DYLIB, minOS={info.get('minos') or '?'}, only iOS "
+              f"system libraries; sha256={metrics['jitshim']['sha256'][:16]}...; "
+              "jailbreak JIT W^X interposer injected conditionally by the launcher")
 
 
 # --------------------------------------------------------------------------
@@ -2473,6 +2631,7 @@ def _build_package_report(ctx, checks, sources, manifest, args):
                 "runtime_manifest_sha256": metrics.get("runtime_manifest_sha256", ""),
             },
             "ripgrep": metrics.get("ripgrep", {"included": False}),
+            "jitshim": metrics.get("jitshim", {"included": False}),
         },
         "cli": metrics.get("cli", {}),
         "host_smoke": metrics.get("host_smoke", {}),
@@ -2761,6 +2920,7 @@ def cmd_verify(args):
     # ---- runtime / CLI checks -------------------------------------------
     _check_runtime(checks, ctx, repo_root, extract_dir, mode, args.skip_native_audit)
     _check_runtime_profile(checks, ctx, extract_dir)
+    _check_optional_jitshim(checks, ctx, extract_dir, args.skip_native_audit)
     _check_optional_ripgrep(checks, ctx, extract_dir, args.skip_native_audit, mode)
     _check_cli(checks, ctx, extract_dir, mode)
     cli_dir_check = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
@@ -3020,6 +3180,9 @@ def build_parser():
     p.add_argument("--ripgrep-dir", default="")
     p.add_argument("--ripgrep-run-id", default="")
     p.add_argument("--ripgrep-run-url", default="")
+    p.add_argument("--jitshim-dir", default="")
+    p.add_argument("--jitshim-run-id", default="")
+    p.add_argument("--jitshim-run-url", default="")
     p.add_argument("--self-test", action="store_true")
     p.set_defaults(func=cmd_sources)
 
@@ -3028,6 +3191,12 @@ def build_parser():
     p.add_argument("--dest", required=True)
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_extract)
+
+    p = sub.add_parser("macho-info", help="print Mach-O platform/arch metadata for a file")
+    p.add_argument("--path", required=True)
+    p.add_argument("--expect-platform", default="")
+    p.add_argument("--expect-arch", default="")
+    p.set_defaults(func=cmd_macho_info)
 
     p = sub.add_parser("verify", help="run the CI-runnable verification suite")
     p.add_argument("--deb", required=True)

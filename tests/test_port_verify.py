@@ -306,6 +306,20 @@ class RuntimeBuildProfileTest(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertIn("unverified", checks[0]["evidence"])
 
+    def test_accepts_v5_no_map_jit_wx_patch(self):
+        checks = self._run_profile_check(patches=[
+            {"file": "patches/nodejs-mobile/0004-ios-jit-write-protect.patch"},
+            {"file": "patches/nodejs-mobile/0005-no-map-jit-on-ios.patch"},
+        ])
+        self.assertEqual(checks[0]["status"], "PASS")
+        self.assertIn("W^X patch (0004) declared", checks[0]["evidence"])
+
+    def test_accepts_no_map_jit_patch_alone(self):
+        checks = self._run_profile_check(patches=[
+            {"file": "patches/nodejs-mobile/0005-no-map-jit-on-ios.patch"},
+        ])
+        self.assertEqual(checks[0]["status"], "PASS")
+
     def test_rejects_with_intl_none(self):
         checks = self._run_profile_check([
             "--dest-os=ios", "--dest-cpu=arm64", "--with-intl=none",
@@ -339,6 +353,64 @@ class RuntimeBuildProfileTest(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "SKIP")
 
 
+class JitShimTest(unittest.TestCase):
+    def _make_tree(self, td, shim_bytes):
+        root = Path(td)
+        runtime = root / "var/jb/usr/lib/opencode/runtime"
+        runtime.mkdir(parents=True)
+        if shim_bytes is not None:
+            (runtime / "libjitshim.dylib").write_bytes(shim_bytes)
+        launcher = root / "var/jb/usr/bin"
+        launcher.mkdir(parents=True)
+        (launcher / "opencode").write_text(
+            "#!/var/jb/bin/sh\n"
+            "JITSHIM=\"$LIB/runtime/libjitshim.dylib\"\n"
+            "if [ -f \"$JITSHIM\" ]; then\n"
+            "    DYLD_INSERT_LIBRARIES=\"$JITSHIM\"\n"
+            "    export DYLD_INSERT_LIBRARIES\n"
+            "fi\n"
+        )
+        return root
+
+    def test_valid_ios_dylib_shim_passes_static_checks(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._make_tree(td, macho_bytes(platform=2, minos=(14, 0, 0), filetype=6))
+            checks = []
+            ctx = {"metrics": {}}
+            # skip_native -> native dylib audit skipped (SKIP), but static
+            # Mach-O/filetype/arch and launcher-injection checks must pass.
+            port_verify._check_optional_jitshim(checks, ctx, td, skip_native=True)
+            self.assertEqual(checks[0]["status"], "SKIP")
+            self.assertIn("native dylib audit skipped", checks[0]["evidence"])
+            self.assertTrue(ctx["metrics"]["jitshim"]["included"])
+            self.assertEqual(ctx["metrics"]["jitshim"]["platform"], "iOS")
+            self.assertEqual(ctx["metrics"]["jitshim"]["filetype"], 6)
+
+    def test_missing_shim_skips(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._make_tree(td, None)
+            checks = []
+            ctx = {"metrics": {}}
+            port_verify._check_optional_jitshim(checks, ctx, td, skip_native=True)
+            self.assertEqual(checks[0]["status"], "SKIP")
+            self.assertFalse(ctx["metrics"]["jitshim"]["included"])
+
+    def test_macos_dylib_shim_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            self._make_tree(td, macho_bytes(platform=1, minos=(14, 0, 0), filetype=6))
+            checks = []
+            ctx = {"metrics": {}}
+            port_verify._check_optional_jitshim(checks, ctx, td, skip_native=True)
+            self.assertEqual(checks[0]["status"], "FAIL")
+            self.assertIn("platform", checks[0]["evidence"])
+
+    def test_shim_is_optional_package_data(self):
+        self.assertIn("var/jb/usr/lib/opencode/runtime/libjitshim.dylib",
+                      port_verify.OPTIONAL_DATA)
+        self.assertIn("var/jb/usr/lib/opencode/runtime/libjitshim.dylib",
+                      port_verify.EXECUTABLE_DATA)
+
+
 class VerifyCliTest(unittest.TestCase):
     def test_verify_mode_is_accepted_by_the_cli(self):
         parser = port_verify.build_parser()
@@ -346,6 +418,13 @@ class VerifyCliTest(unittest.TestCase):
             "verify", "--deb", "x.deb", "--mode", "verify", "--out-dir", "out",
         ])
         self.assertEqual(args.mode, "verify")
+
+    def test_macho_info_subcommand_parses(self):
+        parser = port_verify.build_parser()
+        args = parser.parse_args([
+            "macho-info", "--path", "x.dylib", "--expect-platform", "iOS",
+        ])
+        self.assertEqual(args.expect_platform, "iOS")
 
 
 class ReportDeviceStatusTest(unittest.TestCase):

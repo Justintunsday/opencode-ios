@@ -7,6 +7,12 @@
 #   --opencode-dir  contents of the `opencode-cli-node-ios` artifact
 #                   (opencode.mjs, assets/**, bundle-manifest.json, SHA256SUMS)
 #   --ripgrep-dir   optional contents of the `ios-ripgrep` stretch artifact
+#   --jitshim-dir   optional contents of the `ios-jit-shim` artifact; its
+#                   libjitshim.dylib is installed at
+#                   /var/jb/usr/lib/opencode/runtime/libjitshim.dylib and injected
+#                   by the launcher via DYLD_INSERT_LIBRARIES when present
+#                   (jailbreak JIT W^X interposer; provenance recorded in
+#                   package-sources.json, static Mach-O/dylib audit in validate)
 #
 # Output (in --out-dir, default dist/):
 #   OpenCode-iOS-rootless.deb   rootless package for /var/jb
@@ -39,6 +45,7 @@ usage() {
 RUNTIME_DIR=""
 OPENCODE_DIR=""
 RIPGREP_DIR=""
+JITSHIM_DIR=""
 OUT_DIR="$ROOT/dist"
 VERSION_ARG=""
 MAINTAINER="OpenCode iOS port maintainers <opencode-ios-port@users.noreply.github.com>"
@@ -48,6 +55,8 @@ OPENCODE_RUN_ID=""
 OPENCODE_RUN_URL=""
 RIPGREP_RUN_ID=""
 RIPGREP_RUN_URL=""
+JITSHIM_RUN_ID=""
+JITSHIM_RUN_URL=""
 RUN_URL=""
 COMMIT=""
 SELF_TEST=0
@@ -58,6 +67,7 @@ while [ $# -gt 0 ]; do
         --runtime-dir) RUNTIME_DIR="${2:-}"; shift 2 ;;
         --opencode-dir) OPENCODE_DIR="${2:-}"; shift 2 ;;
         --ripgrep-dir) RIPGREP_DIR="${2:-}"; shift 2 ;;
+        --jitshim-dir) JITSHIM_DIR="${2:-}"; shift 2 ;;
         --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
         --version) VERSION_ARG="${2:-}"; shift 2 ;;
         --maintainer) MAINTAINER="${2:-}"; shift 2 ;;
@@ -67,6 +77,8 @@ while [ $# -gt 0 ]; do
         --opencode-run-url) OPENCODE_RUN_URL="${2:-}"; shift 2 ;;
         --ripgrep-run-id) RIPGREP_RUN_ID="${2:-}"; shift 2 ;;
         --ripgrep-run-url) RIPGREP_RUN_URL="${2:-}"; shift 2 ;;
+        --jitshim-run-id) JITSHIM_RUN_ID="${2:-}"; shift 2 ;;
+        --jitshim-run-url) JITSHIM_RUN_URL="${2:-}"; shift 2 ;;
         --run-url) RUN_URL="${2:-}"; shift 2 ;;
         --commit) COMMIT="${2:-}"; shift 2 ;;
         --self-test) SELF_TEST=1; shift ;;
@@ -193,10 +205,28 @@ if [ -n "$RIPGREP_DIR" ]; then
     fi
 fi
 
+JITSHIM_SRC=""
+if [ -n "$JITSHIM_DIR" ]; then
+    [ -d "$JITSHIM_DIR" ] || die "--jitshim-dir not found: $JITSHIM_DIR"
+    JITSHIM_SRC="$(find_first_file "$JITSHIM_DIR" libjitshim.dylib)"
+    if [ -z "$JITSHIM_SRC" ]; then
+        JITSHIM_SRC="$(find "$JITSHIM_DIR" -type f -name '*.dylib' ! -path '*/.git/*' 2>/dev/null | head -n 1 || true)"
+    fi
+    if [ -z "$JITSHIM_SRC" ]; then
+        warn "ios-jit-shim artifact has no *.dylib; optional JIT shim component skipped"
+        JITSHIM_DIR=""
+        JITSHIM_RUN_ID=""
+        JITSHIM_RUN_URL=""
+    fi
+fi
+
 verify_artifact_sums "$RUNTIME_DIR" "ios-node-runtime"
 verify_artifact_sums "$OPENCODE_DIR" "opencode-cli-node-ios"
 if [ -n "$RIPGREP_DIR" ]; then
     verify_artifact_sums "$RIPGREP_DIR" "ios-ripgrep"
+fi
+if [ -n "$JITSHIM_DIR" ]; then
+    verify_artifact_sums "$JITSHIM_DIR" "ios-jit-shim"
 fi
 
 # ------------------------------------------------------------- preflight ---
@@ -212,6 +242,11 @@ fi
 if [ -n "$RG_SRC" ]; then
     info "preflight: Mach-O audit of the optional ripgrep"
     "$PYTHON" "$ROOT/scripts/check_macho.py" "$RG_SRC" --max-minos 16.1.1
+fi
+if [ -n "$JITSHIM_SRC" ]; then
+    info "preflight: Mach-O audit of the optional JIT shim (dylib)"
+    "$PYTHON" "$ROOT/packaging/verify/port_verify.py" macho-info \
+        --path "$JITSHIM_SRC" --expect-platform iOS --expect-arch arm64 >/dev/null
 fi
 
 # ------------------------------------------------------------------ stage ---
@@ -257,6 +292,10 @@ fi
 if [ -n "$RG_SRC" ]; then
     cp "$RG_SRC" "$STAGE/var/jb/usr/bin/rg"
     chmod 0755 "$STAGE/var/jb/usr/bin/rg"
+fi
+if [ -n "$JITSHIM_SRC" ]; then
+    cp "$JITSHIM_SRC" "$STAGE/var/jb/usr/lib/opencode/runtime/libjitshim.dylib"
+    chmod 0755 "$STAGE/var/jb/usr/lib/opencode/runtime/libjitshim.dylib"
 fi
 
 for maintenance in postinst prerm postrm; do
@@ -368,6 +407,11 @@ if [ -n "$RIPGREP_DIR" ]; then
     set -- "$@" --ripgrep-dir "$RIPGREP_DIR" \
         --ripgrep-run-id "$RIPGREP_RUN_ID" \
         --ripgrep-run-url "$RIPGREP_RUN_URL"
+fi
+if [ -n "$JITSHIM_DIR" ]; then
+    set -- "$@" --jitshim-dir "$JITSHIM_DIR" \
+        --jitshim-run-id "$JITSHIM_RUN_ID" \
+        --jitshim-run-url "$JITSHIM_RUN_URL"
 fi
 if [ "$SELF_TEST" = "1" ]; then
     set -- "$@" --self-test
