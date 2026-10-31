@@ -1,0 +1,25 @@
+# Build outputs and checkouts (never committed)
+build/
+dist/
+out/
+out_ios/
+out_ios_*/
+out_android/
+upstream/
+upstream-src/
+runtime/
+opencode/
+node_modules/
+.cache/
+*.log
+*.deb
+!packaging/**/*.deb
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local secrets / env
+.env
+.env.*
+!.env.example

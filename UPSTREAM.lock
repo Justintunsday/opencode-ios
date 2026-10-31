@@ -1,7 +1,35 @@
-# Verified public GitHub branch snapshots at 2026-10-31 (source metadata)
+# Reproducible upstream pins for the OpenCode iOS port.
+# All sources are public GitHub repositories; no upstream repository is modified by this project.
+
+# OpenCode v2 CLI source (MIT). Baseline: macOS ARM64 distribution, v2.2.5, Bun 1.4.4.
 OPENCODE_REPO=https://github.com/anomalyco/opencode.git
 OPENCODE_REF=e8238bae9b807b72ecfc75afd3a9fe2e6b07b944
+OPENCODE_VERSION=2.2.5
+
+# Bun runtime used as the OpenCode host build tool (bun install / build scripts) on the macOS runner.
+# It is NOT the shipped iOS runtime; the shipped runtime is a native iPhoneOS Node.js build.
 BUN_REPO=https://github.com/oven-sh/bun.git
 BUN_REF=d7d941c045fe75950910a93752603ca86c2731a4
-# OpenCode dev package.json and packages/cli/package.json observed at v2.2.5 with Bun 1.4.4.
-# Keep builds pinned to commit IDs, record any subsequent upstream upgrade in a new commit.
+BUN_VERSION=1.4.4
+
+# Node.js mobile patch set for iPhoneOS (MIT). Branch update22-9-0 = Node v22.9.0 + iOS/Android
+# platform support. Build fixes are applied from nodejs-mobile PR #150 (see patches/nodejs-mobile/).
+NODE_MOBILE_REPO=https://github.com/nodejs-mobile/nodejs-mobile.git
+NODE_MOBILE_REF=update22-9-0
+NODE_MOBILE_COMMIT=106c51f95d55d1010de56a2ffd09bfb4ba819a47
+NODE_MOBILE_PR=https://github.com/nodejs-mobile/nodejs-mobile/pull/150
+NODE_VERSION=22.9.0
+
+# Target triple and deployment target for all native iOS binaries.
+TARGET_ARCH=arm64
+TARGET_PLATFORM=iPhoneOS
+TARGET_MIN_IOS=15.0
+
+# Host toolchain used by GitHub Actions workflows.
+CI_RUNNER=macos-15
+CI_XCODE=16.4
+
+# Reference prior art investigated while choosing the runtime approach (not vendored):
+# - https://github.com/nodejs-mobile/nodejs-mobile (Node on iOS/Android)
+# - https://github.com/imcynic/nodejs-ios (Node 18 .deb for jailbroken iOS)
+# - https://github.com/imcynic/claude-code-ios (Node CLI packaged for jailbroken iOS)
