@@ -3,24 +3,37 @@
 <plist version="1.0">
 <dict>
 	<!--
-	  MINIMAL, DEVICE-VERIFIED entitlement set for the iPhoneOS arm64 Node.js
-	  runtime on a jailbroken (Dopamine rootless / ElleKit) device.
+	  TENTATIVE entitlement set for the iPhoneOS arm64 Node.js runtime with JIT +
+	  WebAssembly enabled (v4). For the earlier JIT-less v2 build the minimal
+	  device-verified set was only platform-application +
+	  com.apple.private.security.no-sandbox (2 keys).
 
-	  Exactly these two keys are required. On-device matrix (iPhone SE 2,
-	  iPhone12,8, iOS 16.1.1, 2026-10-31, Lead-run):
-	    - this 2-key set                                   -> RUNS (version check OK, exit 0)
-	    - platform-application alone                       -> SIGKILL (exit 137)
-	    - + dynamic-codesigning (+ allow-jit etc.)         -> SIGKILL (exit 137)
-	    - platform-application + com.apple.private.security.no-sandbox -> RUNS
-	  The runtime is built jitless and without WebAssembly, so JIT / executable
-	  memory entitlements are not needed and are deliberately omitted.
+	  v3 device evidence: with JIT+WASM enabled but the no-op V8 W^X code path,
+	  EVERY entitlement set tested (2-key, +dynamic-codesigning, +allow-jit,
+	  6-key, 9-key) still trapped with SIGBUS on generated-code execution, so the
+	  trap was a V8 memory-permission bug (fixed by patch
+	  0004-ios-jit-write-protect.patch), not signing.
 
-	  See docs/RUNTIME_BUILD.md ("Signing and entitlements") for the full
-	  evidence matrix and scripts/ios-runtime/README.md for re-signing on device.
+	  With patch 0004, V8 reserves JIT code space with MAP_JIT and toggles
+	  pthread_jit_write_protect_np, which on iOS requires the
+	  `dynamic-codesigning` entitlement (the mechanism JIT-runner apps use on
+	  jailbroken iOS 14+). `allow-unsigned-executable-memory` is included for
+	  RWX/writable-code-page fallbacks. `allow-jit` and
+	  `disable-library-validation` are NOT included: this set is the tentative
+	  working set and the exact minimal subset is being confirmed on device; any
+	  reduction is a signing-only change (cheap cached re-run).
+
+	  Device verification status of THIS key set: PENDING (Lead device test).
+	  Do not add random entitlements: on this device an unresolved extra key in
+	  the old 4-key JIT set caused SIGKILL (exit 137) at load.
 	-->
 	<key>platform-application</key>
 	<true/>
 	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>dynamic-codesigning</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
 	<true/>
 </dict>
 </plist>

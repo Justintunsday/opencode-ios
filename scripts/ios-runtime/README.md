@@ -30,14 +30,20 @@ ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.plist \
      /var/jb/usr/lib/opencode/runtime/node
 ```
 
-That plist carries exactly the two device-verified keys
-`platform-application` + `com.apple.private.security.no-sandbox`. Do **not** add
-JIT/executable-memory entitlements (`dynamic-codesigning`, `allow-jit`,
-`allow-unsigned-executable-memory`, `disable-library-validation`): on the target
-device those sets are SIGKILLed (exit 137) by the iOS loader, even together with
-`platform-application`. JIT and WebAssembly are enabled in this build, but
-on-device testing showed the two-key set is sufficient for JIT+WASM on this
-hardware - no JIT-specific entitlements are needed.
+The v4 runtime has JIT + WebAssembly enabled, so its plist is the **tentative
+4-key set**: `platform-application` + `com.apple.private.security.no-sandbox` +
+`dynamic-codesigning` + `com.apple.security.cs.allow-unsigned-executable-memory`.
+
+- The 2-key pair alone is device-verified for the earlier interpreted-only build,
+  but MAP_JIT JIT additionally needs `dynamic-codesigning` on iOS.
+- `platform-application` + `no-sandbox` are mandatory: an old JIT set without
+  `no-sandbox` was SIGKILLed (exit 137) at load.
+- `allow-jit` and `disable-library-validation` are intentionally absent.
+- The exact minimal subset for the JIT build is being confirmed on device; a
+  reduction is a signing-only change (cheap cached re-run).
+
+Do not improvise entitlements: on the target device the loader is strict (137 for
+wrong sets).
 
 ## 2. Smoke tests (device — required before claiming runtime works)
 
@@ -55,7 +61,7 @@ node -p 'typeof Intl'                   # expect 'object'
 node -p 'typeof WebAssembly'            # expect 'object' (wasm enabled)
 node -e 'console.log(/\p{L}/u.test("é"), new Intl.Segmenter("en",{granularity:"word"}).segment("hi there").next().value)'  # expect 'true hi'
 node -e 'new WebAssembly.Module(new Uint8Array([0,97,115,109,1,0,0,0]))'  # minimal valid wasm module: no throw
-node -e 'const t=Date.now();for(let i=0;i<1e7;i++){};console.log("jit loop ok",Date.now()-t)'  # JIT executes
+node -e 'const t=Date.now();for(let i=0;i<1e7;i++){};console.log("jit loop ok",Date.now()-t)'  # JIT executes (no SIGBUS 138)
 node -p 'process.versions.undici || "n/a"'  # informational: built-in fetch stack
 node -e 'fetch("https://example.com").then(r=>{console.log(r.status);process.exit(0)},e=>{console.error(e);process.exit(1)})'  # built-in fetch (uses wasm llhttp)
 node -e 'console.log(1 + 2)'            # basic JS execution
@@ -74,8 +80,9 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 
 ## 3. Known limitations of this runtime build
 
-- **JIT + WebAssembly enabled** — device-verified to work with the 2-key
-  entitlement set on the target iPhone. Do not re-sign with JIT entitlements.
+- **JIT + WebAssembly enabled** — with the tentative 4-key entitlement set and
+  the patched V8 iOS W^X handling (patch 0004). Re-sign only with the artifact's
+  own `entitlements.plist`.
 - **ICU is required and compiled in** — `--with-intl=full-icu`, statically
   linked (all locales). The first no-ICU build was device-run but the CLI failed
   with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu: Invalid

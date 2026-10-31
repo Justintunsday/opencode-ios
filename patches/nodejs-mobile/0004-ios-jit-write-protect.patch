@@ -1,0 +1,129 @@
+# =============================================================================
+# nodejs-mobile: fix V8 JIT memory handling on iOS (MAP_JIT / W^X)
+# =============================================================================
+#
+# Base:   nodejs-mobile/nodejs-mobile update22-9-0
+#         commit 106c51f95d55d1010de56a2ffd09bfb4ba819a47
+# Depends: 0001-ios-build-fixes.patch, 0002-icu-host-toolset-macos.patch,
+#          0003-enable-webassembly.patch
+# Applied: by .github/workflows/build-runtime.yml after those patches, in
+#          filename order, with `git apply`.
+#
+# Device evidence (iPhone SE 2, iOS 16.1.1, Dopamine rootless): the v3 runtime
+# (JIT + WebAssembly enabled) starts (`node --version` works) but ANY generated
+# JS/wasm code execution traps:
+#   EXC_BAD_ACCESS / SIGBUS (exit 138), KERN_PROTECTION_FAILURE,
+#   faulting region max "rwx" / current "rw-" (a JIT page left read-write).
+# Re-signing with 2-key, +dynamic-codesigning, +allow-jit and a 6-key set all
+# still trapped, so it is not an entitlement problem: the process jumps into a
+# page that V8 never marked executable.
+#
+# Root cause in V8 12.4:
+#   * OS::Allocate(kNoAccessWillJitLater) uses MAP_JIT on Darwin (iOS included).
+#   * Toggling MAP_JIT pages between writable and executable requires the
+#     RwxMemoryWriteScope machinery, which compiles to no-ops unless
+#     V8_HAS_PTHREAD_JIT_WRITE_PROTECT == 1.
+#   * PR #150 had reduced that macro to macOS only, so on the iOS device the
+#     scope was a no-op and pages stayed rw- while the CPU entered them.
+#   * platform-ios.cc already provides SetJitWriteProtected for iOS, but it
+#     direct-calls pthread_jit_write_protect_np, which the public iPhoneOS SDK
+#     does not export at link time; this patch resolves the symbol with dlsym
+#     at runtime (the API exists on iOS 14+ and is used by JIT-runner apps on
+#     jailbroken devices when the dynamic-codesigning entitlement is present),
+#     so the binary links against the public SDK and still flips the
+#     write-protect state at runtime.
+#   * v8.gyp's OS=="ios" source list now also compiles platform-ios.cc (the
+#     upstream GN build already did; the gyp port of V8 12.4 did not).
+#
+# This is the same memory model macOS arm64 uses (macOS works), applied to iOS.
+# Entitlements: the 2-key set alone is not sufficient for MAP_JIT on iOS; the
+# tentative device-tested set is platform-application +
+# com.apple.private.security.no-sandbox + dynamic-codesigning +
+# com.apple.security.cs.allow-unsigned-executable-memory (see
+# scripts/ios-runtime/entitlements.plist; the exact minimal subset is confirmed
+# on device and any later change is signing-only).
+# =============================================================================
+
+--- a/deps/v8/src/base/build_config.h
++++ b/deps/v8/src/base/build_config.h
+@@ -29,11 +29,16 @@
+ 
+ // pthread_jit_write_protect is only available on arm64 Mac.
+ 
+-// nodejs-mobile patch: disable V8_HAS_PTHREAD_JIT_WRITE_PROTECT 
+-// for ios's arm64-simulator and x64-simulator. and 'embedtest' from node.gyp as well.
+-// this removes SetJitWriteProtected forward declaration from build
++// nodejs-mobile-build-fixes: enable pthread_jit_write_protect for ALL Apple
++// arm64 targets, including the iOS device (PR #150 had reduced this to macOS
++// only). Without it, V8 12.4 reserves JIT code space with MAP_JIT but compiles
++// RwxMemoryWriteScope to no-ops on iOS, so JIT pages stay rw- and the first
++// generated-code execution traps with SIGBUS / EXC_BAD_ACCESS
++// (KERN_PROTECTION_FAILURE) - device-verified on iOS 16.1.1. The iOS
++// implementation of SetJitWriteProtected lives in platform-ios.cc and resolves
++// pthread_jit_write_protect_np at runtime (see patch 0004).
+ #if defined(V8_HOST_ARCH_ARM64) && \
+-    (defined(V8_OS_MACOS) )
++    (defined(V8_OS_MACOS) || defined(V8_OS_IOS))
+ #define V8_HAS_PTHREAD_JIT_WRITE_PROTECT 1
+ #else
+ #define V8_HAS_PTHREAD_JIT_WRITE_PROTECT 0
+
+--- a/deps/v8/src/base/platform/platform-ios.cc
++++ b/deps/v8/src/base/platform/platform-ios.cc
+@@ -2,20 +2,35 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <dlfcn.h>
++
+ #include "src/base/base-export.h"
+ #include "src/base/build_config.h"
+ 
+-// pthread_jit_write_protect_np is marked as not available in the iOS
+-// SDK but it is there for the iOS simulator. So we provide a thunk
+-// and a forward declaration in a compilation target that doesn't
+-// include pthread.h to avoid the compiler error.
+-extern "C" void pthread_jit_write_protect_np(int enable);
+-
++// nodejs-mobile-build-fixes: pthread_jit_write_protect_np is not exported by
++// the public iPhoneOS SDK (the iOS device SDK marks it unavailable), but on
++// iOS 14+ it exists in libsystem_pthread (jailbroken devices use it for JIT
++// with the dynamic-codesigning entitlement). Resolve it with dlsym at runtime
++// instead of a link-time reference: that keeps the binary linkable against the
++// iPhoneOS SDK and still enables V8's mac-style RWX write-protect machinery on
++// the device. See patches/nodejs-mobile/0004-ios-jit-write-protect.patch and
++// docs/RUNTIME_BUILD.md.
+ namespace v8::base {
+ 
+ #if V8_HAS_PTHREAD_JIT_WRITE_PROTECT && defined(V8_OS_IOS)
++namespace {
++using JitWriteProtectFn = void (*)(int);
++JitWriteProtectFn GetJitWriteProtectFn() {
++  static const JitWriteProtectFn fn = reinterpret_cast<JitWriteProtectFn>(
++      dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np"));
++  return fn;
++}
++}  // namespace
++
+ V8_BASE_EXPORT void SetJitWriteProtected(int enable) {
+-  pthread_jit_write_protect_np(enable);
++  if (JitWriteProtectFn fn = GetJitWriteProtectFn()) {
++    fn(enable);
++  }
+ }
+ #endif
+ 
+
+--- a/tools/v8_gypfiles/v8.gyp
++++ b/tools/v8_gypfiles/v8.gyp
+@@ -1469,6 +1469,10 @@
+           'sources': [
+             '<(V8_ROOT)/src/base/debug/stack_trace_posix.cc',
+             '<(V8_ROOT)/src/base/platform/platform-darwin.cc',
++            # nodejs-mobile-build-fixes: V8's GN build compiles platform-ios.cc
++            # for is_ios; the gyp build omitted it. Needed for the iOS
++            # SetJitWriteProtected implementation (patch 0004).
++            '<(V8_ROOT)/src/base/platform/platform-ios.cc',
+           ]
+         }],
+         ['is_win', {
