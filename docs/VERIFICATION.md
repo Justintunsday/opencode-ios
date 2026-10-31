@@ -43,6 +43,14 @@ Both CI workflows are green on the same artifact, produced from the v3 runtime
 | Verification result | `ci_status=PASS`, 46 PASS / 0 FAIL / 0 SKIP; `device_status=UNVERIFIED ON DEVICE` |
 | Device status | `UNVERIFIED ON DEVICE` — awaiting the maintainer's full device runbook; this is the artifact to install |
 
+**Artifact identity across docs commits.** The packaged documentation is part of
+the `.deb`, so CI rebuilds triggered by documentation-only commits produce
+byte-different `.debs` (different SHA-256) even though the runtime, CLI bundle and
+launcher code are identical. The table above pins the **device-tested artifact**
+(run `41202900005`, `.deb` SHA-256 `cf5db02a...`). Later green runs on docs
+commits are pipeline evidence only and do not replace that pinned artifact for
+device verification.
+
 Pipeline history: the earlier CI-green package
 (run `41185611403`, `.deb` sha `13a0483d...`) was an **intermediate build** that
 used the WASM-disabled runtime and fails on device with
