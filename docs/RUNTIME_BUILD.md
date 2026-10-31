@@ -412,6 +412,24 @@ only one pending run per group); they are not failures.
 | [41193511671](https://github.com/Justintunsday/opencode-ios/actions/runs/41193511671) | `1df4b27` | cancelled (manifest wording) | first v3 dispatch (JIT+wasm). Cancelled ~2 min in, before any compile, because `runtime_policy.v8_jit` still contained the string `--v8-options=--jitless`; the packager capability gate fails any policy text containing `jitless` (§7), so the artifact could never be packaged. Replaced by `c20bf63` below; the binary build inputs were unchanged. |
 | [41193603642](https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642) | `c20bf63` | **success (v3 candidate)** | **runtime v3: JIT + WebAssembly enabled.** Patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals), gate-compatible manifest policy text with iPhone SE 2 device evidence, and an inline `check_manifest_profile_gate` (printed *"runtime-manifest.json capability profile is packager-gate compatible"*). Cold rebuild 10:45:16Z -> 12:40Z (~115 min on 3 vCPU with wasm+ICU); both jobs success, including optional `ios-ripgrep` (rg sha256 `6cc1cea8...`). **node 106,822,656 bytes sha256 `5808d7027cdfcbb138668243fd61b221efcc810e67d5411da15b432a6f4c1876`**; `[signed] WebAssembly present: enabled (2/3 signals); JIT enabled (no --jitless)`; `[signed] ICU present: full-icu statically linked (3/4 signals)`; otool -L still only libSystem/libc++; 2-key signature revalidated. This is the artifact handed to device verification (expected: `process.versions.icu` ~75.x, `typeof Intl==="object"`, `\p{L}` works, `typeof WebAssembly==="object"`, built-in fetch initialises). |
 
+## 9.1 Downstream consumption (packaging integration)
+
+The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
+
+| Fact | Value |
+| --- | --- |
+| package run | [41202900005](https://github.com/Justintunsday/opencode-ios/actions/runs/41202900005) - **success** |
+| resolved runtime run | 41193603642, artifact `ios-node-runtime`, head `c20bf63` |
+| resolved optional ripgrep | 41193603642, artifact `ios-ripgrep` |
+| resolved CLI run | 41192939688, artifact `opencode-cli-node-ios` |
+| packager capability gate | `Runtime build/capability profile is usable by the CLI` - **PASS** (this is the gate that rejects no-ICU / no-wasm / jitless runtimes) |
+| package artifact | `OpenCode-iOS-rootless` 52,953,183 bytes (.deb + SHA256SUMS + package-report.json) |
+
+So the runtime side of the pipeline is complete on the CI side: build -> static
+validation -> signing -> artifact -> consumed by the rootless `.deb` build. The
+only open item is the real-device execution verdict for this exact node binary
+(UNVERIFIED ON DEVICE in CI terms).
+
 ## 10. Limitations / unresolved issues
 
 1. **ICU rebuild not yet device-verified** - the no-Intl 22.9.0 build was
