@@ -1407,10 +1407,12 @@ def _check_verbatim_copy(checks, ctx, sources):
             mappings.append(("cli/opencode.mjs", entry))
         elif rel == "bundle-manifest.json":
             mappings.append(("cli/bundle-manifest.json", entry))
-        elif rel.startswith("assets/") or "/assets/" in rel:
-            if "/assets/" in rel:
-                rel = "assets/" + rel.split("/assets/", 1)[1]
+        elif rel.startswith("assets/"):
             mappings.append(("cli/" + rel, entry))
+        elif "/assets/" in rel:
+            # Artifact was uploaded with a parent directory; keep the assets/
+            # suffix exactly (upstream asset trees may contain deeper "assets/".
+            mappings.append(("cli/assets/" + rel.split("/assets/", 1)[1], entry))
     if not mappings:
         check(checks, "pkg.verbatim-copy", "package",
               "Deb files are byte-identical copies of the source artifacts", "SKIP",

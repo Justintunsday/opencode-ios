@@ -145,11 +145,6 @@ jobs:
           python3 --version
           echo "commit: $(git rev-parse HEAD)"
 
-      - name: Install dpkg (Debian packaging tools)
-        run: |
-          brew install dpkg
-          dpkg-deb --version
-
       - name: Resolve ios-node-runtime build run
         id: resolve-runtime
         env:
@@ -198,6 +193,13 @@ jobs:
           gh run download "${{ steps.resolve-ripgrep.outputs.ripgrep_run_id }}" \
             --repo "$GITHUB_REPOSITORY" -n ios-ripgrep -D .artifacts/ripgrep
           find .artifacts/ripgrep -maxdepth 2 -type f | sort
+
+      - name: Install dpkg (Debian packaging tools)
+        # Installed after artifact resolution/downloads so a missing upstream
+        # artifact fails fast instead of spending time on Homebrew first.
+        run: |
+          brew install dpkg
+          dpkg-deb --version
 
       - name: Assemble rootless .deb
         env:
