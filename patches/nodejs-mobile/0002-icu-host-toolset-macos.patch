@@ -1,0 +1,69 @@
+# =============================================================================
+# nodejs-mobile: macOS SDK for host-toolset targets in iOS cross builds
+# =============================================================================
+#
+# Base:   nodejs-mobile/nodejs-mobile update22-9-0
+#         commit 106c51f95d55d1010de56a2ffd09bfb4ba819a47
+#         (Node.js 22.9.0 source + nodejs-mobile iOS/Android patches)
+# Depends: 0001-ios-build-fixes.patch (nodejs-mobile PR #150 subset) applied first
+# Applied: by .github/workflows/build-runtime.yml to a clean checkout of the
+#          pinned base, in filename order, with `git apply`.
+#
+# Why this patch exists (not part of PR #150): PR #150 only targeted
+# --with-intl=none builds, where no ICU host tools are built. The runtime now
+# needs ECMA-402/Intl and V8 Unicode property escapes (\p{...}), so the build
+# uses --with-intl=full-icu.  With flavor=ios, common.gypi's OS=="ios"
+# target_defaults put the iPhoneOS SDK/arch on *every* target, including
+# host-toolset (#host) targets.  `make` must immediately execute the host tools
+# built from ICU's tools/icu/icu-generic.gyp (genccode, icupkg, genrb,
+# iculslocs) to generate the ICU data file, so those tools must be macOS
+# binaries, not iPhoneOS ones.
+#
+# This hunk adds a `_toolset=="host"` target_conditions entry to the OS=="ios"
+# block of common.gypi that restores SDKROOT=macosx and macOS compiler/linker
+# flags for every host-toolset target (the same treatment PR #150 applied
+# per-target to node.gyp, deps/uv/uv.gyp and deps/simdutf/simdutf.gyp; V8's
+# tools/v8_gypfiles/toolchain.gypi already had it).
+#
+# The resulting iOS runtime binary itself still targets iPhoneOS arm64; only
+# build-time host tools are macOS.
+# =============================================================================
+
+diff --git a/common.gypi b/common.gypi
+index d3d34aad63..2829f3d610 100644
+--- a/common.gypi
++++ b/common.gypi
+@@ -712,6 +712,33 @@
+           ],
+         },
+         'target_conditions': [
++          # nodejs-mobile-build-fixes: for iOS cross builds, every host-toolset
++          # target (e.g. ICU's genccode/icupkg/genrb/iculslocs) must be a macOS
++          # binary so it can run during the build. Without this, the OS=="ios"
++          # target_defaults compile them with the iPhoneOS SDK/arch, so `make`
++          # cannot execute them (needed by --with-intl=full-icu).
++          ['_toolset=="host"', {
++            'xcode_settings': {
++              'SDKROOT': 'macosx',
++              'MACOSX_DEPLOYMENT_TARGET': '10.15',
++              'IPHONEOS_DEPLOYMENT_TARGET': '',
++              'ENABLE_BITCODE': 'NO',
++            },
++            'cflags!': [
++              '-miphoneos-version-min=14.0',
++              '-fembed-bitcode',
++            ],
++            'cflags': [
++              '-mmacosx-version-min=10.15',
++            ],
++            'ldflags!': [
++              '-miphoneos-version-min=14.0',
++              '-fembed-bitcode',
++            ],
++            'ldflags': [
++              '-mmacosx-version-min=10.15',
++            ],
++          }],
+           ['_type!="static_library"', {
+             'xcode_settings': {
+               'OTHER_LDFLAGS': [

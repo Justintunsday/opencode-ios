@@ -43,7 +43,7 @@ MAKE_RC_FILE="$ROOT/dist/.make-exit-code"
 CONFIGURE_FLAGS=(
   --dest-os=ios
   --dest-cpu=arm64
-  --with-intl=none
+  --with-intl=full-icu
   --cross-compiling
   --openssl-no-asm
   --v8-options=--jitless
@@ -118,12 +118,10 @@ cmd_normalize_cache() {
 
   local marker="$NODE_SRC/out/Release/.runtime-build-inputs"
   if [[ ! -f "$marker" ]]; then
-    warn "cached tree has no build-inputs fingerprint (older cache); re-stamping files rewritten by the patch series"
-    (
-      cd "$NODE_SRC"
-      git diff --name-only | while read -r f; do [ -f "$f" ] && touch "$f"; done
-      git diff --name-only
-    )
+    # Unknown provenance (cache produced by an older script): rebuild everything
+    # rather than risk mixing objects built with different configure flags.
+    warn "cached tree has no build-inputs fingerprint (older cache); forcing a full rebuild"
+    find "$NODE_SRC" -path "$NODE_SRC/out" -prune -o -type f -exec touch {} +
     return 0
   fi
 
@@ -278,7 +276,19 @@ validate_static() {
       "$DIST/otool-L-$stage.txt"; then
     die "macOS-only or non-system dependency found in otool -L output (see $DIST/otool-L-$stage.txt)"
   fi
-  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only)"
+  # ECMA-402/Intl and V8 Unicode property escapes (\p{...}) are required by the
+  # OpenCode CLI bundle (device evidence: the initial --with-intl=none runtime was
+  # rejected with "Invalid property name in character class"). Assert that the
+  # build really has V8 i18n enabled and that ICU is statically linked.
+  log "[$stage] ICU/Intl presence audit"
+  grep -q "'v8_enable_i18n_support': 1" "$NODE_SRC/config.gypi" \
+    || die "config.gypi has no v8_enable_i18n_support=1 (build must use --with-intl=full-icu)"
+  if ! nm "$bin" 2>/dev/null | grep -qE '_(icudt[0-9]+_dat|u_strToUpper)'; then
+    die "binary does not appear to contain ICU symbols (needed for Intl and V8 \\p{} regexps)"
+  fi
+  nm "$bin" 2>/dev/null | grep -E '_(icudt[0-9]+_dat|u_strToUpper)$' | head -n 3 | tee "$DIST/icu-symbols-$stage.txt"
+  log "[$stage] ICU present: full-icu statically linked (v8_enable_i18n_support=1)"
+  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU linked)"
 }
 
 # ldid ad-hoc signing with the minimal, device-verified entitlement set.
@@ -398,6 +408,15 @@ minos = re.search(r"minos (\S+)", vtool)
 sdk = re.search(r"sdk (\S+)", vtool)
 file_out = read(dist / "file.txt").strip()
 
+# ICU / Intl state (required by the CLI bundle: ECMA-402 + V8 \p{} escapes).
+i18n = re.search(r"'v8_enable_i18n_support': (\d+)", cfg)
+icu_small = re.search(r"'icu_small': '(\w+)'", cfg)
+icu_version = None
+uvm = read(src / "deps" / "icu-small" / "source" / "common" / "unicode" / "uvernum.h")
+m_icu = re.search(r'#define U_ICU_VERSION_SHORT "([^"]+)"', uvm)
+if m_icu:
+    icu_version = m_icu.group(1)
+
 if target_os == "ios":
     platform_evidence = (
         "process.platform is initialised from the NODE_PLATFORM compile-time macro "
@@ -439,7 +458,7 @@ manifest = {
         "configure_flags": [
             "--dest-os=ios",
             "--dest-cpu=arm64",
-            "--with-intl=none",
+            "--with-intl=full-icu",
             "--cross-compiling",
             "--openssl-no-asm",
             "--v8-options=--jitless",
@@ -467,6 +486,25 @@ manifest = {
                   "NODE_V8_OPTIONS=\"--jitless\" into the binary",
         "webassembly": "disabled: PR #150 sets v8_enable_webassembly=0 in configure.py "
                        "(jitless iOS build); WebAssembly is NOT available on this runtime",
+        "intl": {
+            "mode": "full-icu",
+            "configure_flag": "--with-intl=full-icu",
+            "v8_enable_i18n_support": int(i18n.group(1)) if i18n else None,
+            "icu_small": icu_small.group(1) if icu_small else None,
+            "icu_version": icu_version,
+            "icu_source": "canned full ICU bundled in the pinned nodejs-mobile tree "
+                          "(deps/icu-small, README-FULL-ICU.txt; data file "
+                          "source/data/in/icudt75l.dat.bz2 is unpacked by configure)",
+            "data_statically_linked": True,
+            "device_requirement_note": (
+                "ICU is REQUIRED for ECMA-402/Intl and V8 Unicode property escapes "
+                "(\\p{...}). Device evidence: the initial --with-intl=none runtime started "
+                "on the iPhone but the CLI bundle failed to parse with 'SyntaxError: Invalid "
+                "regular expression: /[\\p{Mark}...]/gu: Invalid property name in character "
+                "class' and Intl was undefined. This ICU build is the fix; it is statically "
+                "linked so otool -L stays libSystem/libc++ only."
+            ),
+        },
         "entitlements": [
             "platform-application",
             "com.apple.private.security.no-sandbox",
@@ -508,10 +546,14 @@ manifest = {
     "device_status_note": (
         "The entitlement set in this artifact is DEVICE-VERIFIED on the target iPhone "
         "(platform-application + com.apple.private.security.no-sandbox run; the old 4-key JIT "
-        "set is SIGKILLed with exit 137). Execution of THIS 22.9.0 build on the device is still "
-        "pending; GitHub-hosted macOS runners cannot execute iPhoneOS binaries. All payload "
-        "checks in CI are static (Mach-O platform/minos, dylib linkage, ldid signature). See "
-        "docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
+        "set is SIGKILLed with exit 137). An earlier 22.9.0 build of the same source (the "
+        "no-Intl variant) was device-verified to run (version/platform/fs/child_process/TLS/"
+        "sqlite OK) but was rejected by the CLI because Intl and \\p{} escapes were missing; "
+        "this ICU-enabled artifact is the rebuild for that blocker and its device execution "
+        "is still pending. GitHub-hosted macOS runners cannot execute iPhoneOS binaries; all "
+        "payload checks in CI are static (Mach-O platform/minos, dylib linkage, ldid "
+        "signature, ICU symbol audit). See docs/RUNTIME_BUILD.md and "
+        "scripts/ios-runtime/README.md."
     ),
 }
 
