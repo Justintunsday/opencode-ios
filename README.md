@@ -34,7 +34,10 @@ The original bootstrap notes are preserved in [`docs/BOOTSTRAP_README.md`](docs/
 ## Runtime architecture
 
 - **Runtime:** Node.js 22.9.0 compiled from nodejs-mobile's iPhoneOS patch set
-  (`arm64-apple-ios`, iPhoneOS SDK), signed with `ldid` and minimal JIT/exec-memory entitlements.
+  (`arm64-apple-ios`, iPhoneOS SDK) with **ICU enabled** (`--with-intl=full-icu`, required for
+  ECMA-402 `Intl` and V8 Unicode property escapes), V8 `--jitless` and WebAssembly disabled, signed
+  with `ldid` using the minimal device-verified entitlement pair
+  (`platform-application` + `com.apple.private.security.no-sandbox`).
 - **CLI:** the same OpenCode v2.2.5 source tree, built through upstream's
   `packages/cli/script/build-node.ts` Vite bundle path, with a small iOS adaptation patch set for
   the non-SEA asset layout and for optional native dependencies that have no iPhoneOS builds
@@ -58,9 +61,20 @@ opencode --help
 See [`docs/VERIFICATION.md`](docs/VERIFICATION.md). CI validates: Mach-O platform is iPhoneOS
 (`PLATFORM_IOS=2`), CPU is arm64, minimum iOS ≤ 16.1.1, linked dylibs are iOS system libraries,
 rootless paths are correct, package metadata is valid, and the CLI bundle runs (`--version`,
-`--help`, catalog commands) on a host Node.js runtime on the macOS runner. **On-device execution
-cannot be performed on hosted macOS runners and is marked `UNVERIFIED ON DEVICE` until the user
-runs the provided smoke test on the iPhone.**
+`--help`, catalog commands) on a host Node.js runtime on the macOS runner.
+
+In addition, the project has a real target device available to the maintainers, so the following
+were **device-verified on an iPhone SE 2 (iPhone12,8), iOS 16.1.1 (20B101), Dopamine rootless,
+ElleKit 1.2** during this port:
+
+- the native iPhoneOS arm64 Node.js runtime executes (`v22.9.0`, `process.platform === "ios"`,
+  `arm64`, fs/spawn/TLS/`node:sqlite` working, `WebAssembly` undefined as designed);
+- the minimal required entitlement pair, and that the naive 4-key entitlement set is SIGKILLed;
+- rootless `dpkg` behaviour needed by the package (maintainer scripts, shell shebang paths).
+
+The full CLI runbook results (install, `opencode --version/--help`, provider auth path, headless
+agent turn, uninstall) are recorded in `docs/VERIFICATION.md` once the ICU-enabled runtime and the
+final `.deb` are validated; hosted CI itself can never run iPhoneOS binaries.
 
 ## CI workflows
 
