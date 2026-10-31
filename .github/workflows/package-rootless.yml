@@ -268,12 +268,12 @@ jobs:
       - name: Confirm packaging did not modify tracked files
         run: |
           set -euo pipefail
-          if [ -n "$(git status --porcelain)" ]; then
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
             echo "::error::packaging modified tracked repository files"
-            git status --porcelain
+            git status --porcelain --untracked-files=no
             exit 1
           fi
-          echo "working tree clean (build outputs are ignored)"
+          echo "tracked working tree clean (build outputs are ignored)"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
