@@ -356,6 +356,16 @@ and the 2-key entitlements are kept unchanged.
   rebuilt.
 - The final validation/signing/packaging steps run on a cache hit too (only the
   compile is skipped).
+- **Packager capability-gate compatibility:** `package-rootless.yml` inspects
+  `runtime-manifest.json` (`packaging/verify/port_verify.py
+  _check_runtime_profile`) and rejects runtimes whose profile cannot run the CLI.
+  The generated manifest must therefore keep `runtime_policy.webassembly` and
+  `runtime_policy.v8_jit` strings starting with `enabled:` and free of the words
+  `disabled`/`jitless`, declare `build.configure_flags` with
+  `--with-intl=full-icu` and without `--v8-options=--jitless`, and set
+  `runtime_policy.intl.mode=full-icu` + `icu_version`. The package step now
+  hard-fails on any drift via an inline `check_manifest_profile_gate`; this was
+  the reason a v3 run was cancelled and re-pushed (see §9).
 - CI cannot execute iOS binaries; therefore **no workflow claims device
   execution**. The device test checklist lives in
   `scripts/ios-runtime/README.md`.
@@ -393,7 +403,8 @@ only one pending run per group); they are not failures.
 | [41178496308](https://github.com/Justintunsday/opencode-ios/actions/runs/41178496308) | `08b4557` | **failure (audit heuristic, build OK)** | ICU rebuild with `--with-intl=full-icu`: configure accepted the canned ICU 75 source (`Using floating patch tools/icu/patches/75/.../genccode.c`); `make -j3` ran 06:58:45Z -> 08:18Z and produced `out/Release/node` with ICU static libraries linked; **the run then failed only in CI's ICU symbol audit** (`ERROR: binary does not appear to contain ICU symbols`), because ICU is compiled with `visibility=hidden` and the symbols are local in the final binary while the audit used a global-symbol-style grep. Fixed by the multi-signal audit described in §6.2. The `out/Release` tree was cached (failed-run cache save) so the rerun is incremental. |
 | [41184686029](https://github.com/Justintunsday/opencode-ios/actions/runs/41184686029) | `e803c8b` | **success** (ICU artifact) | exact `out/Release` cache hit from the failed run, so `make` was incremental (run 08:27:57Z -> 08:39:01Z); ICU audit passed with 4/4 signals; **node 97,286,800 bytes, sha256 `790cb43296dbed51a6375d82eca5a5a178808ca9fb3fecbabbd2daf547adaac2`**; `v8_enable_i18n_support=1`, `icu_small=false`, ICU 75; `nm` local symbols `_icudt75_dat`, `_u_strToUpper_75`, `_u_getPropertyEnum_75`; otool -L still only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; 2-key entitlement signature. The optional `ios-ripgrep` job failed in that run only on the too-strict `platform IOS` vtool grep (the binary uses the legacy `LC_VERSION_MIN_IPHONEOS` command; `check_macho.py` had PASSed); job-level `continue-on-error` kept the run/artifact-consumption green, and §8 has the fix. |
 | [41185874714](https://github.com/Justintunsday/opencode-ios/actions/runs/41185874714) | `72da8ac` | cancelled | ICU-audit SIGPIPE/`pipefail` hardening + ripgrep vtool fix; cancelled on 2026-10-31 to free the macOS runner for the v3 (JIT+wasm) rebuild. The hardening is on `main` and ships with v3. |
-| [_runtime v3: JIT + WebAssembly enabled_](https://github.com/Justintunsday/opencode-ios/actions/runs/) | _pending commit_ | _to be filled in_ | patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals) and updates the manifest policy to `v8_jit=enabled`, `webassembly=enabled`. Configure flags changed, so cache epoch is bumped to 3: cold rebuild (~80-95 min) on purpose. This fixes the last known device blocker (§6.3). |
+| [41193511671](https://github.com/Justintunsday/opencode-ios/actions/runs/41193511671) | `1df4b27` | cancelled (manifest wording) | first v3 dispatch (JIT+wasm). Cancelled ~2 min in, before any compile, because `runtime_policy.v8_jit` still contained the string `--v8-options=--jitless`; the packager capability gate fails any policy text containing `jitless` (§7), so the artifact could never be packaged. Replaced by `c20bf63` below; the binary build inputs were unchanged. |
+| [41193603642](https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642) | `c20bf63` | run started 10:40Z | **runtime v3: JIT + WebAssembly enabled.** Patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals), updates the manifest policy to gate-compatible `v8_jit=enabled:` / `webassembly=enabled:` text with iPhone SE 2 device evidence, and hard-fails the package step if the manifest drifts from the packager gate. Configure flags changed, so cache epoch 3 means a deliberate cold rebuild (~80-95 min). This fixes the last known device blocker (§6.3). |
 
 ## 10. Limitations / unresolved issues
 
