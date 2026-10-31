@@ -104,6 +104,7 @@ change surface — upstream itself is never modified.
 | 0003 | `optional-native-modules-startup-safe` | `packages/core/src/pty/pty.node.ts`, `packages/core/src/image/photon-wasm.node.ts` | `node-pty` native addon does not exist on iPhoneOS; its top-level `require` is guarded (PTY unavailable, shell tool uses pipe-based `child_process`). Drops the `node:sea` import (bundle is non-SEA). Guards photon wasm artifact resolution so importing the image pipeline reports “unavailable” instead of throwing (iPhoneOS runtime has WebAssembly disabled). |
 | 0004 | `ios-shell-selection-and-git` | `packages/core/src/shell/select.ts`, `packages/core/src/util/git-executable.ts` | Rootless iOS has no `/bin/sh`,`/bin/bash`,`/bin/zsh`; shell resolution prefers `$SHELL` then `/var/jb/bin[/usr/bin]/{sh,bash,zsh}` etc. The agent shell tool spawns the resolved shell with `-c` (never Node's hardcoded `/bin/sh`). git is not part of the bootstrap → clear actionable error instead of ENOENT. |
 | 0005 | `node22-sqlite-api-fallbacks` | `packages/core/src/database/sqlite.node.ts` | Node 22.9 `node:sqlite` lacks `StatementSync#setReturnArrays` and `DatabaseSync#loadExtension`: map object rows to column-ordered arrays when the API is missing, report extension loading as unavailable. Without this the embedded server answers 500 on `/api/info` and `/api/model`. |
+| 0006 | `device-robustness` | `packages/cli/vite.node.config.ts`, `packages/core/src/persistent-pty/binary.node.ts`, `packages/core/src/ripgrep/binary.ts` | Rootless-iOS robustness: home-rooted `TMPDIR` fallback in the prelude (do not depend on `/tmp`), persistent-PTY capability reports `false` on ios (the daemon binary is not shipped), and a missing `rg` produces an actionable install hint instead of `unsupported platform for ripgrep: arm64-ios`. |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -154,6 +155,12 @@ patch 0005 the embedded server returned HTTP 500 (`TypeError: setReturnArrays is
 function`); before patch 0001’s HTTP workaround the embedded server looped on
 `ERR_HTTP_CONTENT_LENGTH_MISMATCH`. Both are Node-22.9-specific failure classes.
 
+Additional host check (same development host, Node 22.9.0): `opencode serve --port 0
+--hostname 127.0.0.1` boots the embedded server and serves the web app from
+`assets/app-archive.bin` — `GET /` returns HTTP 200 HTML; `/api/*` requires authentication
+(HTTP 401 without credentials, by design). This exercises the non-SEA app-assets path of
+patch 0001 end-to-end.
+
 ## 6. bundle-manifest.json
 
 Key fields (all values are computed from the real build/stage output):
@@ -199,7 +206,9 @@ exec /var/jb/usr/lib/opencode/runtime/node \
   `/var/jb/usr/sbin`, `/var/jb/sbin` to `PATH` if missing.
 - `HOME` must be a writable directory (device: `/var/jb/var/mobile`); config/cache/data
   then default under `$HOME/.config/opencode`, `$HOME/.cache/opencode`,
-  `$HOME/.local/share/opencode`. `TMPDIR` must be writable.
+  `$HOME/.local/share/opencode`. `TMPDIR` must be writable; if the launcher does not set
+  it, the prelude derives `$HOME/.cache/opencode/tmp` on ios (patch 0006) instead of
+  relying on `/tmp`.
 - Self-spawned server children inherit the parent's `--experimental-sqlite` via
   `packages/cli/src/util/process.ts` (patch 0002); the launcher does not need to export
   `NODE_OPTIONS`.
@@ -212,12 +221,12 @@ not contain; they are patched to degrade gracefully rather than crash:
 | Feature | Behaviour on iPhoneOS | Evidence |
 | --- | --- | --- |
 | PTY-backed terminals (`@lydell/node-pty`) | unavailable; interactive terminal panes cannot spawn a PTY. PTY creation fails with a clear error; the rest of the CLI is unaffected. | startup guard patch 0003 |
-| Persistent PTY (`@opencode/pty` Rust binary) | binary not shipped for iPhoneOS; capability is advertised by the runtime only where the binary exists. | asset set excludes it |
+| Persistent PTY (`@opencode/pty` Rust binary) | binary not shipped for iPhoneOS; the server reports `persistentPty: false` so clients do not attempt it (patch 0006). | asset set excludes it |
 | File watcher (`@parcel/watcher`) | native binding absent → no native watcher; consumers already fall back (watcher-less). | upstream fallback + asset set |
 | Image resize (photon WebAssembly) | WebAssembly disabled in the shipped runtime → image normalization/auto-resize unavailable; image files still pass through. | patch 0003 + prelude does not set `OPENCODE_PHOTON_WASM_PATH` |
 | TUI syntax highlighting (web-tree-sitter wasm) | wasm payload is included but WebAssembly is disabled; TUI is secondary on device. | asset set + runtime |
 | TUI renderer (`@opentui/core` native library) | the native OpenTUI library is not shipped for iPhoneOS; headless CLI (`run`, `serve`, `models`, …) is the supported surface. | asset set excludes the dylib |
-| grep/glob (ripgrep binary) | no `rg` in the artifact; the tool reports an actionable error. If a system `rg` is present in `PATH` (runtime team may ship one under `/var/jb`), it is used. | upstream `which("rg")` first |
+| grep/glob (ripgrep binary) | no `rg` in the artifact; the tool reports an actionable error (patch 0006). If a system `rg` is present in `PATH` (runtime team may ship one under `/var/jb`), it is used. | upstream `which("rg")` first |
 | Plugin loading/registration | plugins load, but Node 22.9 has no `module.registerHooks`, so live reload of a local plugin’s relative module graph degrades and the special `@opencode/plugin` runtime specifier mapping is unavailable to external plugin code. | patch 0002 |
 | git integration | git is not installed by default on the device; commands needing git fail with “install it with `apt install git`” instead of a generic ENOENT. | patch 0004 |
 | Browser opening / updater | disabled/side-lined on this install type; the CLI remains usable headless. | upstream behaviour |

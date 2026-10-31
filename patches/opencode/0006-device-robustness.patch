@@ -1,0 +1,70 @@
+# OpenCode iOS port patch -- 0006
+# Title: Device robustness: TMPDIR fallback, persistent-PTY capability, ripgrep message
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0005 applied first (same files as 0001 and 0003).
+# Files: packages/cli/vite.node.config.ts
+#        packages/core/src/persistent-pty/binary.node.ts
+#        packages/core/src/ripgrep/binary.ts
+# Why: (1) Rootless iOS does not guarantee that /tmp exists or is writable, and
+#      os.tmpdir()/Global tmp is created at startup; the iOS prelude now derives a
+#      home-rooted TMPDIR when the launcher did not provide one.
+#      (2) The @opencode/pty Rust daemon binary is not shipped for iPhoneOS, but the
+#      Node variant reported vailable = true, advertising a persistent-PTY
+#      capability that cannot work; it is now false on ios.
+#      (3) Without a system g, grep/glob failed with a generic
+#      'unsupported platform for ripgrep: arm64-ios'; on ios it now explains how to
+#      install ripgrep / put rg on PATH.
+# Test: node --experimental-sqlite opencode.mjs --version/--help on stock Node 22.9.0
+#       (prelude path); device shell/tool paths verified separately.
+# Status: device robustness; no behavioural change on desktop platforms.
+
+diff --git a/packages/cli/vite.node.config.ts b/packages/cli/vite.node.config.ts
+index c274383..7d66a7e 100644
+--- a/packages/cli/vite.node.config.ts
++++ b/packages/cli/vite.node.config.ts
+@@ -165,6 +165,7 @@ function iosNodePrelude() {
+ // opencode-ios-prelude: non-SEA / Node 22.9-safe bootstrap for iPhoneOS
+ import __cjs_mod__ from "node:module"
+ import { fileURLToPath as __ocFileURLToPath } from "node:url"
++import __ocPath from "node:path"
+ const __filename = import.meta.filename
+ const __dirname = import.meta.dirname
+ const require = __cjs_mod__.createRequire(import.meta.url)
+@@ -182,6 +183,9 @@ if (process.platform === "ios") {
+   const __ocPathEntries = (process.env.PATH ?? "").split(":").filter(Boolean)
+   const __ocMissingPaths = __ocIosPaths.filter((dir) => !__ocPathEntries.includes(dir))
+   if (__ocMissingPaths.length > 0) process.env.PATH = [...__ocMissingPaths, ...__ocPathEntries].join(":")
++  // Do not depend on /tmp existing or being writable on the device: give the CLI a
++  // home-rooted scratch dir when the launcher did not provide TMPDIR.
++  if (!process.env.TMPDIR) process.env.TMPDIR = __ocPath.join(process.env.HOME ?? "/var/jb/var/mobile", ".cache", "opencode", "tmp")
+ }`
+ }
+ 
+diff --git a/packages/core/src/persistent-pty/binary.node.ts b/packages/core/src/persistent-pty/binary.node.ts
+index ef758ad..c070633 100644
+--- a/packages/core/src/persistent-pty/binary.node.ts
++++ b/packages/core/src/persistent-pty/binary.node.ts
+@@ -1,4 +1,6 @@
+-export const available = true
++// iPhoneOS: the @opencode/pty Rust daemon binary is not shipped for iOS, so the
++// server must not advertise the persistent-PTY capability to clients.
++export const available = process.platform !== "ios"
+ 
+ export async function resolveBinary() {
+   return process.env.OPENCODE_PTY_BIN || "opencode-pty"
+diff --git a/packages/core/src/ripgrep/binary.ts b/packages/core/src/ripgrep/binary.ts
+index 7d5ebd5..6ee7798 100644
+--- a/packages/core/src/ripgrep/binary.ts
++++ b/packages/core/src/ripgrep/binary.ts
+@@ -126,6 +126,11 @@ export namespace RipgrepBinary {
+ 
+             const platformKey = `${process.arch}-${process.platform}` as keyof typeof PLATFORM
+             const config = PLATFORM[platformKey]
++            if (!config && process.platform === "ios")
++              throw new Error(
++                "ripgrep is not installed on this device and no iPhoneOS binary is bundled: " +
++                  "install it with `apt install ripgrep` (or put `rg` on PATH)",
++              )
+             if (!config) throw new Error(`unsupported platform for ripgrep: ${platformKey}`)
+ 
+             const filename = `ripgrep-${VERSION}-${config.platform}.${config.extension}`
