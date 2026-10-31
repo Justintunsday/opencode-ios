@@ -1286,7 +1286,7 @@ def _check_sha256sums(checks, ctx, deb_path, artifact_dir):
 def _compare_tree(expected_files, actual_entries):
     expected = {
         f["path"]: f for f in expected_files
-        if not f["path"].startswith("DEBIAN/")
+        if f["path"] not in ("DEBIAN",) and not f["path"].startswith("DEBIAN/")
     }
     actual = {e["path"]: e for e in actual_entries}
     missing = sorted(set(expected) - set(actual))
