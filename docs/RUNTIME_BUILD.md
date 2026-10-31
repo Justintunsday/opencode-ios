@@ -1,7 +1,8 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
-Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly) + static
-Mach-O audit; the v4 artifact is CI-green and awaiting device verification.**
+Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly, iOS JIT
+W^X fixed) + static Mach-O audit; the v4 artifact (run 41207449703) is CI-green
+and awaiting device verification.**
 A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
 target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
 but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
@@ -214,6 +215,9 @@ was verified for the earlier interpreted-only build):
   reduction is a **signing-only** change (cheap cached re-run). The manifest
   records `entitlements_status: tentative` and `entitlements_device_verified:
   false` until then.
+- The CI sign step hard-requires exactly these four keys in the signed binary
+  (and rejects `allow-jit` / `disable-library-validation`), so an artifact
+  cannot silently ship a different entitlement policy.
 
 Earlier device entitlement matrix (v2 interpreted-only binary, iPhone SE 2,
 iPhone12,8, iOS 16.1.1 20B101, Dopamine rootless + ElleKit 1.2, 2026-10-31),
@@ -495,6 +499,8 @@ only one pending run per group); they are not failures.
 | [41184686029](https://github.com/Justintunsday/opencode-ios/actions/runs/41184686029) | `e803c8b` | **success** (ICU artifact) | exact `out/Release` cache hit from the failed run, so `make` was incremental (run 08:27:57Z -> 08:39:01Z); ICU audit passed with 4/4 signals; **node 97,286,800 bytes, sha256 `790cb43296dbed51a6375d82eca5a5a178808ca9fb3fecbabbd2daf547adaac2`**; `v8_enable_i18n_support=1`, `icu_small=false`, ICU 75; `nm` local symbols `_icudt75_dat`, `_u_strToUpper_75`, `_u_getPropertyEnum_75`; otool -L still only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; 2-key entitlement signature. The optional `ios-ripgrep` job failed in that run only on the too-strict `platform IOS` vtool grep (the binary uses the legacy `LC_VERSION_MIN_IPHONEOS` command; `check_macho.py` had PASSed); job-level `continue-on-error` kept the run/artifact-consumption green, and §8 has the fix. |
 | [41185874714](https://github.com/Justintunsday/opencode-ios/actions/runs/41185874714) | `72da8ac` | cancelled | ICU-audit SIGPIPE/`pipefail` hardening + ripgrep vtool fix; cancelled on 2026-10-31 to free the macOS runner for the v3 (JIT+wasm) rebuild. The hardening is on `main` and ships with v3. |
 | [41193511671](https://github.com/Justintunsday/opencode-ios/actions/runs/41193511671) | `1df4b27` | cancelled (manifest wording) | first v3 dispatch (JIT+wasm). Cancelled ~2 min in, before any compile, because `runtime_policy.v8_jit` still contained the string `--v8-options=--jitless`; the packager capability gate fails any policy text containing `jitless` (§7), so the artifact could never be packaged. Replaced by `c20bf63` below; the binary build inputs were unchanged. |
+| 41205805269 | `b47963a` | failure (marker check) | first v4 push: `require_patched_source` still looked for the PR#150 comment line that patch 0004 replaces, so normalize-cache aborted before build; fixed in `dfbc093` with one stable marker per patch (0001..0004) |
+| [41207449703](https://github.com/Justintunsday/opencode-ios/actions/runs/41207449703) | `dfbc093` | **success (v4)** | runtime v4: patches 0001..0004, JIT+WebAssembly+full-icu, iOS JIT W^X fix. `make` 14:06Z -> ~16:05Z (~119 min; build_config.h is a V8-wide header so the macro change recompiled most V8/node sources even with the cache). Both jobs success incl. optional `ios-ripgrep`. **node 106,842,032 bytes sha256 `48eecd595ad94c433dafc5573bd528f4a947c7fe5e57f59cedd139890839ec66`**. Static gates: check_macho PASS iPhoneOS arm64 minos 14.0; vtool platform IOS; otool -L only libSystem/libc++; ICU 3/4 signals; WebAssembly 2/3 signals; new hard gate "binary references pthread_jit_write_protect_np" PASS; signed entitlements exactly the tentative 4-key set (platform-application + no-sandbox + dynamic-codesigning + allow-unsigned-executable-memory); packager-gate manifest self-check PASS. |
 | [41193603642](https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642) | `c20bf63` | **success (v3 candidate)** | **runtime v3: JIT + WebAssembly enabled.** Patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals), gate-compatible manifest policy text with iPhone SE 2 device evidence, and an inline `check_manifest_profile_gate` (printed *"runtime-manifest.json capability profile is packager-gate compatible"*). Cold rebuild 10:45:16Z -> 12:40Z (~115 min on 3 vCPU with wasm+ICU); both jobs success, including optional `ios-ripgrep` (rg sha256 `6cc1cea8...`). **node 106,822,656 bytes sha256 `5808d7027cdfcbb138668243fd61b221efcc810e67d5411da15b432a6f4c1876`**; `[signed] WebAssembly present: enabled (2/3 signals); JIT enabled (no --jitless)`; `[signed] ICU present: full-icu statically linked (3/4 signals)`; otool -L still only libSystem/libc++; 2-key signature revalidated. This is the artifact handed to device verification (expected: `process.versions.icu` ~75.x, `typeof Intl==="object"`, `\p{L}` works, `typeof WebAssembly==="object"`, built-in fetch initialises). |
 
 ### Device verdicts for the CI-green builds (device evidence, 2026-10-31)
@@ -505,7 +511,7 @@ only one pending run per group); they are not failures.
 | ICU build (run 41184686029) | runs, ICU present, but CLI rejected: `ReferenceError: WebAssembly is not defined` from Node `fetch`/undici wasm llhttp. Drove patch 0003 / JIT+wasm. |
 | v3 (run 41193603642) | starts; `--version` OK; **any JS/wasm code execution traps with SIGBUS (138) / EXC_BAD_ACCESS**, regardless of entitlement set. Drove patch 0004 (iOS JIT W^X). |
 | v4 (run 41205805269) | **CI failure before build**: the workflow's patch-series marker check (`require_patched_source`) still looked for the old PR#150 comment line that patch 0004 replaces in `build_config.h`, so normalize-cache aborted. Fixed in `dfbc093` (one stable marker per patch 0001..0004), re-run as 41207449703. |
-| v4 (run 41207449703) | CI run in progress; device verification pending at the time of writing. |
+| v4 (run 41207449703) | **CI-green**: node 106,842,032 bytes sha256 `48eecd595ad94c433dafc5573bd528f4a947c7fe5e57f59cedd139890839ec66`, signed with the tentative 4-key set (platform-application + no-sandbox + dynamic-codesigning + allow-unsigned-executable-memory); patch 0003+0004 compiled in (CI hard-gates the `pthread_jit_write_protect_np` reference). Device verification in progress (entitlement matrix + JIT/wasm + CLI). |
 
 ## 9.1 Downstream consumption (packaging integration)
 
