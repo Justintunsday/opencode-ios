@@ -1,7 +1,11 @@
 # OpenCode CLI bundle for the iPhoneOS Node.js runtime
 
-Status: **CI build + host-Node smoke verified; device execution pending user verification**
-(`UNVERIFIED ON DEVICE` until the packaged `.deb` is tested on the target iPhone).
+Status: **CI build + host-Node smoke verified; device execution pending the runtime ICU rebuild**
+(`UNVERIFIED ON DEVICE`). First device attempts found that the initial iPhoneOS runtime was
+built `--with-intl=none`, which makes V8 reject the bundle's Unicode property escapes at
+parse time and leaves `Intl` undefined — a runtime capability gap, not a CLI patch issue
+(see §11). The runtime is being rebuilt with `--with-intl=small-icu`; the CLI artifact is
+otherwise device-ready and package-integration-proven.
 
 This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
@@ -221,6 +225,10 @@ exec /var/jb/usr/lib/opencode/runtime/node \
 - `--experimental-sqlite` is **required**: on Node 22.9 `node:sqlite` (used for
   `DatabaseSync`, session storage) is flag-gated. Do **not** pass `--experimental-ffi` or
   `--use-system-ca`; neither exists on Node 22.9.0.
+- The runtime **must be built with ICU** (`--with-intl=small-icu` or `full-icu`, Node's
+  standard configurations). A runtime built `--with-intl=none` cannot run the bundle at all:
+  V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
+  undefined (device-reported; see §11). The `build-runtime.yml` runtime uses small-icu.
 - The prelude sets `OPENCODE_NODE_ASSETS_DIR` to `<bundle dir>/assets` by default. If the
   wrapper sets it explicitly (recommended: `/var/jb/usr/lib/opencode/cli/assets`) the
   prelude respects the override. `OTUI_ASSET_ROOT` is set from the same root.
@@ -281,3 +289,87 @@ Record exact commands/output in the verification report; CI cannot assert these.
 - No run in this document is reported green unless the GitHub Actions run is green.
 - Failure logs and the fix for each failure are kept in §4; the patch series exists because
   of concrete failures on Node 22.9.0, not speculation.
+
+## 11. Runtime ICU capability gap (device-reported) and no-ICU hedge analysis
+
+### Observed failure (reported by the device test, 2026-10-31)
+
+The first device-verified iPhoneOS Node 22.9.0 runtime (`node --version` = v22.9.0,
+`process.platform` = `ios`, fs/spawn/TLS/sqlite working) could not parse the CLI bundle:
+
+```
+SyntaxError: Invalid regular expression:
+  /[\p{Mark}\p{Control}\p{Default_Ignorable_Code_Point}]/gu:
+  Invalid property name in character class
+```
+
+Cause: that runtime was built with nodejs-mobile's default `--with-intl=none`. With V8's
+i18n support disabled, (a) every `\p{...}`/`\P{...}` property escape is a **parse-time**
+SyntaxError (the whole 21 MB bundle fails to compile before any code — no CLI-side patch can
+catch it), and (b) the ECMA-402 `Intl` object is absent. This is a runtime capability gap;
+the CLI patch series is not implicated (none of the six patches uses `Intl` or `\p{...}`).
+
+Primary fix (owned by the runtime build): rebuild Node 22.9.0 with
+`--with-intl=small-icu`. small-icu links ICU (so V8 regex property escapes work and
+`Intl.Segmenter`/`DateTimeFormat`/`NumberFormat`/`ListFormat`/`Collator` exist with
+root/English formatting data) and adds only a few MB to the runtime binary. `\p{...}`
+support depends on ICU's Unicode property data, which small-icu includes.
+
+### Measured exposure in the run-4 artifact
+
+Measured directly from `opencode-cli-node-ios` run 41176539017 (`opencode.mjs` sha256
+`69ce398b…`):
+
+| Item | Count / detail |
+| --- | --- |
+| Regex literals containing `\p{...}` (parse-time failures) | **75** occurrences |
+| `\\p{...}` inside JS strings passed to `new RegExp(..., "u")` (construction-time failures) | **121** occurrences |
+| Negated property escapes `\P{...}` | **0** (no complement ranges needed) |
+| Distinct literal properties | `L, Nl, N, P, S, C, Cc, Cf, Co, Cn, Mark, Control, Default_Ignorable_Code_Point, Zl, Zp` |
+| Distinct string-embedded properties | adds binary properties `Emoji, Emoji_Presentation, Emoji_Component, Extended_Pictographic, Regional_Indicator, DI` and `Script=Latin`, `Nd, Zs, Z, Ll, Lu, Pc, M, Cs` |
+| `Intl.*` references | 30: `Segmenter` 14, `DateTimeFormat` 9, `NumberFormat` 5, `ListFormat` 1, `Collator` 1 |
+| Top-level `new Intl.Segmenter(...)` module initialisers (crash even if regex parsing were fixed) | 6 source sites: `packages/merman/src/core/text.ts`, `packages/latex/src/layout.ts`, `packages/tui/src/util/string-width.node.ts`, `packages/tui/src/component/spinner-renderable.ts`, `packages/tui/src/util/locale.ts`, `packages/tui/src/prompt/display.ts` |
+| Other ICU-dependent APIs at risk | `.normalize(` 45 refs (Unicode normalization needs ICU), `toLocaleString(` 23, `localeCompare(` 86 |
+
+Origin of the property escapes: mostly bundled third-party code — the markdown/micromark
+stack (`[\s\p{P}\p{S}]` patterns), width/emoji/ANSI helpers (`\p{Mark}\p{Control}…`,
+`\p{Emoji_Presentation}`, `\p{Extended_Pictographic}`) — plus a small number in the port's
+own sources (`packages/core/src/shell/scan.ts`, `packages/core/src/tool/plugin/edit.ts`,
+`packages/tui/src/util/string-width.node.ts`, `packages/patchmark/src/inline.ts`,
+`packages/session-ui/...`). The top-level `Intl.Segmenter` sites are in merman/latex/tui
+modules that the single-file bundle evaluates at load.
+
+### Hedge if the small-icu rebuild fails (design only, not implemented)
+
+This is deliberately **not implemented**; the ICU runtime is the correct fix. If it cannot
+be produced, the minimal on-device workaround has two parts:
+
+1. **Build-time escape rewriter** (runs in `scripts/build-opencode-bundle.sh` after Vite):
+   walk the 21 MB bundle text once, tracking string literals, template literals, regex
+   literals and character-class nesting; replace every property escape with explicit
+   code-point ranges generated *at build time* by the build-host Node (which has full ICU).
+   Inside `[...]` emit the ranges; standalone emit `[ranges]`; inside JS strings emit escaped
+   `\\u{…}` sequences. No complements are needed (no `\P`). Worst-case growth measured on
+   the run-4 bundle: ≈ **645 KiB** of range text (e.g. `L` = 684 ranges / 10.6 KB, `C` =
+   741 ranges / 10.8 KB, `Mark` = 327 ranges / 4.9 KB; small properties like `Control` are
+   two ranges). Risks: Unicode data version drift between build-host ICU and the emulated
+   sets, astral-plane handling, context-scanning errors in minified code, and maintenance on
+   every upstream bump. Effort: ~1 day plus regression testing.
+2. **Prelude `Intl` shim** (defines `globalThis.Intl` before the bundle body evaluates, so
+   the 6 top-level `new Intl.Segmenter` sites do not throw): `Segmenter` approximating
+   grapheme clusters by code points, `DateTimeFormat`/`NumberFormat` basic formatting with
+   `resolvedOptions()` (at least `timeZone`), `ListFormat` joining with `", "`, `Collator`
+   code-unit comparison. Risks: cosmetic formatting differences (stats/date output) and
+   approximate grapheme widths in TUI-only code. Effort: ~2 hours.
+3. `String.prototype.normalize` / `localeCompare` fallbacks would still be missing without
+   ICU; some bundled width/slug helpers call `normalize`, so the hedge is incomplete without
+   additional polyfills (another ~half day, higher risk).
+
+**Verdict:** the no-ICU hedge is 1–2 days of fragile build/transform work and approximates
+Unicode behaviour; rebuilding the runtime with small-icu (a supported Node configuration)
+fixes both failure classes exactly and keeps the CLI patch series unchanged. Only pursue the
+hedge if the small-icu runtime cannot be produced.
+
+No device success is claimed in this section; it records a device-reported failure and a
+contingency analysis. The device verification matrix in §9 will be filled from the
+rebuilt-runtime run.
