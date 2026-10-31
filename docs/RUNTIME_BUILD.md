@@ -1,7 +1,7 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
 Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly) + static
-Mach-O audit; the v3 artifact is CI-green and awaiting device verification.**
+Mach-O audit; the v4 artifact is CI-green and awaiting device verification.**
 A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
 target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
 but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
@@ -51,6 +51,7 @@ verifies it after checkout):
 | ECMA-402/Intl | `--with-intl=full-icu`; ICU 75 source + full data bundled in the pinned tree at `deps/icu-small` (`README-FULL-ICU.txt`, `source/data/in/icudt75l.dat.bz2`), statically linked (no download) |
 | ICU host tools | built as macOS host-toolset binaries by patch 0002 (needed to generate the ICU data file during the iOS cross build) |
 | V8 JIT / WebAssembly | enabled: no `--v8-options=--jitless`; `v8_enable_webassembly=1` via patch 0003 (Node 22.9 `fetch()`/undici needs wasm llhttp) |
+| V8 iOS JIT memory | patch 0004: `V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1` for iOS arm64, `platform-ios.cc` compiled, `pthread_jit_write_protect_np` resolved via dlsym |
 
 Upstream repositories are never modified: CI applies the whole
 `patches/nodejs-mobile/*.patch` series (in filename order) to a clean checkout of
@@ -93,6 +94,29 @@ every host-toolset target. This is the same treatment PR #150 applied per-target
 to `node.gyp`, `deps/uv/uv.gyp` and `deps/simdutf/simdutf.gyp`; V8's
 `tools/v8_gypfiles/toolchain.gypi` already had it. Only the build-time tools are
 macOS binaries; the shipped runtime still targets iPhoneOS arm64.
+
+### `0004-ios-jit-write-protect.patch` (this repository, not PR #150)
+
+Fixes the v3 device SIGBUS on any generated-code execution (§6.4). Three changes:
+
+- `deps/v8/src/base/build_config.h`: `V8_HAS_PTHREAD_JIT_WRITE_PROTECT` is
+  enabled for `V8_HOST_ARCH_ARM64 && (V8_OS_MACOS || V8_OS_IOS)`. PR #150 had
+  reduced it to macOS only, so on the iOS device V8's `RwxMemoryWriteScope`
+  compiled to no-ops while V8 still reserved code space with `MAP_JIT`.
+- `deps/v8/src/base/platform/platform-ios.cc`: `SetJitWriteProtected()` now
+  resolves `pthread_jit_write_protect_np` with `dlsym(RTLD_DEFAULT)` at runtime
+  instead of a direct call. The public iPhoneOS SDK does not export the symbol at
+  link time; on iOS 14+ (jailbroken devices, `dynamic-codesigning` entitlement)
+  it exists in libsystem and is what JIT-runner apps use. If the symbol is
+  missing the thunk safely no-ops.
+- `tools/v8_gypfiles/v8.gyp`: `platform-ios.cc` added to the `OS=="ios"`
+  sources (V8's GN build already compiles it for `is_ios`; the gyp port in
+  nodejs-mobile omitted it, so `SetJitWriteProtected` was not even linked in
+  before).
+
+The build also hard-gates the result: the linked `node` must contain the
+`pthread_jit_write_protect_np` string (the dlsym lookup), otherwise the CI step
+fails with "patch 0004 missing".
 
 ## 4. Build recipe
 
@@ -172,9 +196,28 @@ exactly:
 <key>com.apple.private.security.no-sandbox</key><true/>
 ```
 
-This set is **device-verified**, not assumed. On the target device (iPhone SE 2,
-iPhone12,8, iOS 16.1.1 20B101, Dopamine rootless + ElleKit 1.2, 2026-10-31) an
-existing iPhoneOS Node binary was re-signed with each candidate set and run:
+The plist is now the **tentative v4 JIT set** (superseding the 2-key pair that
+was verified for the earlier interpreted-only build):
+
+```xml
+<key>platform-application</key><true/>
+<key>com.apple.private.security.no-sandbox</key><true/>
+<key>dynamic-codesigning</key><true/>
+<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+```
+
+- The 2-key pair is device-verified for the earlier interpreted-only v2 build.
+- MAP_JIT JIT on iOS needs `dynamic-codesigning`; `allow-unsigned-executable-memory`
+  is kept for writable-code-page fallbacks.
+- `allow-jit` and `disable-library-validation` are deliberately omitted.
+- The exact minimal subset for the JIT build is being confirmed on device; any
+  reduction is a **signing-only** change (cheap cached re-run). The manifest
+  records `entitlements_status: tentative` and `entitlements_device_verified:
+  false` until then.
+
+Earlier device entitlement matrix (v2 interpreted-only binary, iPhone SE 2,
+iPhone12,8, iOS 16.1.1 20B101, Dopamine rootless + ElleKit 1.2, 2026-10-31),
+which is why `platform-application` + `no-sandbox` are mandatory:
 
 | Entitlement set | Device result |
 | --- | --- |
@@ -205,6 +248,12 @@ Why exactly these two keys:
   evidence in §6.3). They are deliberately omitted, and the CI sign step rejects
   them if they ever reappear in the signed entitlements.
 
+v3 device evidence with JIT+WASM enabled but the broken V8 W^X path: **every**
+entitlement set tried (2-key, +`dynamic-codesigning`, +`allow-jit`, 6-key, 9-key)
+still trapped with SIGBUS on generated-code execution. That proved the crash was
+a memory-permission bug, not signing; patch 0004 fixes the code path, and the
+4-key set above is what the patched build expects on iOS.
+
 If the device loader rejects the signature, re-sign on device with the bundled
 `entitlements.plist` (see `scripts/ios-runtime/README.md`). This is a
 jailbreak-rootless scenario; it is not a claim of stock-iOS/App-Store
@@ -218,10 +267,10 @@ compatibility.
   reports `ios`, not `darwin`. This was confirmed **on device**
   (`process.platform === "ios"` for the 22.9.0 build) and is recorded in
   `runtime-manifest.json` → `runtime_policy.process_platform`.
-- **JIT enabled (default V8 JIT).** The build does not pass
-  `--v8-options=--jitless`; JIT is a runtime-required feature for the CLI
-  (performance) and JIT+WASM were device-verified to work with the 2-key
-  entitlements on the target iPhone.
+- **JIT enabled (default V8 JIT), with iOS-specific memory handling fixed.**
+  The build does not pass `--v8-options=--jitless`. V8's `MAP_JIT`/W^X machinery
+  must be compiled in on iOS (patch 0004, §6.4); the v3 build trapped with SIGBUS
+  on the first generated-code execution because it was not.
 - **WebAssembly enabled.** `v8_enable_webassembly=1` (patch 0003 restores upstream
   behaviour). This is **required**, not optional: Node 22.9's built-in
   `fetch()`/undici instantiates a wasm llhttp parser at startup, so a no-wasm
@@ -326,6 +375,42 @@ binary, re-signed with only the 2-key entitlement set, runs on this iPhone
 loop executes). Therefore the runtime now ships with JIT + WebAssembly enabled
 and the 2-key entitlements are kept unchanged.
 
+### 6.4 iOS JIT memory handling: the v3 SIGBUS and patch 0004
+
+v3 (JIT + WebAssembly enabled) started on the device (`node --version` worked)
+but **any** generated JS/wasm code execution crashed:
+
+```
+EXC_BAD_ACCESS / SIGBUS (exit code 138), KERN_PROTECTION_FAILURE
+faulting region: Memory Tag 255 ... [208K] rw-/rwx  (max rwx, current rw-)
+```
+
+i.e. the CPU jumped into a JIT code page that V8 had left read-write and never
+flipped to executable. Re-signing the same binary with 2-key,
++`dynamic-codesigning`, +`allow-jit`, a 6-key and a 9-key set all still trapped,
+so it was independent of entitlements.
+
+Root cause (V8 12.4 in the pinned tree):
+
+- `OS::Allocate(kNoAccessWillJitLater)` reserves code space with `MAP_JIT` under
+  `V8_OS_DARWIN` (which includes iOS).
+- Flipping `MAP_JIT` pages between writable and executable goes through the
+  `RwxMemoryWriteScope` machinery, which compiles to **no-ops** unless
+  `V8_HAS_PTHREAD_JIT_WRITE_PROTECT == 1`.
+- PR #150 had reduced that macro to macOS only, so on the iOS device the scope
+  was a no-op: pages stayed `rw-` while V8 executed them -> SIGBUS.
+- `platform-ios.cc` already had an iOS `SetJitWriteProtected` implementation, but
+  it direct-called `pthread_jit_write_protect_np`, which the public iPhoneOS SDK
+  does not export at link time, and `v8.gyp` did not even compile that file for
+  `OS=="ios"`.
+
+Patch 0004 enables the macro for iOS arm64, compiles `platform-ios.cc`, and
+resolves `pthread_jit_write_protect_np` with `dlsym` at runtime (it exists on
+iOS 14+, used by JIT-runner apps with `dynamic-codesigning`). This applies the
+proven macOS arm64 memory model to iOS. CI hard-gates that the linked binary
+contains the dlsym reference, and the tentative 4-key entitlement set covers the
+MAP_JIT entitlement requirement.
+
 ## 7. CI design (performance and debuggability)
 
 - `macos-15` + Xcode 16.4, `timeout-minutes: 360` on the build job.
@@ -412,6 +497,15 @@ only one pending run per group); they are not failures.
 | [41193511671](https://github.com/Justintunsday/opencode-ios/actions/runs/41193511671) | `1df4b27` | cancelled (manifest wording) | first v3 dispatch (JIT+wasm). Cancelled ~2 min in, before any compile, because `runtime_policy.v8_jit` still contained the string `--v8-options=--jitless`; the packager capability gate fails any policy text containing `jitless` (§7), so the artifact could never be packaged. Replaced by `c20bf63` below; the binary build inputs were unchanged. |
 | [41193603642](https://github.com/Justintunsday/opencode-ios/actions/runs/41193603642) | `c20bf63` | **success (v3 candidate)** | **runtime v3: JIT + WebAssembly enabled.** Patch 0003 restores `v8_enable_webassembly`, `--v8-options=--jitless` removed, full-icu/2-key entitlements unchanged; adds a V8 WebAssembly audit (config + no-`--jitless` + nm/strings signals), gate-compatible manifest policy text with iPhone SE 2 device evidence, and an inline `check_manifest_profile_gate` (printed *"runtime-manifest.json capability profile is packager-gate compatible"*). Cold rebuild 10:45:16Z -> 12:40Z (~115 min on 3 vCPU with wasm+ICU); both jobs success, including optional `ios-ripgrep` (rg sha256 `6cc1cea8...`). **node 106,822,656 bytes sha256 `5808d7027cdfcbb138668243fd61b221efcc810e67d5411da15b432a6f4c1876`**; `[signed] WebAssembly present: enabled (2/3 signals); JIT enabled (no --jitless)`; `[signed] ICU present: full-icu statically linked (3/4 signals)`; otool -L still only libSystem/libc++; 2-key signature revalidated. This is the artifact handed to device verification (expected: `process.versions.icu` ~75.x, `typeof Intl==="object"`, `\p{L}` works, `typeof WebAssembly==="object"`, built-in fetch initialises). |
 
+### Device verdicts for the CI-green builds (device evidence, 2026-10-31)
+
+| Build | Device result |
+| --- | --- |
+| v2 no-Intl (run 41171982508) | runs (`node --version`, `process.platform=="ios"`, fs/sqlite/TLS/child_process OK), but CLI rejected: `Intl` undefined + `\p{...}` regexp `SyntaxError`. Drove patch 0002 / full-icu. |
+| ICU build (run 41184686029) | runs, ICU present, but CLI rejected: `ReferenceError: WebAssembly is not defined` from Node `fetch`/undici wasm llhttp. Drove patch 0003 / JIT+wasm. |
+| v3 (run 41193603642) | starts; `--version` OK; **any JS/wasm code execution traps with SIGBUS (138) / EXC_BAD_ACCESS**, regardless of entitlement set. Drove patch 0004 (iOS JIT W^X). |
+| v4 (run 41205805269) | CI run dispatched; device verification pending at the time of writing. |
+
 ## 9.1 Downstream consumption (packaging integration)
 
 The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
@@ -425,10 +519,11 @@ The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
 | packager capability gate | `Runtime build/capability profile is usable by the CLI` - **PASS** (this is the gate that rejects no-ICU / no-wasm / jitless runtimes) |
 | package artifact | `OpenCode-iOS-rootless` 52,953,183 bytes (.deb + SHA256SUMS + package-report.json) |
 
-So the runtime side of the pipeline is complete on the CI side: build -> static
-validation -> signing -> artifact -> consumed by the rootless `.deb` build. The
-only open item is the real-device execution verdict for this exact node binary
-(UNVERIFIED ON DEVICE in CI terms).
+That package run consumed the **v3** runtime, which the device then rejected with
+the JIT SIGBUS (§6.4); the package must be rebuilt from the **v4** runtime (run
+41205805269) instead. CI-side the chain (build -> static validation -> signing ->
+artifact -> packaging -> static package verification) is proven; device
+execution remains the open gate.
 
 ## 10. Limitations / unresolved issues
 
@@ -436,8 +531,10 @@ only open item is the real-device execution verdict for this exact node binary
    device-verified to run and its only CLI blocker was the missing
    `Intl`/`\p{}` support; the `--with-intl=full-icu` artifact is pending its own
    device run. All CI validation is static.
-2. **JIT + WebAssembly enabled** - see §6/§6.3. Device-verified viable with the
-   2-key entitlements; hosted CI can only audit their presence in the binary.
+2. **JIT + WebAssembly enabled; iOS JIT memory handling patched** - see
+   §6/§6.3/§6.4. v3 proved that enabling JIT without patch 0004 SIGBUSes on the
+   device; v4 carries the fix plus a tentative 4-key entitlement set, all pending
+   the final device verdict.
 3. **Signing is ldid ad-hoc with the device-verified 2-key set**
    (`platform-application` + `com.apple.private.security.no-sandbox`). The
    entitlement requirement itself was verified on the target device (the old
