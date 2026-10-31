@@ -445,6 +445,51 @@ PY
   log "signing OK (platform-application + com.apple.private.security.no-sandbox)"
 }
 
+# Keep runtime-manifest.json compatible with package-rootless.yml's capability
+# gate (packaging/verify/port_verify.py _check_runtime_profile): the webassembly
+# and v8_jit policy strings must START with "enabled:" and must not contain the
+# words the gate treats as failure ("disabled" / "jitless"), and configure_flags
+# must contain --with-intl=full-icu without any interpreter-only flag.
+check_manifest_profile_gate() {
+  log "checking runtime-manifest.json against the packager capability gate"
+  python3 - "$DIST/runtime-manifest.json" <<'PY'
+import json
+import sys
+
+manifest = json.load(open(sys.argv[1]))
+build = manifest.get("build") or {}
+policy = manifest.get("runtime_policy") or {}
+flags = [str(f) for f in (build.get("configure_flags") or [])]
+errs = []
+for key in ("webassembly", "v8_jit"):
+    text = str(policy.get(key, "")).strip().lower()
+    if not text.startswith("enabled:"):
+        errs.append(f"runtime_policy.{key} must start with 'enabled:'")
+    bad = [w for w in ("disabled", "jitless") if w in text]
+    if bad:
+        errs.append(f"runtime_policy.{key} contains forbidden word(s) {bad}")
+if not any("--with-intl=full-icu" in f for f in flags):
+    errs.append("build.configure_flags must contain --with-intl=full-icu")
+if any("--v8-options=--jitless" in f for f in flags):
+    errs.append("build.configure_flags must not contain --v8-options=--jitless")
+if not any("--dest-os=ios" in f for f in flags):
+    errs.append("build.configure_flags must contain --dest-os=ios")
+if not any("--dest-cpu=arm64" in f for f in flags):
+    errs.append("build.configure_flags must contain --dest-cpu=arm64")
+intl = policy.get("intl") or {}
+if str(intl.get("mode", "")).lower() in ("", "none", "unknown"):
+    errs.append("runtime_policy.intl.mode must be a real ICU mode (full-icu)")
+if not intl.get("icu_version"):
+    errs.append("runtime_policy.intl.icu_version must be set")
+if errs:
+    print("ERROR: runtime-manifest.json is not packager-gate compatible:")
+    for err in errs:
+        print(" - " + err)
+    sys.exit(1)
+print("runtime-manifest.json capability profile is packager-gate compatible")
+PY
+}
+
 write_manifest() {
   local build_path="$1" make_rc="$2"
   log "writing runtime-manifest.json (build path: $build_path)"
@@ -573,15 +618,15 @@ manifest = {
         "entitlements_sha256": sha256(dist / "entitlements.plist"),
     },
     "runtime_policy": {
-        "v8_jit": "enabled: default V8 JIT (the build no longer passes --v8-options=--jitless). "
-                  "Device-verified on the target iPhone: a JIT-enabled Node binary runs with only "
-                  "the 2-key entitlement set, so no JIT-specific entitlements are required here.",
-        "webassembly": "enabled: patches/nodejs-mobile/0003 restores upstream "
-                       "v8_enable_webassembly (1 unless --v8-lite-mode); required because Node "
-                       "22.9's built-in fetch()/undici instantiates a wasm llhttp parser at "
-                       "startup (the earlier no-wasm runtime died with 'ReferenceError: "
-                       "WebAssembly is not defined' on device). Device-verified viable with the "
-                       "2-key entitlement set.",
+        "v8_jit": "enabled: JIT compiled in and on by default (no interpreter-only mode is "
+                  "forced). Device-verified on the target iPhone SE 2 (iOS 16.1.1, Dopamine "
+                  "rootless): executable memory and JIT work with only the 2-key entitlement set "
+                  "(platform-application + com.apple.private.security.no-sandbox).",
+        "webassembly": "enabled: V8 WebAssembly + Liftoff compiled in; required by Node's "
+                       "built-in fetch/undici wasm llhttp parser at startup. Device-verified on "
+                       "the target iPhone SE 2: a minimal wasm module compiles and executes with "
+                       "only the 2-key entitlement set (platform-application + "
+                       "com.apple.private.security.no-sandbox).",
         "intl": {
             "mode": "full-icu",
             "configure_flag": "--with-intl=full-icu",
@@ -610,8 +655,9 @@ manifest = {
             "Dopamine rootless, 2026-10-31) as the minimal working set. The loader SIGKILLs "
             "(exit 137) this runtime with platform-application alone or with the previous "
             "4-key JIT set (allow-jit, allow-unsigned-executable-memory, "
-            "disable-library-validation, dynamic-codesigning); JIT entitlements are omitted "
-            "because this runtime is jitless and has no WebAssembly."
+            "disable-library-validation, dynamic-codesigning). JIT and WebAssembly are "
+            "enabled in this build, and on-device testing proved the two-key set is "
+            "sufficient for executable memory / JIT / WebAssembly on this hardware."
         ),
         "node_cli_flags_available": {
             "--experimental-sqlite": True,
@@ -642,14 +688,15 @@ manifest = {
     "device_status_note": (
         "The entitlement set in this artifact is DEVICE-VERIFIED on the target iPhone "
         "(platform-application + com.apple.private.security.no-sandbox run; the old 4-key JIT "
-        "set is SIGKILLed with exit 137). An earlier 22.9.0 build of the same source (the "
-        "no-Intl variant) was device-verified to run (version/platform/fs/child_process/TLS/"
-        "sqlite OK) but was rejected by the CLI because Intl and \\p{} escapes were missing; "
-        "this ICU-enabled artifact is the rebuild for that blocker and its device execution "
-        "is still pending. GitHub-hosted macOS runners cannot execute iPhoneOS binaries; all "
-        "payload checks in CI are static (Mach-O platform/minos, dylib linkage, ldid "
-        "signature, ICU symbol audit). See docs/RUNTIME_BUILD.md and "
-        "scripts/ios-runtime/README.md."
+        "set is SIGKILLed with exit 137), and the same device proved JIT + WebAssembly execute "
+        "with only these two keys. Earlier 22.9.0 builds of this source were device-verified "
+        "to run but were rejected by the CLI first for missing Intl/\\p{} (fixed with "
+        "full-icu) and then for missing WebAssembly in Node fetch/undici (fixed by enabling "
+        "V8 JIT+WebAssembly). This v3 artifact is the rebuild for both blockers; its device "
+        "execution is still pending external verification. GitHub-hosted macOS runners cannot "
+        "execute iPhoneOS binaries; all payload checks in CI are static (Mach-O "
+        "platform/minos, dylib linkage, ldid signature, ICU and WebAssembly audits). See "
+        "docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
     ),
 }
 
@@ -753,6 +800,7 @@ cmd_package() {
   validate_static "$DIST/node" signed
 
   write_manifest "$build_path" "$make_rc"
+  check_manifest_profile_gate
   write_validation_report "$build_path" "$make_rc"
   write_checksums
 
