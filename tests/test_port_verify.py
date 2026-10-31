@@ -250,6 +250,15 @@ class RuntimeBuildProfileTest(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "SKIP")
 
 
+class VerifyCliTest(unittest.TestCase):
+    def test_verify_mode_is_accepted_by_the_cli(self):
+        parser = port_verify.build_parser()
+        args = parser.parse_args([
+            "verify", "--deb", "x.deb", "--mode", "verify", "--out-dir", "out",
+        ])
+        self.assertEqual(args.mode, "verify")
+
+
 class ReportDeviceStatusTest(unittest.TestCase):
     def test_device_status_is_never_passed(self):
         self.assertEqual(port_verify.DEVICE_STATUS, "UNVERIFIED ON DEVICE")

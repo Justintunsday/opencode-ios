@@ -2888,7 +2888,8 @@ def build_parser():
 
     p = sub.add_parser("verify", help="run the CI-runnable verification suite")
     p.add_argument("--deb", required=True)
-    p.add_argument("--mode", choices=("package", "test", "self-test"), required=True)
+    p.add_argument("--mode", choices=("package", "verify", "test", "self-test"),
+                   required=True)
     p.add_argument("--out-dir", required=True)
     p.add_argument("--repo-root", default=str(DEFAULT_REPO_ROOT))
     p.add_argument("--extract-dir", default="")

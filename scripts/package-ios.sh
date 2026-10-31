@@ -332,8 +332,14 @@ fi
 # ------------------------------------------------------------------- build --
 command -v dpkg-deb >/dev/null 2>&1 \
     || die "dpkg-deb not found; install dpkg (macOS: brew install dpkg; Debian/Ubuntu: apt-get install dpkg)"
+# Reproducible archive timestamps: dpkg-deb honours SOURCE_DATE_EPOCH, so pin it
+# to the packaging commit time (same commit => same .deb sha256).
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    SOURCE_DATE_EPOCH="$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)"
+    export SOURCE_DATE_EPOCH
+fi
 DEB_PATH="$OUT_DIR/OpenCode-iOS-rootless.deb"
-info "building $DEB_PATH"
+info "building $DEB_PATH (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 dpkg-deb -Zxz --root-owner-group --build "$STAGE" "$DEB_PATH"
 [ -f "$DEB_PATH" ] || die "dpkg-deb did not produce $DEB_PATH"
 dpkg-deb --info "$DEB_PATH" > "$OUT_DIR/deb-info.txt"
