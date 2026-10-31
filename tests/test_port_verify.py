@@ -260,17 +260,28 @@ class RuntimeBuildProfileTest(unittest.TestCase):
         ),
     }
 
-    def _run_profile_check(self, configure_flags=None, runtime_policy="default"):
+    WX_PATCH = "patches/nodejs-mobile/0004-ios-jit-write-protect.patch"
+    GOOD_PATCHES = [
+        {"file": "patches/nodejs-mobile/0001-ios-build-fixes.patch", "sha256": "a" * 64},
+        {"file": WX_PATCH, "sha256": "b" * 64},
+    ]
+
+    def _run_profile_check(self, configure_flags=None, runtime_policy="default",
+                           patches="default"):
         if configure_flags is None:
             configure_flags = list(self.GOOD_FLAGS)
         if runtime_policy == "default":
             runtime_policy = dict(self.GOOD_POLICY)
+        if patches == "default":
+            patches = list(self.GOOD_PATCHES)
         with tempfile.TemporaryDirectory() as td:
             runtime = Path(td) / "var/jb/usr/lib/opencode/runtime"
             runtime.mkdir(parents=True)
             manifest = {"build": {"configure_flags": configure_flags}}
             if runtime_policy is not None:
                 manifest["runtime_policy"] = runtime_policy
+            if patches is not None:
+                manifest["source"] = {"patches": patches}
             (runtime / "runtime-manifest.json").write_text(json.dumps(manifest))
             checks = []
             ctx = {"metrics": {}}
@@ -281,6 +292,19 @@ class RuntimeBuildProfileTest(unittest.TestCase):
         checks = self._run_profile_check()
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertIn("WebAssembly enabled", checks[0]["evidence"])
+        self.assertIn("W^X patch (0004) declared", checks[0]["evidence"])
+
+    def test_rejects_jit_runtime_without_wx_patch(self):
+        checks = self._run_profile_check(
+            patches=[{"file": "patches/nodejs-mobile/0001-ios-build-fixes.patch"}]
+        )
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("W^X patch", checks[0]["evidence"])
+
+    def test_without_patch_list_is_tolerated_but_unverified(self):
+        checks = self._run_profile_check(patches=None)
+        self.assertEqual(checks[0]["status"], "PASS")
+        self.assertIn("unverified", checks[0]["evidence"])
 
     def test_rejects_with_intl_none(self):
         checks = self._run_profile_check([

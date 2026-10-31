@@ -2039,6 +2039,27 @@ def _check_runtime_profile(checks, ctx, extract_dir):
     if not any("--dest-cpu=arm64" in flag for flag in flags):
         problems.append("--dest-cpu=arm64 missing from configure flags")
 
+    # ---- iOS V8 W^X patch (required when JIT is enabled) -----------------
+    # v3 (JIT+WASM, no V8 iOS W^X path) trapped with SIGBUS when executing
+    # V8-generated code on device with every entitlement set. patch 0004 adds
+    # MAP_JIT + pthread_jit_write_protect for iOS; do not ship JIT builds without it.
+    source = manifest.get("source") if isinstance(manifest, dict) else None
+    patches = source.get("patches") if isinstance(source, dict) else None
+    patch_files = ([str(item.get("file", "")) for item in patches
+                    if isinstance(item, dict)] if isinstance(patches, list) else None)
+    jit_enabled = _capability_enabled(jit_policy)
+    wx_patch_declared = bool(
+        patch_files and any("jit-write-protect" in name.lower() for name in patch_files)
+    )
+    if patch_files is not None:
+        metrics["runtime_patches"] = patch_files
+        if jit_enabled and not wx_patch_declared:
+            problems.append(
+                "JIT-enabled runtime manifest does not list the iOS V8 W^X patch "
+                "(patches/nodejs-mobile/0004-ios-jit-write-protect.patch); v3 builds "
+                "without it trapped SIGBUS on V8-generated code on the device."
+            )
+
     if problems:
         check(checks, "runtime.build-profile", "runtime",
               "Runtime build/capability profile is usable by the CLI", "FAIL",
@@ -2055,11 +2076,16 @@ def _check_runtime_profile(checks, ctx, extract_dir):
         if intl_policy is not None:
             detail += f"; ICU {intl_policy.get('icu_version', '?')}"
         detail += "; WebAssembly enabled; JIT enabled"
+        if wx_patch_declared:
+            detail += "; iOS V8 W^X patch (0004) declared"
+        elif patch_files is None:
+            detail += "; W^X patch presence not declared (unverified)"
         metrics["runtime_capabilities"] = {
             "intl_mode": (intl_policy or {}).get("mode"),
             "icu_version": (intl_policy or {}).get("icu_version"),
             "webassembly": wasm_policy,
             "v8_jit": jit_policy,
+            "jit_wx_patch_declared": wx_patch_declared,
         }
         check(checks, "runtime.build-profile", "runtime",
               "Runtime build/capability profile is usable by the CLI", "PASS", detail)
