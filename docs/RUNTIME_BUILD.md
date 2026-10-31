@@ -264,9 +264,10 @@ Corroboration on the same device: the community reference Node 18.20.4 iOS
 binary reports `{"ver":"v18.20.4","icu":"74.2","intl":"object"}`, i.e. an
 ICU-enabled Node runs on this exact hardware/jailbreak. (That reference binary
 was built *on-device*, which is why it embeds ICU; our cross-compiled build links
-the frozen ICU statically instead.) Expected size impact: ~+25-35 MB on the
-`node` binary, ~+10 MB on the compressed `.deb`; installed total ~150 MB, fine
-on the target device.
+the frozen ICU statically instead.) Measured size impact: the `node` binary grew
+from 60,598,384 bytes (no Intl) to **97,286,800 bytes** with full ICU (+36.7 MB);
+expect ~+10 MB on the compressed `.deb` and ~150 MB installed total, fine on the
+target device.
 
 ### 6.2 ICU audit heuristic (important for maintainers)
 
@@ -283,6 +284,13 @@ config denies i18n or every signal indicates absence:
    baseline was 60,598,384 bytes).
 
 All signals are written to `icu-evidence-<stage>.txt` in the artifact.
+
+One more CI hazard worth knowing: `nm <binary> | grep -q ...` is **flaky under
+`set -o pipefail`** - `grep -q` exits on the first match, `nm` then dies with
+SIGPIPE (exit 141), and the pipeline reports failure even though the pattern was
+found. The first full-ICU run failed its audit for exactly this reason (the build
+had ICU). The script now writes `nm` output to `nm-symbols-<stage>.txt` first and
+greps that file, so every signal check is pipeline-free.
 
 ## 7. CI design (performance and debuggability)
 
@@ -330,7 +338,10 @@ is used instead), ldid-signs the binary (ad-hoc, no entitlements needed), and
 uploads `ios-ripgrep` (`rg`, `ripgrep-manifest.json`, `SHA256SUMS`, static
 validation evidence). `package-rootless.yml` consumes it when present and
 installs `/var/jb/usr/bin/rg`; when absent the package is built without it.
-Device execution remains **UNVERIFIED ON DEVICE**.
+Device execution remains **UNVERIFIED ON DEVICE**. Note that the Rust
+`aarch64-apple-ios` link emits the legacy `LC_VERSION_MIN_IPHONEOS` load command
+instead of `LC_BUILD_VERSION`, so the vtool check accepts either; the strict
+platform/arch/minos validation is done by `scripts/check_macho.py`.
 
 ## 9. CI run log / evidence
 
@@ -347,7 +358,8 @@ only one pending run per group); they are not failures.
 | [41171982508](https://github.com/Justintunsday/opencode-ios/actions/runs/41171982508) | `6cf042d` | **success** (first cold build) | configure gate 05:21:43Z -> 05:21:46Z; `make -j3` 05:21:46Z -> 06:38:24Z (**76m38s** cold, 3 vCPU `macos-15`); build path `make-executable` (`out/Release/node` produced by the normal executable target, `make` exit 0); node 60,598,384 bytes sha256 `53fc2a2237bc6954ef6f780c4d0031fbe67f9b257966f6672c9d7e6ec1201b78`; check_macho PASS iPhoneOS arm64 minos 14.0.0; otool -L only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; cache saved (`ios-node-22.9.0-...-e1-<patch hash>`, ~3 min). Signed with the (now superseded) 4-key JIT entitlement set - see run 41173373500 for the corrected signing. |
 | [41173373500](https://github.com/Justintunsday/opencode-ios/actions/runs/41173373500) | `e7fe917` | cancelled | was re-running from cache with the device-verified 2-key entitlement set; cancelled on 2026-10-31 because device testing showed the no-ICU runtime cannot parse the CLI bundle (missing `Intl`/`\p{}`). No artifact was consumed. |
 | [41178496308](https://github.com/Justintunsday/opencode-ios/actions/runs/41178496308) | `08b4557` | **failure (audit heuristic, build OK)** | ICU rebuild with `--with-intl=full-icu`: configure accepted the canned ICU 75 source (`Using floating patch tools/icu/patches/75/.../genccode.c`); `make -j3` ran 06:58:45Z -> 08:18Z and produced `out/Release/node` with ICU static libraries linked; **the run then failed only in CI's ICU symbol audit** (`ERROR: binary does not appear to contain ICU symbols`), because ICU is compiled with `visibility=hidden` and the symbols are local in the final binary while the audit used a global-symbol-style grep. Fixed by the multi-signal audit described in §6.2. The `out/Release` tree was cached (failed-run cache save) so the rerun is incremental. |
-| [_rerun after ICU audit fix_](https://github.com/Justintunsday/opencode-ios/actions/runs/) | _pending commit_ | _to be filled in_ | re-runs with the multi-signal ICU audit from the cached full-ICU build tree; device-debug artifact (`ios-node-runtime-debug`) is uploaded automatically if the run fails again. |
+| [41184686029](https://github.com/Justintunsday/opencode-ios/actions/runs/41184686029) | `e803c8b` | **success** (ICU artifact) | exact `out/Release` cache hit from the failed run, so `make` was incremental (run 08:27:57Z -> 08:39:01Z); ICU audit passed with 4/4 signals; **node 97,286,800 bytes, sha256 `790cb43296dbed51a6375d82eca5a5a178808ca9fb3fecbabbd2daf547adaac2`**; `v8_enable_i18n_support=1`, `icu_small=false`, ICU 75; `nm` local symbols `_icudt75_dat`, `_u_strToUpper_75`, `_u_getPropertyEnum_75`; otool -L still only `/usr/lib/libSystem.B.dylib` + `/usr/lib/libc++.1.dylib`; 2-key entitlement signature. The optional `ios-ripgrep` job failed in that run only on the too-strict `platform IOS` vtool grep (the binary uses the legacy `LC_VERSION_MIN_IPHONEOS` command; `check_macho.py` had PASSed); job-level `continue-on-error` kept the run/artifact-consumption green, and §8 has the fix. |
+| [_robustness rerun_](https://github.com/Justintunsday/opencode-ios/actions/runs/) | _pending commit_ | _to be filled in_ | hardens the ICU audit against a `nm | grep -q` SIGPIPE/`pipefail` race (nm output now captured to a file before grepping) and fixes the optional ripgrep vtool platform check; no change to the produced `node`, expected to be a cached ~15 min run. |
 
 ## 10. Limitations / unresolved issues
 

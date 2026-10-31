@@ -60,7 +60,11 @@ file "$DIST/rg" | tee "$DIST/file.txt"
 grep -q 'Mach-O 64-bit executable arm64' "$DIST/file.txt" || die "ripgrep is not a thin arm64 Mach-O executable"
 python3 "$CHECK_MACHO" "$DIST/rg" --max-minos 16.1.1 | tee "$DIST/check-macho.txt"
 xcrun vtool -show-build "$DIST/rg" | tee "$DIST/vtool.txt"
-grep -q 'platform IOS' "$DIST/vtool.txt" || die "ripgrep does not target platform IOS"
+# Rust's iOS link may emit the legacy LC_VERSION_MIN_IPHONEOS command instead of
+# LC_BUILD_VERSION; both mean platform iOS. scripts/check_macho.py above already
+# validated the platform strictly, so accept either vtool rendering here.
+grep -qE 'platform IOS|LC_VERSION_MIN_IPHONEOS' "$DIST/vtool.txt" \
+  || die "ripgrep does not target platform IOS (see $DIST/vtool.txt)"
 xcrun otool -L "$DIST/rg" | tee "$DIST/otool-L.txt"
 bad="$(xcrun otool -L "$DIST/rg" | tail -n +2 | awk 'NF {print $1}' | grep -vE '^(/usr/lib/|/System/Library/Frameworks/)' || true)"
 [[ -z "$bad" ]] || die "non-iOS-system dylib dependency: $bad"

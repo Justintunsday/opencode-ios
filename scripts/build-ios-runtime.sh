@@ -287,34 +287,40 @@ validate_static() {
   # only if the build config denies i18n or every signal indicates ICU is absent.
   log "[$stage] ICU/Intl presence audit"
   local icu_evidence="$DIST/icu-evidence-$stage.txt"
+  local nm_file="$DIST/nm-symbols-$stage.txt"
   local bin_size icu_signals=0
   bin_size="$(stat -f %z "$bin")"
+  # Capture tool output to files BEFORE grepping: `nm ... | grep -q` is flaky
+  # under `set -o pipefail`, because grep -q exits on the first match and nm can
+  # then die with SIGPIPE (exit 141), failing the whole pipeline even though the
+  # match was found. Grepping a file has no such failure mode.
+  nm "$bin" > "$nm_file" 2>"$DIST/nm-stderr-$stage.txt" || true
   {
     echo "== config.gypi =="
     grep -E "'(v8_enable_i18n_support|icu_small|icu_ver_major|icu_endianness)':" "$NODE_SRC/config.gypi" || true
     echo "== binary size =="
     echo "$bin_size bytes (no-Intl baseline was 60598384 bytes)"
     echo "== nm (local symbols included, no -g/-U) =="
-    nm "$bin" 2>&1 | grep -E '(icudt[0-9]+[a-z_]*_dat|u_strToUpper|u_getPropertyEnum|u_getIntPropertyValue|u_getUnicodeVersion|u_init|icu_[0-9]+_dat)' | head -n 10 || true
-    echo "== strings: ICU version =="
-    strings -a "$bin" 2>/dev/null | grep -m3 -E 'ICU [0-9]+\.[0-9]+' || true
-    echo "== strings: ICU data name =="
-    strings -a "$bin" 2>/dev/null | grep -m3 'icudt[0-9]' || true
+    grep -aE '(icudt[0-9]+[a-z_]*_dat|u_strToUpper|u_getPropertyEnum|u_getIntPropertyValue|u_getUnicodeVersion|u_init|icu_[0-9]+_dat)' "$nm_file" | head -n 10 || true
+    echo "== binary strings: ICU version =="
+    LC_ALL=C grep -a -m3 -E 'ICU [0-9]+\.[0-9]+' "$bin" || true
+    echo "== binary strings: ICU data name =="
+    LC_ALL=C grep -a -m3 'icudt[0-9]' "$bin" || true
   } > "$icu_evidence" 2>&1
   cat "$icu_evidence"
 
   grep -q "'v8_enable_i18n_support': 1" "$NODE_SRC/config.gypi" \
     || die "config.gypi has no v8_enable_i18n_support=1 (build must use --with-intl=full-icu)"
 
-  if nm "$bin" 2>/dev/null | grep -qE '(icudt[0-9]+[a-z_]*_dat|u_strToUpper|u_getPropertyEnum|u_getIntPropertyValue)'; then
+  if grep -aqE '(icudt[0-9]+[a-z_]*_dat|u_strToUpper|u_getPropertyEnum|u_getIntPropertyValue)' "$nm_file"; then
     icu_signals=$((icu_signals + 1))
     log "[$stage] ICU signal: nm found ICU symbols (local symbols count)"
   fi
-  if strings -a "$bin" 2>/dev/null | grep -qE 'ICU [0-9]+\.[0-9]+'; then
+  if LC_ALL=C grep -aqE 'ICU [0-9]+\.[0-9]+' "$bin"; then
     icu_signals=$((icu_signals + 1))
     log "[$stage] ICU signal: ICU version string present"
   fi
-  if strings -a "$bin" 2>/dev/null | grep -q 'icudt[0-9]'; then
+  if LC_ALL=C grep -aq 'icudt[0-9]' "$bin"; then
     icu_signals=$((icu_signals + 1))
     log "[$stage] ICU signal: ICU data name present"
   fi
