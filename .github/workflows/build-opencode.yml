@@ -152,3 +152,108 @@ jobs:
             dist/opencode-build/
           if-no-files-found: warn
           retention-days: 14
+
+  # Conditional fallback variant (hedge): the device-proven Node 18.20.4 iPhoneOS runtime.
+  # It is a separate artifact (`opencode-cli-node18-ios`) and does not replace the default
+  # Node 22 bundle. It adds patch 0007 (Node 18 prelude/shim) and a pinned sql.js WebAssembly
+  # payload that implements node:sqlite, which Node 18 lacks. Host smoke requires Node 18.20.4.
+  bundle-node18:
+    name: CLI Node 18 fallback bundle (hedge variant, host smoke only)
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      OPENCODE_TARGET: ios-arm64
+      OPENCODE_IOS: '1'
+      OPENCODE_IOS_NODE18: '1'
+      OPENCODE_ARTIFACT_DIR: dist/opencode-cli-node18-ios
+      OPENCODE_ARTIFACT_NAME: opencode-cli-node18-ios
+      # Node 18.20.4 is the fallback runtime version; Node 22.9.0 is informational only.
+      OPENCODE_NODE_MATRIX: '18.20.4 22.9.0'
+      OPENCODE_SMOKE_REQUIRED: '18.20.4'
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+
+      - name: Show pinned upstream versions
+        run: |
+          grep -E '^OPENCODE_(REPO|REF|VERSION)=' UPSTREAM.lock
+          uname -a
+
+      - name: Fetch pinned upstream OpenCode
+        run: bash scripts/build-opencode-bundle.sh fetch
+
+      - name: Apply iOS patch series (Node 18 variant)
+        run: bash scripts/build-opencode-bundle.sh patches
+
+      - name: Set up Bun (upstream build tool only, not the iOS runtime)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - name: Cache bun downloads, stock Node runtimes and sql.js
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            dist/node-runtimes
+            upstream-src/opencode/packages/cli/.cache/node
+            dist/opencode-build/downloads
+          key: opencode-bundle-node18-${{ runner.os }}-${{ hashFiles('UPSTREAM.lock') }}-${{ hashFiles('upstream-src/opencode/bun.lock') }}
+
+      - name: Install upstream dependencies
+        run: bash scripts/build-opencode-bundle.sh install
+
+      - name: Build Node 18 Vite bundle (--bundle-only, no SEA)
+        run: bash scripts/build-opencode-bundle.sh build
+
+      - name: Stage Node 18 iOS fallback artifact
+        run: bash scripts/build-opencode-bundle.sh stage
+
+      - name: Host-Node smoke matrix Node 18.20.4 (not device verification)
+        run: bash scripts/build-opencode-bundle.sh smoke
+
+      - name: Write bundle-manifest.json and SHA256SUMS
+        run: bash scripts/build-opencode-bundle.sh manifest
+
+      - name: Verify artifact checksums
+        run: bash scripts/build-opencode-bundle.sh verify
+
+      - name: Show artifact summary
+        run: |
+          set -euo pipefail
+          du -sh dist/opencode-cli-node18-ios
+          cat dist/opencode-cli-node18-ios/SHA256SUMS
+          python3 - <<'PY'
+          import json
+          with open('dist/opencode-cli-node18-ios/bundle-manifest.json') as f:
+              m = json.load(f)
+          print(json.dumps({
+              'artifact': m['artifact'],
+              'variant': m['variant'],
+              'patches': {'count': m['patches']['count'], 'series_sha256': m['patches']['series_sha256']},
+              'build': {k: m['build'][k] for k in ('target', 'variant', 'runtime_node_version', 'ios_prelude')},
+              'opencode_mjs_sha256': m['bundle']['opencode_mjs']['sha256'],
+              'assets_count': m['bundle']['assets']['count'],
+              'smoke_required_passed': m['verification_status']['host_smoke_required_passed'],
+              'smoke_required_node_version': m['verification_status']['host_smoke_required_node_version'],
+              'device_verified': m['verification_status']['device_verified'],
+          }, indent=2))
+          PY
+
+      - name: Upload opencode-cli-node18-ios artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-cli-node18-ios
+          path: dist/opencode-cli-node18-ios/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Node 18 build metadata (not part of the artifact contract)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-node18-build-metadata
+          path: |
+            dist/opencode-build/
+          if-no-files-found: warn
+          retention-days: 14

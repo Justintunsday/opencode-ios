@@ -163,7 +163,12 @@ def ensure_stock_node(version: str, cache_dir: str) -> dict[str, object]:
     if not os.path.isdir(extracted):
         raise SystemExit(f"unexpected archive layout in {archive_name}")
     shutil.rmtree(extract_dir, ignore_errors=True)
-    os.replace(extracted, extract_dir)
+    try:
+        os.replace(extracted, extract_dir)
+    except OSError:
+        # Some hosts (notably Windows with the cache directory open in another process) refuse
+        # to rename a directory over an existing path; the verified tree is complete, so copy it.
+        shutil.copytree(extracted, extract_dir, dirs_exist_ok=True)
     shutil.rmtree(temporary, ignore_errors=True)
     if plat != "win":
         os.chmod(binary, 0o755)
@@ -246,8 +251,20 @@ def run_command(
     }
 
 
+def version_major(version: str) -> int:
+    try:
+        return int(version.split(".")[0])
+    except (ValueError, IndexError):
+        return 0
+
+
 def sqlite_probe(binary: str, env: dict[str, str], cwd: str) -> dict[str, object]:
-    """Determine whether node:sqlite works and whether the experimental flag is needed."""
+    """Determine whether node:sqlite works and whether the experimental flag is needed.
+
+    The Node 18 fallback bundle does not use node:sqlite at all: it maps the module to the
+    bundled sql.js shim. On those runtimes the probe only records that the runtime module is
+    absent (the CLI does not need it), and `--experimental-sqlite` must never be passed.
+    """
     script = (
         "const { DatabaseSync } = require('node:sqlite');"
         "const db = new DatabaseSync(':memory:');"
@@ -325,10 +342,19 @@ def main() -> int:
             runtime = ensure_stock_node(version, args.cache_dir)
             runtimes.append(runtime)
             require = version == args.require_version
+            major = version_major(version)
             probe = sqlite_probe(str(runtime["binary"]), env, workdir)
+            if major < 20:
+                # Node 18 has no node:sqlite and rejects --experimental-sqlite; the Node 18
+                # fallback bundle ships its own sql.js-backed shim instead.
+                probe = {
+                    "runtime_module_available": False,
+                    "note": "Node <20 has no node:sqlite; the Node 18 fallback bundle uses a bundled sql.js shim",
+                    "attempts": probe.get("attempts", []),
+                }
             sqlite[version] = probe
-            flags = [SQLITE_FLAG] if probe["requires_experimental_flag"] else []
-            log(f"node {version}: flags={flags} sqlite={probe['database_sync_importable']}")
+            flags = [SQLITE_FLAG] if probe.get("requires_experimental_flag") else []
+            log(f"node {version}: flags={flags} sqlite={probe.get('database_sync_importable')}")
 
             for command in REQUIRED_COMMANDS:
                 result = run_command(str(runtime["binary"]), flags, bundle_dir, command, workdir, env)

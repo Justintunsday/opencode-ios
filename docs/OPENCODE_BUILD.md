@@ -18,7 +18,7 @@ executable and `packages/cli/script/build-node.ts`, the official Node distributi
 (Vite ESM bundle, no Node runtime bundled). The port uses the Node path with
 `--bundle-only`, so no SEA (single executable application) is built on the runner.
 
-Artifact contract (consumed by `package-rootless.yml` / `test-port.yml`):
+Artifact contract (default variant; consumed by `package-rootless.yml` / `test-port.yml`):
 
 ```
 opencode-cli-node-ios/
@@ -28,20 +28,28 @@ opencode-cli-node-ios/
   SHA256SUMS              # sha256 of every payload file incl. bundle-manifest.json
 ```
 
+A conditional fallback variant produces the same layout under a different artifact name:
+`opencode-cli-node18-ios` (bundle for the device-proven Node 18.20.4 iPhoneOS runtime,
+extra `assets/node18-sqlite/` payload; see §13). The default Node 22 artifact is unchanged.
+
 Pinned inputs (single source of truth: `UPSTREAM.lock`):
 
 | Input | Pin |
 | --- | --- |
 | OpenCode source | `anomalyco/opencode` `e8238bae9b807b72ecfc75afd3a9fe2e6b07b944` (v2.2.5) |
 | Host build tool | Bun `1.4.4` (`oven-sh/setup-bun`, not shipped to the device) |
-| Device runtime | Node.js `22.9.0` built for `arm64-apple-ios` (`build-runtime.yml`) |
+| Device runtime (default) | Node.js `22.9.0` built for `arm64-apple-ios` (`build-runtime.yml`) |
+| Device runtime (Node 18 hedge) | Node.js `18.20.4` iPhoneOS runtime (reference runtime, §13) |
 | Build runner | `macos-15` (arm64) |
 | Bundle target | `ios-arm64` (port patch; Darwin code path, iOS prelude/asset set) |
 
 Download the artifact of a green run:
 
 ```bash
+# default Node 22 bundle (primary deliverable)
 gh run download <run-id> -n opencode-cli-node-ios -D dist/opencode-cli-node-ios
+# Node 18 fallback hedge variant (§13)
+gh run download <run-id> -n opencode-cli-node18-ios -D dist/opencode-cli-node18-ios
 # latest green build of this workflow:
 gh run list --workflow build-opencode.yml -L 1 --json databaseId,conclusion
 ```
@@ -109,6 +117,7 @@ change surface — upstream itself is never modified.
 | 0004 | `ios-shell-selection-and-git` | `packages/core/src/shell/select.ts`, `packages/core/src/util/git-executable.ts` | Rootless iOS has no `/bin/sh`,`/bin/bash`,`/bin/zsh`; shell resolution prefers `$SHELL` then `/var/jb/bin[/usr/bin]/{sh,bash,zsh}` etc. The agent shell tool spawns the resolved shell with `-c` (never Node's hardcoded `/bin/sh`). git is not part of the bootstrap → clear actionable error instead of ENOENT. |
 | 0005 | `node22-sqlite-api-fallbacks` | `packages/core/src/database/sqlite.node.ts` | Node 22.9 `node:sqlite` lacks `StatementSync#setReturnArrays` and `DatabaseSync#loadExtension`: map object rows to column-ordered arrays when the API is missing, report extension loading as unavailable. Without this the embedded server answers 500 on `/api/info` and `/api/model`. |
 | 0006 | `device-robustness` | `packages/cli/vite.node.config.ts`, `packages/core/src/persistent-pty/binary.node.ts`, `packages/core/src/ripgrep/binary.ts` | Rootless-iOS robustness: home-rooted `TMPDIR` fallback in the prelude (do not depend on `/tmp`), persistent-PTY capability reports `false` on ios (the daemon binary is not shipped), and a missing `rg` produces an actionable install hint instead of `unsupported platform for ripgrep: arm64-ios`. |
+| 0007 | `node18-ios-compat` | `packages/cli/vite.node.config.ts`, `packages/cli/script/node-assets.ts`, `packages/core/src/provider.ts`, `packages/util/src/runtime/import.node.ts`, `packages/codemode/src/interpreter/objects.ts` | **Conditional Node 18 fallback variant** (`OPENCODE_IOS_NODE18=1`, separate artifact, §13). Node 18 prelude (`__filename`/`__dirname` from `import.meta.url`, global `crypto`, built-in polyfills for `toSorted`/`groupBy`/`withResolvers`/…, no `--experimental-sqlite`/`--disable-warning` flags, Vite target `node18`); maps `node:sqlite` to the sql.js-backed shim; `vm.constants` fallback for plugin imports; iterator-helper-free `mergeRecord`/codemode iterators (Node 18 predates `Iterator.prototype.map`). |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -237,6 +246,10 @@ exec /var/jb/usr/lib/opencode/runtime/node \
 - `--experimental-sqlite` is **required**: on Node 22.9 `node:sqlite` (used for
   `DatabaseSync`, session storage) is flag-gated. Do **not** pass `--experimental-ffi` or
   `--use-system-ca`; neither exists on Node 22.9.0.
+- For the **Node 18 fallback variant** (§13) the launcher must instead pass `--no-warnings`
+  and must not pass `--experimental-sqlite`/`--disable-warning` (Node 18 rejects them and has
+  no `node:sqlite`; the bundle ships a sql.js shim). The variant's exact argv is recorded in
+  its `bundle-manifest.json.env_contract`.
 - The runtime **must be built with ICU** (`--with-intl=full-icu`, used by `build-runtime.yml`;
   `small-icu` would also work). A runtime built `--with-intl=none` cannot run the bundle at
   all: V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
@@ -402,3 +415,126 @@ hedge if the ICU runtime cannot be produced.
 No device success is claimed in this section; it records a device-reported failure and a
 contingency analysis. The device verification matrix in §9 will be filled from the
 rebuilt-runtime run.
+
+## 12. Device verification status (device-reported, no CLI claims yet)
+
+Target device: iPhone SE (2nd gen), iOS 16.1.1, Dopamine rootless. The `.deb` produced from
+a green CLI artifact is installable on the device and the native iPhoneOS Node.js runtime
+starts (`node --version` works, `process.platform === "ios"`, fs/spawn/TLS/sqlite work on
+device — reported by the device test). The **OpenCode CLI bundle has not yet passed a device
+matrix**. Two runtime issues were found and addressed in the runtime build during device
+testing:
+
+1. **ICU** — the first iPhoneOS Node 22.9 runtime was built `--with-intl=none`; V8 then
+   rejects the bundle's `\p{...}` regexes at parse time and `Intl` is missing. Fixed by
+   rebuilding with `--with-intl=full-icu` (§11).
+2. **JIT / WebAssembly** — the current Node 22.9 iPhoneOS runtime cannot execute JIT or
+   WebAssembly code on this device (V8 12.4 W^X: only `mmap RW → write → mprotect RX → exec`
+   works for generated code and V8 12.4 does not use that sequence; §13 explains why this
+   matters for `fetch`/undici, which uses a wasm llhttp parser). This is a runtime-side V8
+   limitation; the CLI bundle itself does not require wasm at startup.
+
+Meanwhile the community **Node 18.20.4 iPhoneOS runtime** is device-proven on this exact
+device: JIT, WebAssembly, ICU 74.2 and TLS all work. §13 describes the Node 18 fallback
+variant of the CLI bundle built and host-tested as a hedge.
+
+Status: CI builds, host smoke and packaging are complete; on-device CLI matrix remains
+**UNVERIFIED ON DEVICE** and must not be claimed from CI.
+
+## 13. Node 18 fallback (hedge) — conditional variant
+
+Because the Node 22.9 runtime currently cannot run JIT/wasm on the device, a **separate
+conditional variant** of the same CLI bundle can target the device-proven Node 18.20.4
+iPhoneOS runtime. It does **not** change the default Node 22 artifact path; it is built by a
+second `build-opencode.yml` job (`bundle-node18`) and uploaded as artifact
+`opencode-cli-node18-ios` with its own manifest (`artifact`/`variant` = `node18-fallback`,
+`build.runtime_node_version` = `18.20.4`, required host smoke Node 18.20.4).
+
+### Build/run
+
+```bash
+# everything the workflow does, locally (macOS or POSIX host):
+OPENCODE_IOS_NODE18=1 bash scripts/build-opencode-bundle.sh build
+OPENCODE_IOS_NODE18=1 bash scripts/build-opencode-bundle.sh stage
+OPENCODE_IOS_NODE18=1 OPENCODE_NODE_MATRIX='18.20.4 22.9.0' OPENCODE_SMOKE_REQUIRED=18.20.4 \
+  bash scripts/build-opencode-bundle.sh smoke
+OPENCODE_IOS_NODE18=1 bash scripts/build-opencode-bundle.sh manifest verify
+```
+
+The build script downloads the pinned sql.js release
+(`sql.js@1.15.2`, MIT; tarball sha256
+`74fbdd373ad7eb2bbe74c7807581c1c39e424ee53ed95042a02208cbc96d72fd`), verifies it and the two
+staged files, and stages `assets/node18-sqlite/{sql-wasm.js,sql-wasm.wasm}` (≈777 KB).
+Patch `0007-node18-ios-compat` is applied on top of 0001–0006; it is a no-op unless
+`OPENCODE_IOS_NODE18=1`.
+
+Launcher contract for this variant (`bundle-manifest.json.env_contract`):
+
+```sh
+exec /var/jb/usr/lib/opencode/runtime/node \
+  --no-warnings \
+  /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
+```
+
+`--experimental-sqlite`, `--disable-warning=…`, `--experimental-ffi` and `--use-system-ca`
+must **not** be passed: Node 18.20.4 rejects all of them.
+
+### Node 18 API gap analysis (what the bundle needed)
+
+Measured on the run-5 Node 22 bundle against stock official Node 18.20.4; every gap below is
+handled by patch 0007 (the first two were startup-fatal):
+
+| # | Node 18 gap | Impact | Fix in variant |
+| --- | --- | --- | --- |
+| 1 | `node:sqlite` module absent | startup link error (static import in `database/sqlite.node.ts`) | Vite maps `node:sqlite` to the sql.js-backed synchronous shim; sql.js JS+wasm staged as assets |
+| 2 | `import.meta.filename` / `import.meta.dirname` absent | bundle prelude sets `__filename`/`__dirname` to `undefined`; npm tooling bundled for plugin resolution then crashes at startup (`path.resolve(undefined)` in its `setPath`) | prelude derives both from `import.meta.url` |
+| 3 | `node:vm` ESM named export `constants` absent | link error in `util/runtime/import.node.ts` | namespace import + fallback; plugin entrypoints use a plain dynamic import when `vm.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER` is unavailable |
+| 4 | global `crypto` absent | `TypeError: crypto is not defined` in logger init | prelude sets `globalThis.crypto = require("node:crypto").webcrypto` |
+| 5 | Iterator helpers absent (`Iterator.prototype.map`, `Iterator.from`, …) | server 500 on `/api/model` (`mergeRecord`) and codemode iterators | `mergeRecord`/codemode use spread + `.values()` (no iterator helpers) |
+| 6 | `Array.prototype.toSorted/toReversed/toSpliced/with/findLast*`, `Object.groupBy`, `Map.groupBy`, `Promise.withResolvers`, `Array.fromAsync`, `String.isWellFormed/toWellFormed`, `AbortSignal.any` absent | would throw where used | prelude polyfills (guarded; newer runtimes keep native implementations) |
+| 7 | `--experimental-sqlite`, `--disable-warning=…`, `--use-system-ca`, `--experimental-ffi` flags absent | `bad option` at launch | variant prelude/launcher use `--no-warnings` only |
+| 8 | Vite output target | new syntax lowered by `build.target: node18` | — |
+
+`node:sea` (absent on Node 18) is already never imported by the iOS bundle (patch 0001).
+The sql.js shim implements only the `DatabaseSync`/`StatementSync` subset this tree uses
+(`exec`, `prepare`, `all`/`get`/`run`, `setReadBigInts`/`setReturnArrays` flags, `close`);
+it is synchronous after a one-time WebAssembly init (top-level await; the bundle already has
+one) and persists by exporting/atomically rewriting the database file at most every 250 ms
+and on `close()`/process exit. Consequences to document for users: no WAL, whole-file
+writes (slower than native SQLite, small crash-window of up to 250 ms of writes), and no
+`loadExtension`.
+
+### Host evidence (this artifact's smoke)
+
+Executed locally on the development host with stock official Node 18.20.4 (downloaded from
+nodejs.org, SHA-256 verified) and Node 22.9.0, throw-away `HOME`:
+
+| Node | `--version` | `--help` | `debug paths` | `models` | `auth list` | `session list` | sqlite |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 18.20.4 (required) | PASS | PASS | PASS | PASS | PASS | PASS | runtime module absent; bundled sql.js shim used |
+| 22.9.0 (informational) | PASS | PASS | PASS | PASS | PASS | PASS | runtime `node:sqlite` + `--experimental-sqlite` |
+
+CI evidence for this variant: the `bundle-node18` job in `build-opencode.yml` runs exactly the
+same matrix on the macOS runner; the run id and artifact hash are recorded in the job summary
+and manifest (`build.run_url`). The manifest's `verification_status.device_verified` stays
+`false`.
+
+### Device risk / open questions for shipping the Node 18 variant
+
+- **Runtime provenance/licensing.** The device-proven Node 18.20.4 iPhoneOS binary available
+  today is a community build; it cannot be shipped in the `.deb` without a compatible
+  license/attribution. Node's own sources (or nodejs-mobile's Node 18 release, framework-only)
+  can be built to `out/Release/node`, but that is another ~1–2 h native build plus signing,
+  and is runtime-team work, not CLI work.
+- **Device execution still unverified for the CLI bundle.** Host smoke proves the JS bundle
+  runs on stock Node 18.20.4; the iOS runtime is a patched cross-build, so its wasm/JIT/ICU
+  behaviour must be confirmed by the device matrix (`--version`, `--help`, `debug paths`,
+  `models`, `session list`, shell tool, a mock-provider agent turn).
+- **sql.js persistence semantics** differ from native SQLite (see above); acceptable for a
+  fallback but should be called out in user-facing limitations if this variant ships.
+- Everything else (shell selection, rootless paths, PTY/watcher/ripgrep degradations) is
+  identical to the Node 22 bundle because the same patch series is applied.
+
+Implementation effort for this variant: ≈1.5 h from the device finding (analysis + patch
+0007 + shim + build/smoke/manifest/workflow wiring), plus CI runtime. It is a hedge only;
+the primary path remains fixing the Node 22.9 runtime's V8 W^X/JIT issue.

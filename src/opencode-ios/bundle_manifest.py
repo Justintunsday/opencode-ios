@@ -36,6 +36,10 @@ MANIFEST_SCHEMA = "opencode-ios/bundle-manifest/v1"
 # Launcher contract for the .deb wrapper (/var/jb/usr/bin/opencode). Values are
 # relative to the rootless install prefix and are also documented in
 # docs/OPENCODE_BUILD.md. `package-rootless.yml` must match this contract.
+#
+# Two conditional variants share this generator:
+#   opencode-cli-node-ios       Node 22.9 runtime bundle (default)
+#   opencode-cli-node18-ios     Node 18 runtime fallback (sql.js-backed node:sqlite shim)
 INSTALL_PREFIX = "/var/jb"
 ENV_CONTRACT = {
     "artifact_layout": {
@@ -71,10 +75,37 @@ ENV_CONTRACT = {
     ],
 }
 
+# Node 18 fallback variant: no --experimental-sqlite (the runtime rejects the flag and has no
+# node:sqlite module); the bundle carries a sql.js-based shim in assets/node18-sqlite/ instead.
+ENV_CONTRACT_NODE18 = {
+    "artifact_layout": ENV_CONTRACT["artifact_layout"],
+    "launcher_argv": [
+        f"{INSTALL_PREFIX}/usr/lib/opencode/runtime/node",
+        "--no-warnings",
+        f"{INSTALL_PREFIX}/usr/lib/opencode/cli/opencode.mjs",
+        '"$@"',
+    ],
+    "launcher_env": ENV_CONTRACT["launcher_env"],
+    "node_flags": {
+        "required": [],
+        "forbidden": ["--experimental-sqlite", "--disable-warning=ExperimentalWarning", "--experimental-ffi", "--use-system-ca"],
+        "notes": [
+            "The Node 18 iPhoneOS runtime rejects --experimental-sqlite, --disable-warning=... and --use-system-ca (all are newer Node flags).",
+            "node:sqlite does not exist on Node 18; this bundle maps it to a bundled sql.js (WebAssembly) shim in assets/node18-sqlite/ and persists the database file itself.",
+            "The runtime must provide ECMA-402 Intl (ICU) and WebAssembly+JIT (the sql.js shim and Node 18 fetch/undici need them).",
+        ],
+    },
+    "notes": [
+        "Fallback variant for the device-proven Node 18.20.4 iPhoneOS runtime; the default artifact remains the Node 22.9 bundle.",
+        "Same asset layout as the default variant, plus the node18-sqlite shim payload.",
+        "Device execution has NOT been verified by CI; see docs/OPENCODE_BUILD.md §13.",
+    ],
+}
+
 ASSET_CATEGORY_NOTES = {
     "app-archive": "Web/TUI app archive embedded by the Node build (read by the server).",
     "audio": "attention sound assets used by the interface.",
-    "wasm": "WebAssembly payload (photon image processing / tree-sitter syntax parsing); included but optional — the CLI does not require WebAssembly at startup and degrades gracefully when it is unavailable or when the matching JS glue is not shipped.",
+    "wasm": "WebAssembly payload (photon image processing / tree-sitter syntax parsing / the Node 18 sql.js sqlite shim); included but optional — the CLI does not require WebAssembly at startup and degrades gracefully when it is unavailable or when the matching JS glue is not shipped.",
     "native-binary": "NATIVE BINARY: not loadable on iPhoneOS (macOS/Linux addon or helper). Present only for stock/desktop builds; the iOS patch series must remove these.",
     "data": "other static data file.",
 }
@@ -240,6 +271,8 @@ def collect_signatures(artifact_dir: str) -> dict[str, object]:
         "bytes": len(data),
         "shebang": shebang,
         "ios_prelude_marker": b"opencode-ios-prelude" in data,
+        "node18_prelude_marker": b"opencode-ios-node18-prelude" in data,
+        "bundled_sqlite_shim": b"node18-sqlite" in data and b"sql-wasm" in data,
         "named_import_registerHooks": search(
             rb"\{[^}]{0,120}registerHooks[^}]{0,120}\}\s*from\s*['\"]node:module['\"]"
         ),
@@ -248,6 +281,7 @@ def collect_signatures(artifact_dir: str) -> dict[str, object]:
         ),
         "imports_node_sea": search(rb"from\s*['\"]node:sea['\"]"),
         "prelude_uses_experimental_ffi": "--experimental-ffi" in shebang,
+        "prelude_uses_experimental_sqlite": "--experimental-sqlite" in shebang,
     }
 
 
@@ -274,12 +308,26 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
     if smoke is not None:
         required_passed = bool(smoke.get("summary", {}).get("required_passed"))
 
+    node18 = info.get("NODE18_VARIANT", "0") == "1"
+    artifact_name = info.get("ARTIFACT_NAME") or ("opencode-cli-node18-ios" if node18 else "opencode-cli-node-ios")
+    variant = "node18-fallback" if node18 else "node22"
+    env_contract = ENV_CONTRACT_NODE18 if node18 else ENV_CONTRACT
+    ios_prelude = bool(signatures.get("ios_prelude_marker") or signatures.get("node18_prelude_marker"))
+    if node18 and not signatures.get("node18_prelude_marker"):
+        raise SystemExit("Node 18 variant bundle is missing the node18 prelude marker (build target mismatch?)")
+
     native = int(bundle["assets"].get("categories", {}).get("native-binary", 0))
     notes: list[str] = []
     if patches["count"] == 0:
         notes.append(
             "STOCK upstream build: no iOS patch series applied yet. The bundle was smoke-tested on host Node "
             "and is expected to fail on the shipped iPhoneOS runtime until the iOS prelude/optional-native patches land."
+        )
+    if node18:
+        notes.append(
+            "Node 18 fallback variant (hedge for the Node 22.9 iPhoneOS runtime's JIT/wasm limitation): the bundle "
+            "targets Node 18.20.4 and maps node:sqlite to a bundled sql.js WebAssembly shim (assets/node18-sqlite/). "
+            "The default Node 22 artifact is the primary deliverable; this one requires a Node 18 iPhoneOS runtime."
         )
     if native:
         notes.append(
@@ -294,7 +342,8 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
 
     return {
         "schema": MANIFEST_SCHEMA,
-        "artifact": "opencode-cli-node-ios",
+        "artifact": artifact_name,
+        "variant": variant,
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "upstream": {
             "repo": lock.get("OPENCODE_REPO", info.get("UPSTREAM_REPO")),
@@ -304,7 +353,15 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
         "patches": patches,
         "build": {
             "target": info.get("TARGET", "darwin-arm64"),
-            "ios_prelude": bool(signatures["ios_prelude_marker"]),
+            "variant": variant,
+            "runtime_node_version": "18.20.4" if node18 else "22.9.0",
+            "sqlite": {
+                "module": "node:sqlite",
+                "provider": "bundled sql.js shim (WebAssembly)"
+                if node18
+                else "runtime node:sqlite (--experimental-sqlite)",
+            },
+            "ios_prelude": ios_prelude,
             "bun_version": info.get("BUN_VERSION"),
             "host_os": info.get("BUILD_HOST_OS"),
             "host_arch": info.get("BUILD_HOST_ARCH"),
@@ -312,6 +369,14 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
             "built_at": info.get("BUILT_AT"),
             "ci": ci,
             "run_url": run_url,
+            **(
+                {
+                    "sqljs_version": info.get("SQLJS_VERSION"),
+                    "sqljs_tarball_sha256": info.get("SQLJS_TARBALL_SHA256"),
+                }
+                if node18
+                else {}
+            ),
         },
         "bundle": bundle,
         "runtime_bootstrap_signatures": signatures,
@@ -320,9 +385,17 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
             "notes": [
                 "Assets are exactly what the upstream asset collector staged for the build target; "
                 "iOS filtering is implemented in the patch series (not post-hoc in the workflow).",
-            ],
+            ]
+            + (
+                [
+                    "assets/node18-sqlite/sql-wasm.js + sql-wasm.wasm implement node:sqlite for the Node 18 variant "
+                    "(sql.js 1.15.2, MIT; pinned tarball sha256 in the patch/build script)."
+                ]
+                if node18
+                else []
+            ),
         },
-        "env_contract": ENV_CONTRACT,
+        "env_contract": env_contract,
         "smoke": smoke,
         "verification_status": {
             "host_smoke_required_passed": required_passed,

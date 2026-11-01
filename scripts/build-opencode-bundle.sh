@@ -45,19 +45,47 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM_DIR="${OPENCODE_UPSTREAM_DIR:-$ROOT/upstream-src/opencode}"
 PATCHES_DIR="$ROOT/patches/opencode"
-ARTIFACT_DIR="${OPENCODE_ARTIFACT_DIR:-$ROOT/dist/opencode-cli-node-ios}"
+# Two conditional variants share this script:
+#   default        Node 22.9 iPhoneOS bundle  -> opencode-cli-node-ios
+#   Node 18 hedge  Node 18 iPhoneOS fallback   -> opencode-cli-node18-ios
+#                  (OPENCODE_IOS_NODE18=1; adds patch 0007 + the sql.js node:sqlite shim)
+NODE18="${OPENCODE_IOS_NODE18:-0}"
+if [ "$NODE18" = "1" ]; then
+  DEFAULT_ARTIFACT="opencode-cli-node18-ios"
+  DEFAULT_MATRIX="18.20.4 22.9.0"
+  DEFAULT_REQUIRED="18.20.4"
+else
+  DEFAULT_ARTIFACT="opencode-cli-node-ios"
+  DEFAULT_MATRIX="22.9.0 24.22.2 26.4.0"
+  DEFAULT_REQUIRED="22.9.0"
+fi
+ARTIFACT_DIR="${OPENCODE_ARTIFACT_DIR:-$ROOT/dist/$DEFAULT_ARTIFACT}"
 BUILD_DIR="${OPENCODE_BUILD_DIR:-$ROOT/dist/opencode-build}"
 NODE_CACHE_DIR="${OPENCODE_NODE_CACHE_DIR:-$ROOT/dist/node-runtimes}"
 TARGET="${OPENCODE_TARGET:-darwin-arm64}"
 IOS="${OPENCODE_IOS:-1}"
-NODE_MATRIX="${OPENCODE_NODE_MATRIX:-22.9.0 24.22.2 26.4.0}"
-SMOKE_REQUIRED="${OPENCODE_SMOKE_REQUIRED:-22.9.0}"
+NODE_MATRIX="${OPENCODE_NODE_MATRIX:-$DEFAULT_MATRIX}"
+SMOKE_REQUIRED="${OPENCODE_SMOKE_REQUIRED:-$DEFAULT_REQUIRED}"
 PYTHON="${PYTHON:-python3}"
 BUN="${BUN:-bun}"
-ARTIFACT_NAME="opencode-cli-node-ios"
+ARTIFACT_NAME="${OPENCODE_ARTIFACT_NAME:-$DEFAULT_ARTIFACT}"
+# Node 18 fallback sqlite: pinned sql.js (MIT) release from the npm registry. Version, tarball
+# sha256 and the two staged files are pinned so the artifact is reproducible and auditable.
+SQLJS_VERSION="1.15.2"
+SQLJS_TARBALL_SHA256="74fbdd373ad7eb2bbe74c7807581c1c39e424ee53ed95042a02208cbc96d72fd"
+SQLJS_JS_SHA256="b46d4bddfdde8a787fc4764bd0a405cdfdf96fbd77e6a4e95446106826ecfa47"
+SQLJS_WASM_SHA256="0dfeecda2070b36da0cd4f6afa250af9453de528a983770f85b13d5d6b667572"
 
 log() { printf '[build-opencode] %s\n' "$*"; }
 die() { printf '[build-opencode] ERROR: %s\n' "$*" >&2; exit 1; }
+
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
 
 pin() {
   # pin KEY -> value of KEY=... from UPSTREAM.lock (first match, comments ignored)
@@ -150,6 +178,41 @@ cmd_install() {
   (cd "$UPSTREAM_DIR" && "$BUN" install --os='*' --cpu='*')
 }
 
+# --- Node 18 fallback sqlite assets ----------------------------------------
+# Downloads the pinned sql.js release (MIT) and stages the two files the shim needs.
+# The Node 18 runtime has no node:sqlite; the patch series maps it to this shim.
+prepare_node18_sqljs() {
+  [ "$NODE18" = "1" ] || return 0
+  local downloads="$BUILD_DIR/downloads"
+  local tarball="$downloads/sql.js-$SQLJS_VERSION.tgz"
+  local target="$BUILD_DIR/node18-sqlite"
+  mkdir -p "$downloads"
+  if [ ! -f "$tarball" ]; then
+    log "fetching sql.js $SQLJS_VERSION (MIT) for the Node 18 node:sqlite shim"
+    curl -fsSL "https://registry.npmjs.org/sql.js/-/sql.js-$SQLJS_VERSION.tgz" -o "$tarball" ||
+      die "failed to download sql.js $SQLJS_VERSION"
+  fi
+  local actual
+  actual="$(sha256_file "$tarball")"
+  [ "$actual" = "$SQLJS_TARBALL_SHA256" ] ||
+    die "sql.js tarball checksum mismatch (expected $SQLJS_TARBALL_SHA256, got $actual)"
+  if [ ! -f "$target/sql-wasm.js" ] || [ ! -f "$target/sql-wasm.wasm" ]; then
+    rm -rf "$target"
+    mkdir -p "$target"
+    tar -xzf "$tarball" -C "$target" --strip-components=1 \
+      "package/dist/sql-wasm.js" "package/dist/sql-wasm.wasm" || die "failed to extract sql.js assets"
+    mv "$target/dist/sql-wasm.js" "$target/sql-wasm.js"
+    mv "$target/dist/sql-wasm.wasm" "$target/sql-wasm.wasm"
+    rmdir "$target/dist" 2>/dev/null || true
+  fi
+  [ "$(sha256_file "$target/sql-wasm.js")" = "$SQLJS_JS_SHA256" ] || die "sql-wasm.js checksum mismatch"
+  [ "$(sha256_file "$target/sql-wasm.wasm")" = "$SQLJS_WASM_SHA256" ] || die "sql-wasm.wasm checksum mismatch"
+  export OPENCODE_IOS_NODE18=1
+  export OPENCODE_NODE18_SQLJS_DIR="$target"
+  export OPENCODE_NODE18_SQLITE_SHIM="$ROOT/src/opencode-ios/node18-sqlite-shim.mjs"
+  [ -f "$OPENCODE_NODE18_SQLITE_SHIM" ] || die "missing Node 18 sqlite shim: $OPENCODE_NODE18_SQLITE_SHIM"
+}
+
 # --- build -----------------------------------------------------------------
 cmd_build() {
   require_upstream
@@ -158,6 +221,9 @@ cmd_build() {
   [ -d "$cli/node_modules" ] || [ -d "$UPSTREAM_DIR/node_modules" ] ||
     die "upstream dependencies are not installed (run: $0 install)"
 
+  mkdir -p "$BUILD_DIR"
+  prepare_node18_sqljs
+
   # The upstream script refuses to run outside its pinned Bun version and
   # derives the version/channel from these variables; the iOS port always
   # builds from the UPSTREAM.lock pins, never from the local git branch.
@@ -165,12 +231,16 @@ cmd_build() {
   export OPENCODE_IOS="$IOS"
   export OPENCODE_VERSION="${OPENCODE_VERSION:-$(pin OPENCODE_VERSION)}"
   export OPENCODE_CHANNEL="${OPENCODE_CHANNEL:-latest}"
-  log "building cli-node target=$TARGET OPENCODE_IOS=$IOS OPENCODE_VERSION=$OPENCODE_VERSION channel=$OPENCODE_CHANNEL"
+  log "building cli-node target=$TARGET OPENCODE_IOS=$IOS OPENCODE_IOS_NODE18=$NODE18 OPENCODE_VERSION=$OPENCODE_VERSION channel=$OPENCODE_CHANNEL"
 
   (cd "$cli" && "$BUN" run script/build-node.ts --bundle-only --skip-install)
 
   [ -f "$cli/dist-node/opencode.mjs" ] || die "build did not produce packages/cli/dist-node/opencode.mjs"
   [ -f "$cli/dist-node/assets/app-archive.bin" ] || die "build did not produce dist-node/assets/app-archive.bin"
+  if [ "$NODE18" = "1" ]; then
+    [ -f "$cli/dist-node/assets/node18-sqlite/sql-wasm.js" ] || die "build did not stage node18-sqlite/sql-wasm.js"
+    [ -f "$cli/dist-node/assets/node18-sqlite/sql-wasm.wasm" ] || die "build did not stage node18-sqlite/sql-wasm.wasm"
+  fi
   local size assets
   size="$(wc -c <"$cli/dist-node/opencode.mjs" | tr -d ' ')"
   assets="$(find "$cli/dist-node/assets" -type f | wc -l | tr -d ' ')"
@@ -181,6 +251,11 @@ cmd_build() {
     echo "ARTIFACT_NAME=$ARTIFACT_NAME"
     echo "TARGET=$TARGET"
     echo "OPENCODE_IOS=$IOS"
+    echo "NODE18_VARIANT=$NODE18"
+    if [ "$NODE18" = "1" ]; then
+      echo "SQLJS_VERSION=$SQLJS_VERSION"
+      echo "SQLJS_TARBALL_SHA256=$SQLJS_TARBALL_SHA256"
+    fi
     echo "UPSTREAM_REPO=$(pin OPENCODE_REPO)"
     echo "UPSTREAM_COMMIT=$(pin OPENCODE_REF)"
     echo "UPSTREAM_VERSION=$(pin OPENCODE_VERSION)"
