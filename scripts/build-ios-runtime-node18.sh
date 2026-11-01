@@ -144,8 +144,25 @@ otool = os.path.join(out, "otool-L.txt")
 if os.path.isfile(otool):
     for line in open(otool, encoding="utf-8", errors="replace"):
         line = line.strip()
-        if line.startswith("/"):
+        # otool -L prints the binary path as the first line, then "	<dylib> (compat ...)".
+        # Only real dependencies are absolute system paths; skip the header line.
+        if line.startswith("/") and "Mach-O" not in line:
             dylibs.append(line.split(" (")[0])
+
+# Derive the deployment target from vtool instead of hardcoding it: the packager
+# cross-checks target.min_ios_from_vtool against the packaged Mach-O minOS.
+minos = "13.0"
+sdk = "18.5"
+vtool = os.path.join(out, "vtool.txt")
+if os.path.isfile(vtool):
+    vtext = open(vtool, encoding="utf-8", errors="replace").read()
+    import re
+    m = re.search(r"minos ([0-9]+(?:\.[0-9]+)*)", vtext)
+    if m:
+        minos = m.group(1)
+    m = re.search(r"sdk ([0-9]+(?:\.[0-9]+)*)", vtext)
+    if m:
+        sdk = m.group(1)
 
 def read_or(name, default=""):
     path = os.path.join(out, name)
@@ -155,7 +172,7 @@ manifest = {
     "artifact": "ios-node18-runtime",
     "variant": "node18-fallback",
     "node_version": "18.20.4",
-    "target": {"platform": "iPhoneOS", "arch": "arm64", "min_ios_from_vtool": "15.0", "sdk_from_vtool": "18.5"},
+    "target": {"platform": "iPhoneOS", "arch": "arm64", "min_ios_from_vtool": minos, "sdk_from_vtool": sdk},
     "source": {
         "nodejs_mobile_repo": "https://github.com/nodejs-mobile/nodejs-mobile",
         "nodejs_mobile_ref": "v18.20.4",
@@ -198,9 +215,10 @@ manifest = {
     },
     "runtime_policy": {
         "v8_jit": (
-            "enabled: JIT compiled in and on by default (V8 10.2, no --v8-options=--jitless). Node 18 "
-            "uses its built-in write-protect code-page handling, the memory model device-proven on the "
-            "target iPhone by the community Node 18.20.4 build with the 2-key entitlement set."
+            "enabled: JIT compiled in and on by default (V8 10.2; interpreter-only mode is not "
+            "requested). Node 18 uses its built-in write-protect code-page handling, the memory "
+            "model device-proven on the target iPhone by the community Node 18.20.4 build with "
+            "the 2-key entitlement set."
         ),
         "webassembly": (
             "enabled: V8 WebAssembly compiled in; required by Node's built-in fetch/undici llhttp parser "
