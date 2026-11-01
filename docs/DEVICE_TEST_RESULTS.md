@@ -1,7 +1,7 @@
 # Device test results — iPhone SE 2 / iOS 16.1.1 / Dopamine rootless
 
-This file records the **actual on-device evidence** gathered during the port. Nothing here is
-inferred from CI: every line was produced by running the artifacts on a real target device.
+This file records the **actual on-device evidence** for the final artifact. Every line below was
+produced by running the artifact on a real target device, not inferred from CI.
 
 ## Device under test
 
@@ -9,112 +9,136 @@ inferred from CI: every line was produced by running the artifacts on a real tar
 | --- | --- |
 | Model | iPhone SE (2nd generation), `iPhone12,8`, `arm64` |
 | OS | iPhone OS **16.1.1** (20B101), Darwin 22.1.0 |
-| Jailbreak | Dopamine rootless, `/var/jb` -> `/private/preboot/.../dopamine-*/procursus`, ElleKit 1.2 |
-| User | `mobile` (uid 501), root via `sudo` for `dpkg` |
-| Terminals | SSH (OpenSSH 9.7p1), NewTerm-compatible zsh at `/var/jb/bin/zsh` |
-| Shell reality | no `/bin/sh`, `/bin/bash`, `/bin/zsh`; shell tools live under `/var/jb/{bin,usr/bin}` |
-| git | installed from Procursus apt (`git 2.39.1`) for testing |
+| Jailbreak | Dopamine rootless, `/var/jb`, ElleKit |
+| User | `mobile` (uid 501); root via `sudo` for `dpkg` |
+| Terminals | SSH + NewTerm; shells live under `/var/jb` (no `/bin/sh`, `/bin/bash`, `/bin/zsh`) |
+| git | Procursus apt `git 2.39.1` (optional, for agent shell tool) |
 
-## Status summary
+## STATUS: DEVICE-VERIFIED (packaged artifact, PASS=14 FAIL=0)
 
-| Area | Result |
+**Released artifact:** `OpenCode-iOS-rootless.deb`
+**SHA-256 `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`** (52,968,920 bytes),
+package `opencode` 2.2.5-1, `Architecture: iphoneos-arm64`, rootless `/var/jb`,
+installed `/var/jb/usr/bin/opencode`.
+
+Rolled-up identities verified **inside the installed package**:
+
+| Component | Identity |
 | --- | --- |
-| Debian package install/uninstall/upgrade (`iphoneos-arm64`, rootless `/var/jb`) | **PASS** |
-| Native iPhoneOS arm64 Node.js runtime executes (`node --version` -> `v22.9.0`, `process.platform === "ios"`) | **PASS** |
-| Runtime minimal entitlements (`platform-application` + `com.apple.private.security.no-sandbox`) | **PASS** (other sets SIGKILL, exit 137) |
-| ICU / Intl / Unicode property escapes in the shipped runtime | **PASS** on device: `{"icu":"75.1","intl":"object","regex":true}` |
-| `node:sqlite` (`--experimental-sqlite`), fs, explicit-shell `child_process`, TLS, child `node` spawn | **PASS** (jitless build) |
-| V8 JIT / WebAssembly execution (required by the CLI bundle: `Intl.Segmenter` is fine, but Node's built-in `fetch`/undici needs wasm llhttp at startup) | **BLOCKED — V8 code-page permission failure on iOS (SIGBUS)** |
-| `opencode --version` / `--help` through the installed launcher | **FAIL — SIGBUS (exit 138)** |
-| Interactive TUI / provider auth / agent turns | **NOT REACHED** (blocked by the same V8 issue) |
+| Native runtime node | `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`, 106,842,800 B, iPhoneOS arm64, 2-key ldid entitlements, Node.js 22.9.0, ICU 75 full, JIT+WebAssembly |
+| CLI bundle `opencode.mjs` | `2e916ffad16fb7ae2b71d4446a527d1fa11ec82e94d7cd12932373d734cbd410`, 21,391,147 B, 22 assets |
+| Launcher `/var/jb/usr/bin/opencode` | `86f68f21f5e5ead2db347cc8bd7c623e40927afce18cdec7011f6de44d88c82b`; shebang `#!/var/jb/bin/sh`; node flags `--single-threaded --experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings --max-old-space-size=1536` |
 
-## What was device-verified in detail
-
-### 1. Package installation (final v5-based package)
-
-- `.deb`: `OpenCode-iOS-rootless.deb`, 52,917,652 bytes, SHA-256
-  `0b87bb8783f20f2040ebe60bd408cb8bcecab5c58cd9d08ded623e7e74401bb8`
-- `sudo dpkg -i` -> `Setting up opencode (2.2.5-1)`, exit 0; status `install ok installed`,
-  `Architecture: iphoneos-arm64`, `Installed-Size: 163996`, `Depends: firmware (>= 15.0)`.
-- Installed layout verified: `/var/jb/usr/bin/opencode` (0755),
-  `/var/jb/usr/lib/opencode/runtime/node` (native iPhoneOS arm64, 106,822,656 bytes),
-  `/var/jb/usr/lib/opencode/cli/opencode.mjs`, `cli/assets/`, `/var/jb/usr/bin/rg`,
-  `/var/jb/usr/share/doc/opencode/*`.
-- Upgrade over an earlier package version and `dpkg -r`/`-P` were exercised; maintainer scripts
-  are `#!/bin/sh` (rootless Procursus dpkg executes them; verified with a test deb) and the
-  launcher shebang is `#!/var/jb/bin/sh` because the kernel execs it directly.
-
-### 2. Native runtime (iPhoneOS arm64 Node.js 22.9.0)
-
-- `node --version` -> `v22.9.0`; `process.platform === "ios"`, `arch === "arm64"`,
-  `v8 12.4.254.21-node.19`, `uv 1.48.0`, `openssl 3.0.13+quic`, `icu 75.1`, `sqlite 3.46.1`.
-- Mach-O: `Mach-O 64-bit executable arm64`, `LC_BUILD_VERSION platform=IOS minos=14.0 sdk=18.5`,
-  links only `/usr/lib/libSystem.B.dylib` and `/usr/lib/libc++.1.dylib` (ICU + wasm static).
-- Signing: `ldid -S` with the 2-key set works. Device matrix: 4-key/large sets that include JIT
-  entitlements are SIGKILLed (137) when they lack `no-sandbox`; the minimal working set is
-  `platform-application` + `com.apple.private.security.no-sandbox`.
-- ICU under `--jitless` on device: `{"icu":"75.1","intl":"object","regex":true}` — full-icu
-  works; without ICU the CLI bundle fails to parse with
-  `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu` (device-captured).
-- `node:sqlite` create/insert/select, fs read/write in `/var/jb/var/mobile`, explicit
-  `/var/jb/bin/sh -c` child process, TLS to a public host, and spawning child `node` all pass.
-
-### 3. The blocker: V8 JIT code pages are not executable on iOS
-
-Any execution of JIT-generated/copied code traps; only `--jitless` works (and then
-`WebAssembly` is undefined, which breaks Node's built-in `fetch`/undici at startup):
-
-| Runtime variant | Device result |
-| --- | --- |
-| v2: ICU, `--v8-options=--jitless`, no wasm | starts, `--version` OK; CLI cannot parse/start fetch (wasm undefined) |
-| v3: ICU + wasm, V8 JIT, MAP_JIT, 2-key | `EXC_BAD_ACCESS/SIGBUS` (exit 138) in `Builtins_InterpreterEntryTrampoline`; JIT page `max rwx / current rw-` |
-| v4: MAP_JIT + pthread_jit_write_protect | `EXC_BREAKPOINT/SIGTRAP` (exit 133), `V8::FatalProcessOutOfMemory` at `CodeRange::InitReservation` (mprotect RWX of the code range denied) |
-| v5: no MAP_JIT, plain mprotect W^X, 2-key | `--version` OK; any JS execution -> `SIGBUS` (exit 138) executing builtins from an `rw-` page |
-
-Memory-permission probe run on the device (native iPhoneOS arm64 diagnostic binary, same 2-key
-signing):
+## Final packaged acceptance (raw log, 2026-11-01)
 
 ```
-plain_then_mprotect_rwx: mmap=ok mprotect=0 errno=0
-mmap_jit_rwx: FAIL errno=22
-plain_write_rx_exec: mprotect_rx=0 exec=0 errno=0
-mapjit_reserve_mprotect_rwx_exec: mprotect=-1 exec=-1 errno=22
-pthread_jit_write_protect_np: absent
+deb file sha256: 2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b
+PASS  dpkg install
+Status: install ok installed / Version: 2.2.5-1 / Architecture: iphoneos-arm64
+PASS  dpkg status installed
+runtime node: cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce
+cli bundle:  2e916ffad16fb7ae2b71d4446a527d1fa11ec82e94d7cd12932373d734cbd410
+launcher:    86f68f21f5e5ead2db347cc8bd7c623e40927afce18cdec7011f6de44d88c82b
+PASS  agent shell tool marker file
+PASS  agent run exit
+PASS  opencode --version            -> opencode2-node v2.2.5
+PASS  opencode --help               -> full help (Intl.Segmenter works with full ICU)
+PASS  debug paths                   -> ~/.config/opencode, ~/.local/share/opencode, ...
+PASS  models                        -> catalog + configured mock provider models
+PASS  auth list                     -> "No authenticated integrations"
+PASS  session list                  -> ses_... Untitled session 11/1/2026, 12:59:10 PM
+PASS  debug config                  -> config document discovered
+PASS  dpkg remove                   -> runtime removed, user data kept
+PASS  dpkg reinstall
+PASS  post-reinstall opencode --version
+FINAL_PACKAGED_ACCEPTANCE PASS=14 FAIL=0
+FINAL_PACKAGED_ACCEPTANCE_RESULT=PASS
 ```
 
-Interpretation: on this device an ordinary mapping can be written, `mprotect`ed to RX and
-executed, but **`mprotect(RWX)` silently loses the execute permission** (the region stays
-`rw-`), `MAP_JIT` mappings are rejected (`EINVAL`), and the APRR toggle API is absent. V8 12.4
-assumes either `MAP_JIT` + APRR (macOS) or permanently-RWX pages (Linux); neither holds on
-iOS 16.1.1, so JIT code pages end up non-executable and the first generated-code execution
-traps. No entitlement set changes this (9-key included).
+### End-to-end agent turn on the device (mock OpenAI-compatible provider)
 
-Crash evidence (device CrashReporter `.ips`):
-- v5: `EXC_BAD_ACCESS`, `SIGBUS`, `KERN_PROTECTION_FAILURE`, region `rw-/rwx`, thread executing
-  `Builtins_InterpreterEntryTrampoline` from the code range.
-- v4: `EXC_BREAKPOINT`, `SIGTRAP`, backtrace `OS::Abort <- FatalOOM <- V8::FatalProcessOutOfMemory
-  <- Heap::SetUp` (`Failed to reserve virtual memory for CodeRange`).
+Command (through the installed launcher, no hacks):
 
-## What this means
+```
+opencode run --standalone --model lmstudio/mock-opencode-1 \
+  "Use the shell tool to write the acceptance marker file." < /dev/null
+```
 
-The port is **CI-complete and device-installable**, the native iPhoneOS runtime is proven to run,
-ICU/Intl/sqlite/fs/TLS/process-spawn are device-verified, and the packaging/signing/rootless
-behaviour is device-verified. The **CLI itself does not yet run on the device**, because the
-JavaScript bundle requires V8 JIT/WebAssembly and V8 12.4's code-page permission model is not
-compatible with iOS 16.1.1's W^X enforcement in any of the three configurations tried
-(MAP_JIT + no APRR; MAP_JIT + mprotect RWX; plain mprotect RWX).
+Result: exit 0, stdout `E2E_OK: shell tool executed on iPhone; file written, identity and git
+version captured.`, mock server saw `GET /api/v1/models` + 3× `POST /chat/completions` (the last
+with `toolResult=true`), and the shell tool really ran on the device:
 
-## Proposed next fix (not yet implemented)
+```
+$ echo opencode-ios-e2e-ok > /var/mobile/ocdev-e2e.txt && id -un >> ... && git --version >> ... && pwd >> ...
+marker file /var/mobile/ocdev-e2e.txt:
+  opencode-ios-e2e-ok
+  mobile
+  git version 2.39.1
+  /var/mobile/accept-work
+```
 
-Implement a *third* V8 write-protect mode for iOS: keep `V8_HAS_PTHREAD_JIT_WRITE_PROTECT=0`
-and no MAP_JIT, but replace V8's assumption "RWX pages stay executable" with explicit
-`mprotect` toggling of the code range between RW (writes) and RX (execution), driven by
-`RwxMemoryWriteScope`/`CodePageMemoryModificationScope` (a small V8 patch: track the code-range
-base/size and make `SetWritable`/`SetExecutable` do `mprotect`). The device probe above shows
-exactly this primitive works (`plain_write_rx_exec: exec=0`). This requires one more Node/V8
-iPhoneOS rebuild (~2 h in the current GitHub Actions pipeline) plus on-device testing.
+## Runtime capability evidence (v6 runtime, device)
 
-An alternative fallback, not chosen for v1, is to ship the interpreted-only runtime and replace
-Node's WebAssembly-based `fetch` stack in the OpenCode bundle with a pure-JS HTTP client; that
-trades performance (interpreter-only start-up is ~74 s for this bundle on the device) and needs
-a significant CLI patch.
+The Node 22.9 runtime carries patch 0005 (no MAP_JIT) + patch 0006 (V8 `RwxMemoryWriteScope`
+implemented over mprotect over registered code ranges: RW while writing, RX while executing).
+
+Device probe of the underlying primitives (native arm64-apple-ios diagnostic binary, both the
+2-key and JIT-keys signature sets behave identically):
+
+```
+A plain mmap(RWX) + exec              -> exec SIGBUS (page has no X)
+B/D/G/H MAP_JIT or mprotect RWX       -> EINVAL / exec SIGBUS
+E plain RW -> write -> mprotect RX    -> exec OK          <-- the only working pattern
+pthread_jit_write_protect_np          -> absent
+```
+
+Consequently V8 JIT is only safe when the process-wide mprotect toggle cannot race V8 background
+threads, so the launcher passes `--single-threaded`. Device results with the shipped runtime:
+
+- default (multithreaded): `--version`/plain JS/wasm compile/Intl OK, but JIT loop and `fetch`
+  die with SIGBUS 138 (background compiler/marking threads race the toggle);
+- with `--single-threaded`: JIT loop rc=0, `fetch('https://nodejs.org/...')` rc=0 HTTP 200,
+  WebAssembly compile+instantiate OK, Intl/ICU 75/`\p{L}` OK, `process.platform === "ios"`;
+- `node:sqlite` works natively (WAL files created by the CLI).
+
+Earlier runtime iterations and their failure modes (kept for the record): v2 interpreted-only
+started but wasm was missing; v3 MAP_JIT + no APRR → SIGBUS; v4 MAP_JIT + mprotect RWX → SIGTRAP
+(FatalOOM in `CodeRange::InitReservation`); v5 plain RWX mprotect → SIGBUS (the kernel silently
+drops execute). The probe above is what drove the final v6 mprotect model.
+
+## Known limitations observed on device
+
+- **V8 must run single-threaded** (`--single-threaded`, baked into the launcher): background V8
+  threads race the process-wide mprotect W^X toggle and crash (SIGBUS 138). Consequence: no
+  background optimizing compiler/marking threads; functionally fine, potentially slower.
+- **Intermittent provider transport flake with the local mock**: roughly 1 in 3 first E2E
+  attempts logged `Transport: terminated` from the mock provider request and the turn failed;
+  a retry succeeded (the acceptance script retries up to 4×; it passed on attempt 1 in the final
+  run). Real external providers were not tested for this port. Documented as a known limitation.
+- **2 GB device memory pressure**: running several Node processes (CLI + server child + mock)
+  plus the rest of iOS can trigger jetsam; the packaged launcher defaults
+  `--max-old-space-size=1536`, and closing other apps is recommended. A stale
+  `serve --service` child can hold port 49374; `pkill -f 'serve --service'` clears it.
+- **Interactive TUI / PTY** is not fully validated on the device (no iPhoneOS node-pty); headless
+  commands and the agent loop were the verification target. `--help`, `models`, `session`, etc.
+  render as plain output.
+- Native file watchers use the node/fallback backend (the config-directory directory watcher logs
+  "watcher backend not supported", non-fatal); the agent still receives file-change events via
+  the polling/file watchers that do work.
+- `--help` on a **small-ICU** Node 18 reference binary crashed in `JSSegmenter::Create`; the
+  shipped full-ICU Node 22 runtime renders help correctly. The Node 18 fallback bundle uses the
+  repo-built full-ICU Node 18 runtime for the same reason.
+- No real AI provider was exercised on-device; the agent loop was verified with a local
+  OpenAI-compatible mock (no credentials involved).
+
+## CI evidence for this artifact
+
+- package run **41274221353** (success): variant `node22`, runtime run 41273024931, CLI run
+  41273112229, 47 PASS / 0 FAIL / 1 SKIP (optional jit-shim not shipped), `ci_status=PASS`.
+- port verification on this package: **41274690207** (workflow_dispatch) and **41274713331**
+  (push) both success.
+- Runtime build evidence: run **41273024931** (same node sha as device-verified
+  `cf707ebe…`, runtime-manifest carries `device_verification.verified=true` and
+  `runtime_policy.launcher.required_flags: ["--single-threaded","--experimental-sqlite"]`).
+- CLI build evidence: run **41273112229** (patch 0010 child flag forwarding; required Node 22.9.0
+  host smoke passed).
