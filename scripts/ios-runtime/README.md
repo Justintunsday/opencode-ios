@@ -33,9 +33,11 @@ ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.plist \
 The runtime is JIT + WebAssembly enabled, and uses the **device-verified 2-key
 set**: `platform-application` + `com.apple.private.security.no-sandbox`.
 
-- The shipped iOS memory model is plain `mprotect` W^X with **no MAP_JIT**
-  (patch 0005, the V8 10.2 / Node 18 model) - a JIT-enabled reference Node 18
-  binary runs JIT + wasm on this exact iPhone with only the 2-key set.
+- The shipped iOS JIT memory model (patches 0005+0006) is **no MAP_JIT** plus
+  V8's `RwxMemoryWriteScope` implemented over `mprotect`: registered executable
+  ranges (JS code chunks, wasm code spaces) are toggled RW while code is being
+  written and RX while executing. Device probing on this iPhone proved this is
+  the only working executable-memory pattern on iOS 16.1.1.
 - `platform-application` + `no-sandbox` are mandatory: `platform-application`
   alone and an old JIT set without `no-sandbox` were SIGKILLed (exit 137).
 - Additional JIT keys (`dynamic-codesigning`, `allow-jit`,
@@ -83,8 +85,8 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 ## 3. Known limitations of this runtime build
 
 - **JIT + WebAssembly enabled** — with the device-verified 2-key entitlement set
-  and the no-MAP_JIT / plain-mprotect iOS memory model (patch 0005). Re-sign only
-  with the artifact's own `entitlements.plist`.
+  and the no-MAP_JIT / mprotect RW<->RX toggling iOS memory model (patches
+  0005+0006). Re-sign only with the artifact's own `entitlements.plist`.
 - **ICU is required and compiled in** — `--with-intl=full-icu`, statically
   linked (all locales). The first no-ICU build was device-run but the CLI failed
   with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu: Invalid
@@ -92,9 +94,11 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 - **WebAssembly is required and compiled in** — Node 22.9's built-in
   `fetch()`/undici instantiates a wasm llhttp parser at startup; the earlier
   no-wasm runtime failed with `ReferenceError: WebAssembly is not defined`.
-- **iOS JIT memory model** — no `MAP_JIT` on iOS; V8 uses ordinary PROT_NONE
-  reservations + plain `mprotect` W^X (patch 0005). MAP_JIT variants aborted on
-  the target device (SIGBUS / SIGTRAP) even with JIT entitlements.
+- **iOS JIT memory model** — no `MAP_JIT` on iOS; V8's write scopes toggle
+  registered code ranges between RW and RX with `mprotect` (patches 0005+0006).
+  MAP_JIT / RWX variants aborted on the target device (SIGBUS / SIGTRAP) even
+  with JIT entitlements; MAP_JIT and `pthread_jit_write_protect_np` are simply
+  unavailable on iOS 16.1.1.
 - **Not executed by CI** — all CI checks are static (Mach-O platform/minos,
   arch, dylib linkage, ICU/WebAssembly audits, ldid signature).
 - **Native addons** — only addons that are the same architecture (`arm64`) and

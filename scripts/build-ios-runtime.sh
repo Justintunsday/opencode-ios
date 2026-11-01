@@ -25,17 +25,17 @@
 # (device evidence in docs/RUNTIME_BUILD.md). patches/nodejs-mobile/0003 restores
 # upstream v8_enable_webassembly behaviour.
 #
-# iOS JIT memory model (patch 0005): do NOT use MAP_JIT on iOS. The iOS kernel
-# denies RWX mprotect of MAP_JIT reservations (v4 aborted with SIGTRAP /
-# FatalProcessOutOfMemory in CodeRange::InitReservation) and mixing MAP_JIT with
-# plain mprotect leaves code pages rw- (v3 SIGBUS on generated code). On iOS the
-# build therefore uses the V8 10.2 / Node 18 model: ordinary PROT_NONE
-# reservations + plain mprotect W^X, with V8_HAS_PTHREAD_JIT_WRITE_PROTECT left 0
-# on iOS device (macOS-only). A JIT-enabled Node 18 reference binary with only
-# the 2-key entitlement set runs JIT+wasm on this exact iPhone. patches
-# 0004 (platform-ios.cc dlsym thunk + gyp source) is compiled out / inert and is
-# kept for link-correctness and a future MAP_JIT experiment. Entitlements are
-# the device-verified 2-key set (see scripts/ios-runtime/entitlements.plist).
+# iOS JIT memory model (patches 0005 + 0006): no MAP_JIT, no RWX requests;
+# V8's RwxMemoryWriteScope is implemented over per-range mprotect toggling.
+# Device probing on the target iPhone proved the only working executable-memory
+# pattern on iOS 16.1.1: plain mapping -> write -> mprotect RX -> execute.
+# MAP_JIT mmap/mprotect is denied / strips PROT_EXEC, and
+# pthread_jit_write_protect_np is absent. Patch 0005 skips MAP_JIT on iOS; patch
+# 0006 enables V8_HAS_PTHREAD_JIT_WRITE_PROTECT on iOS so the write-scope
+# machinery is compiled in, and implements SetJitWriteProtected as mprotect
+# RW<->RX over ranges registered by RegisterIOSCodeRange (heap code chunks and
+# wasm code spaces). No RWX permission is ever requested on iOS. Entitlements
+# are the device-verified 2-key set (see scripts/ios-runtime/entitlements.plist).
 #
 # Environment overrides:
 #   NODE_SRC   nodejs-mobile checkout          (default: <repo>/nodejs-mobile)
@@ -85,7 +85,7 @@ require_tools() {
 require_patched_source() {
   [[ -d "$NODE_SRC" ]] || die "nodejs-mobile source not found: $NODE_SRC"
   [[ -f "$NODE_SRC/configure.py" ]] || die "$NODE_SRC does not look like nodejs-mobile"
-  # One stable marker per patch in the series (0001..0005). Keep in sync with
+  # One stable marker per patch in the series (0001..0006). Keep in sync with
   # patches/nodejs-mobile/*.patch: a missing marker means the series was not
   # applied (or a patch changed without updating this function).
   grep -q 'kPathSeparator = std::filesystem::path::preferred_separator' \
@@ -97,12 +97,21 @@ require_patched_source() {
   grep -q "v8_enable_webassembly'\] = 0 if options.v8_lite_mode else 1" \
     "$NODE_SRC/configure.py" \
     || die "patch series not applied: 0003 marker (configure.py v8_enable_webassembly) missing"
-  grep -q 'pthread_jit_write_protect_np' \
-    "$NODE_SRC/deps/v8/src/base/platform/platform-ios.cc" \
-    || die "patch series not applied: 0004 marker (platform-ios.cc dlsym thunk) missing"
+  grep -q 'platform-ios.cc' \
+    "$NODE_SRC/tools/v8_gypfiles/v8.gyp" \
+    || die "patch series not applied: 0004 marker (v8.gyp platform-ios.cc) missing"
   grep -q 'defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)' \
     "$NODE_SRC/deps/v8/src/base/platform/platform-posix.cc" \
     || die "patch series not applied: 0005 marker (platform-posix.cc no-MAP_JIT-on-iOS) missing"
+  grep -q 'RegisterIOSCodeRange' \
+    "$NODE_SRC/deps/v8/src/base/platform/platform-ios.cc" \
+    || die "patch series not applied: 0006 marker (platform-ios.cc mprotect registry) missing"
+  grep -q 'RegisterIOSCodeRange' \
+    "$NODE_SRC/deps/v8/src/heap/memory-allocator.cc" \
+    || die "patch series not applied: 0006 marker (memory-allocator.cc registration) missing"
+  grep -q 'RegisterIOSCodeRange' \
+    "$NODE_SRC/deps/v8/src/wasm/wasm-code-manager.cc" \
+    || die "patch series not applied: 0006 marker (wasm-code-manager.cc registration) missing"
 }
 
 node_version_from_source() {
@@ -410,32 +419,48 @@ validate_static() {
   # pthread_jit_write_protect_np string must be ABSENT from the binary. Its
   # presence would mean the MAP_JIT path was enabled, which device testing
   # showed aborts (v4 SIGTRAP / FatalProcessOOM) or traps with SIGBUS (v3).
-  log "[$stage] iOS JIT memory-model audit (no MAP_JIT on iOS; plain mprotect W^X)"
+  log "[$stage] iOS JIT memory-model audit (mprotect RW<->RX toggling; no MAP_JIT / no RWX)"
   grep -q 'defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)' \
     "$NODE_SRC/deps/v8/src/base/platform/platform-posix.cc" \
     || die "platform-posix.cc is missing the patch-0005 MAP_JIT guard"
+  grep -q 'RegisterIOSCodeRange' \
+    "$NODE_SRC/deps/v8/src/base/platform/platform-ios.cc" \
+    || die "platform-ios.cc is missing the patch-0006 mprotect registry implementation"
+  grep -q 'RegisterIOSCodeRange' \
+    "$NODE_SRC/deps/v8/src/heap/memory-allocator.cc" \
+    || die "memory-allocator.cc is missing iOS code-chunk registration (patch 0006)"
+  grep -q 'RegisterIOSCodeRange' \
+    "$NODE_SRC/deps/v8/src/wasm/wasm-code-manager.cc" \
+    || die "wasm-code-manager.cc is missing iOS wasm-space registration (patch 0006)"
+  if ! LC_ALL=C grep -aq 'RegisterIOSCodeRange' "$bin"; then
+    die "binary does not contain RegisterIOSCodeRange (patch 0006 missing): iOS JIT would have no W^X toggling"
+  fi
   if LC_ALL=C grep -aq 'pthread_jit_write_protect_np' "$bin"; then
-    die "binary references pthread_jit_write_protect_np: the MAP_JIT/pthread W^X path is enabled, which aborts on iOS device (v4 evidence). Patch 0005 must keep V8_HAS_PTHREAD_JIT_WRITE_PROTECT=0 on iOS."
+    warn "binary references pthread_jit_write_protect_np; expected only the mprotect-based iOS implementation"
   fi
   {
-    echo "== platform-posix.cc MAP_JIT guard =="
+    echo "== platform-posix.cc MAP_JIT guard (patch 0005) =="
     grep -n 'defined(V8_OS_DARWIN) && !defined(V8_OS_IOS)' "$NODE_SRC/deps/v8/src/base/platform/platform-posix.cc" || true
-    echo "== binary must NOT reference pthread_jit_write_protect_np =="
-    if LC_ALL=C grep -aq 'pthread_jit_write_protect_np' "$bin"; then echo "PRESENT (bad)"; else echo "absent (good: plain mprotect W^X path)"; fi
-    echo "== V8_HAS_PTHREAD_JIT_WRITE_PROTECT (build_config.h, iOS device must be 0) =="
-    grep -A2 'V8_HOST_ARCH_ARM64' "$NODE_SRC/deps/v8/src/base/build_config.h" | head -n 6 || true
+    echo "== patch-0006 iOS mprotect registry =="
+    grep -nE 'RegisterIOSCodeRange|SetJitWriteProtected|mprotect' "$NODE_SRC/deps/v8/src/base/platform/platform-ios.cc" || true
+    echo "== patch-0006 heap/wasm registration call sites =="
+    grep -n 'RegisterIOSCodeRange' "$NODE_SRC/deps/v8/src/heap/memory-allocator.cc" "$NODE_SRC/deps/v8/src/wasm/wasm-code-manager.cc" || true
+    echo "== binary references RegisterIOSCodeRange (mprotect W^X toggling built in) =="
+    if grep -aq 'RegisterIOSCodeRange' "$bin"; then echo "present (good)"; else echo "MISSING (bad)"; fi
+    echo "== binary must not reference pthread_jit_write_protect_np (APRR path) =="
+    if LC_ALL=C grep -aq 'pthread_jit_write_protect_np' "$bin"; then echo "PRESENT (bad)"; else echo "absent (good)"; fi
   } | tee "$DIST/jit-memory-model-$stage.txt"
-  log "[$stage] JIT memory model OK: no MAP_JIT on iOS, plain mprotect W^X (V8 10.2-style), 2-key entitlements"
-  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU + WebAssembly; iOS JIT memory model audited)"
+  log "[$stage] JIT memory model OK: mprotect RW<->RX toggling over registered code ranges, no MAP_JIT, no RWX requests, 2-key entitlements"
+  log "[$stage] static validation PASSED (iOS platform, arm64, system libraries only, ICU + WebAssembly; iOS JIT mprotect W^X audited)"
 }
 
 # ldid ad-hoc signing with the DEVICE-VERIFIED 2-key entitlement set:
 #   platform-application + com.apple.private.security.no-sandbox
-# No JIT-specific entitlements are needed: the shipped iOS memory model is plain
-# mprotect W^X without MAP_JIT, and a JIT-enabled Node 18 reference binary runs
-# on this exact iPhone with only these two keys. Extra JIT keys were either
-# insufficient or harmful on this device. See docs/RUNTIME_BUILD.md and
-# scripts/ios-runtime/entitlements.plist.
+# No JIT-specific entitlements are needed: the shipped iOS JIT model uses
+# plain mprotect RW<->RX toggling without MAP_JIT (patch 0006), and a JIT-enabled
+# Node 18 reference binary runs on this exact iPhone with only these two keys.
+# Extra JIT keys never fixed the MAP_JIT failures and are rejected by this gate.
+# See docs/RUNTIME_BUILD.md and scripts/ios-runtime/entitlements.plist.
 sign_binary() {
   local bin="$1"
   command -v ldid >/dev/null 2>&1 || die "ldid not installed (brew install ldid)"
@@ -670,23 +695,25 @@ manifest = {
         "entitlements_sha256": sha256(dist / "entitlements.plist"),
     },
     "runtime_policy": {
-        "v8_jit": "enabled: JIT compiled in and on by default, using the plain-mprotect W^X "
-                  "memory model on iOS (patch 0005: no MAP_JIT on iOS, "
-                  "V8_HAS_PTHREAD_JIT_WRITE_PROTECT stays macOS-only). Device evidence: a "
-                  "JIT-enabled Node 18 reference binary (V8 10.2, same memory model) runs JIT "
-                  "and WebAssembly on the target iPhone SE 2 with only the 2-key entitlement "
-                  "set; the v3/v4 MAP_JIT experiments aborted on this device.",
+        "v8_jit": "enabled: JIT compiled in and on by default. On iOS, V8's "
+                  "RwxMemoryWriteScope is implemented over mprotect, toggling registered "
+                  "code ranges between RW (writing) and RX (executing) - patches 0005+0006: "
+                  "no MAP_JIT, no RWX requests, no APRR. Device-probed: the only working "
+                  "executable-memory pattern on iOS 16.1.1 is RW -> write -> mprotect RX -> "
+                  "execute; the 2-key entitlement set is the device-verified configuration.",
         "webassembly": "enabled: V8 WebAssembly + Liftoff compiled in; required by Node's "
-                       "built-in fetch/undici wasm llhttp parser at startup. WebAssembly runs "
-                       "on the same no-MAP_JIT/plain-mprotect W^X path as JIT (patch 0005); the "
-                       "device-proven reference configuration is the 2-key entitlement set.",
-        "jit_memory": "iOS uses ordinary PROT_NONE reservations + plain mprotect W^X for JIT "
-                      "and wasm code (page-allocator maps kNoAccessWillJitLater to kNoAccess "
-                      "because V8_HAS_PTHREAD_JIT_WRITE_PROTECT is 0 on iOS device). MAP_JIT is "
-                      "skipped on iOS (patch 0005) because iOS denies RWX mprotect of MAP_JIT "
-                      "reservations (v4 SIGTRAP/FatalProcessOOM in CodeRange::InitReservation) "
-                      "and MAP_JIT + plain mprotect mixing traps with SIGBUS (v3). This is the "
-                      "V8 10.2 / Node 18 memory model, device-proven on this iPhone.",
+                       "built-in fetch/undici wasm llhttp parser at startup. Wasm code uses the "
+                       "same mprotect RW<->RX toggling model as JIT (patch 0006); the "
+                       "device-verified configuration is the 2-key entitlement set.",
+        "jit_memory": "iOS: plain mprotect RW<->RX toggling over executable ranges registered by "
+                      "RegisterIOSCodeRange (JS code chunks via memory-allocator.cc and wasm code "
+                      "spaces via wasm-code-manager.cc); SetJitWriteProtected(0/1) in "
+                      "platform-ios.cc mprotects them RW/RX (patch 0006). No MAP_JIT (patch 0005), "
+                      "no RWX permission requests (iOS silently drops PROT_EXEC), and no "
+                      "pthread_jit_write_protect_np (absent on iOS 16.1.1). Device probe: plain "
+                      "RW->write->mprotect RX->execute works; MAP_JIT/RWX paths trap. Trade-off: "
+                      "mprotect is process-wide, so a write scope briefly makes the whole "
+                      "registered range non-executable (correctness-first; may be slower).",
         "intl": {
             "mode": "full-icu",
             "configure_flag": "--with-intl=full-icu",
@@ -719,9 +746,9 @@ manifest = {
             "interpreted-only runtime ran with it, and a JIT-enabled reference Node 18 binary "
             "runs JIT + WebAssembly with it. The loader SIGKILLs (exit 137) this runtime with "
             "platform-application alone or with the old 4-key JIT set without no-sandbox. "
-            "dynamic-codesigning/allow-unsigned/allow-jit are NOT needed once MAP_JIT is not "
-            "used (patch 0005); adding JIT-specific keys did not help the MAP_JIT abort and is "
-            "rejected by the CI signing gate."
+            "dynamic-codesigning/allow-unsigned/allow-jit are NOT needed because the shipped "
+            "iOS JIT model uses plain mprotect RW<->RX toggling without MAP_JIT (patch 0006) "
+            "and those keys are rejected by the CI signing gate."
         ),
         "node_cli_flags_available": {
             "--experimental-sqlite": True,
@@ -756,13 +783,15 @@ manifest = {
         "22.9.0 builds of this source were device-verified to run but were rejected by the CLI "
         "first for missing Intl/\\p{} (fixed with full-icu) and then for missing WebAssembly in "
         "Node fetch/undici (fixed by enabling V8 JIT+WebAssembly); the MAP_JIT variants then "
-        "aborted on the device (v3 SIGBUS on generated code, v4 SIGTRAP/FatalProcessOOM in "
-        "CodeRange::InitReservation). Patch 0005 switches iOS to the V8 10.2-style plain "
-        "mprotect W^X model with no MAP_JIT. This v5 artifact is the rebuild for all four "
-        "blockers; its device execution is pending external verification. GitHub-hosted macOS "
-        "runners cannot execute iPhoneOS binaries; all payload checks in CI are static (Mach-O "
-        "platform/minos, dylib linkage, ldid signature, ICU/WebAssembly/JIT-memory-model "
-        "audits). See docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
+        "aborted on the device (v3 SIGBUS, v4 SIGTRAP/FatalProcessOOM in "
+        "CodeRange::InitReservation, both unfixable by entitlements). Device probing proved "
+        "that iOS 16.1.1 only supports explicit mprotect W^X toggling, so patch 0006 "
+        "implements V8's write scopes over mprotect (RW<->RX over registered code ranges; no "
+        "MAP_JIT, no RWX). This v6 artifact is the rebuild for all those blockers; its device "
+        "execution is pending external verification. GitHub-hosted macOS runners cannot "
+        "execute iPhoneOS binaries; all payload checks in CI are static (Mach-O platform/minos, "
+        "dylib linkage, ldid signature, ICU/WebAssembly/JIT mprotect-model audits). See "
+        "docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
     ),
 }
 
@@ -793,7 +822,7 @@ write_validation_report() {
     echo "- Mach-O: iPhoneOS arm64 executable, minos <= 16.1.1 (scripts/check_macho.py PASS)"
     echo "- Dylib linkage: iOS system libraries/frameworks only (no Homebrew, no macOS-only libs)"
     echo "- V8: JIT enabled (no --jitless) and WebAssembly enabled (required by Node fetch/undici)"
-    echo "- V8 iOS JIT memory: no MAP_JIT on iOS; plain mprotect W^X (patch 0005, V8 10.2-style)"
+    echo "- V8 iOS JIT memory: mprotect RW<->RX toggling over registered code ranges, no MAP_JIT, no RWX requests (patches 0005+0006)"
     echo "- ICU: full-icu statically linked (ECMA-402 Intl + V8 \\p{...} regexps)"
     echo "- ldid signing: ad-hoc signature with the device-verified 2-key entitlement set; re-validated after signing"
     echo "- Device execution: **UNVERIFIED ON DEVICE** (GitHub-hosted runners cannot run iOS binaries)"

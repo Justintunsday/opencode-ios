@@ -1,0 +1,342 @@
+# =============================================================================
+# nodejs-mobile: mprotect-based W^X toggling for V8 JIT on iOS
+# =============================================================================
+#
+# Base:   nodejs-mobile/nodejs-mobile update22-9-0
+#         commit 106c51f95d55d1010de56a2ffd09bfb4ba819a47
+# Depends: 0001..0005 (applied first, in filename order)
+# Applied: by .github/workflows/build-runtime.yml with `git apply`.
+#
+# Why: device memory-permission probing on the target iPhone (iPhone SE 2,
+# iOS 16.1.1, Dopamine rootless) established the ONLY executable-memory
+# mechanism available:
+#     plain RW -> write -> mprotect RX -> execute   : WORKS
+#     mmap RWX / mprotect RWX + execute             : SIGBUS (X silently dropped)
+#     MAP_JIT reservation / mprotect on it          : EINVAL
+#     pthread_jit_write_protect_np                  : absent
+#   (v3 trapped with SIGBUS because MAP_JIT pages stayed rw-; v4 aborted with
+#   SIGTRAP/FatalProcessOOM in CodeRange::InitReservation because iOS denies
+#   RWX mprotect; neither is fixable with entitlements.)
+#
+# This patch implements V8's RwxMemoryWriteScope over per-range mprotect:
+#   * build_config.h: V8_HAS_PTHREAD_JIT_WRITE_PROTECT = 1 on iOS arm64, so the
+#     write-scope machinery is compiled in and SetJitWriteProtected is called.
+#   * platform.h/platform-ios.cc: RegisterIOSCodeRange() registry plus
+#     SetJitWriteProtected(): mprotect every registered code range RW (enable=0,
+#     writing) or RX (enable=1, executing). No MAP_JIT, no APRR.
+#   * code-range.cc: never request RWX on iOS. The code-range reservation stays
+#     PROT_NONE; per-MemoryChunk commits handle permissions. The re-embedded
+#     builtins blob is committed RW, copied, then RX.
+#   * memory-allocator.cc: on iOS commit the chunk header RW (never executed),
+#     guard pages PROT_NONE, and the code body RW + RegisterIOSCodeRange() so
+#     the write scopes can toggle it.
+#   * wasm-code-manager.cc: register wasm code-space reservations; commit
+#     wasm code RW then RX instead of RWX.
+#
+# The macOS implementation (pthread_jit_write_protect_np) is untouched; the iOS
+# implementation is selected by V8_OS_IOS. Patch 0005 keeps MAP_JIT disabled on
+# iOS; patch 0006 supplies the mechanism that 0005 made possible.
+#
+# Known trade-off: mprotect is process-wide, so a whole registered range is
+# non-executable while a thread holds a write scope (unlike the thread-local
+# macOS APRR model). This is correctness-first; startup may be slower. If the
+# device shows issues, later work can restrict toggling to the exact pages being
+# written.
+#
+# Entitlements: unchanged device-verified 2-key set
+# (platform-application + com.apple.private.security.no-sandbox) - no MAP_JIT,
+# no JIT-specific keys.
+# =============================================================================
+
+--- a/deps/v8/src/base/build_config.h
++++ b/deps/v8/src/base/build_config.h
+@@ -29,11 +29,15 @@
+ 
+ // pthread_jit_write_protect is only available on arm64 Mac.
+ 
+-// nodejs-mobile patch: disable V8_HAS_PTHREAD_JIT_WRITE_PROTECT 
+-// for ios's arm64-simulator and x64-simulator. and 'embedtest' from node.gyp as well.
+-// this removes SetJitWriteProtected forward declaration from build
++// nodejs-mobile-build-fixes (patch 0006): enable V8's RwxMemoryWriteScope
++// machinery on the iOS device as well. On iOS the implementation behind
++// SetJitWriteProtected is a plain-mprotect RW<->RX toggler over registered code
++// ranges (platform-ios.cc), because iOS 16 only supports explicit W^X toggling:
++// MAP_JIT and pthread_jit_write_protect_np are unavailable, and RWX requests
++// silently lose PROT_EXEC (device-probed, see docs/RUNTIME_BUILD.md). macOS
++// keeps its pthread_jit_write_protect implementation.
+ #if defined(V8_HOST_ARCH_ARM64) && \
+-    (defined(V8_OS_MACOS) )
++    (defined(V8_OS_MACOS) || defined(V8_OS_IOS))
+ #define V8_HAS_PTHREAD_JIT_WRITE_PROTECT 1
+ #else
+ #define V8_HAS_PTHREAD_JIT_WRITE_PROTECT 0
+
+--- a/deps/v8/src/base/platform/platform.h
++++ b/deps/v8/src/base/platform/platform.h
+@@ -691,6 +691,14 @@
+ V8_BASE_EXPORT void SetJitWriteProtected(int enable);
+ #endif
+ 
++#if V8_OS_IOS
++// nodejs-mobile-build-fixes (patch 0006): register an executable range whose
++// page permissions are toggled between RX and RW by SetJitWriteProtected().
++// The iOS implementation uses mprotect because MAP_JIT and
++// pthread_jit_write_protect_np are unavailable on iOS devices.
++V8_BASE_EXPORT void RegisterIOSCodeRange(void* base, size_t size);
++#endif  // V8_OS_IOS
++
+ }  // namespace base
+ }  // namespace v8
+ 
+
+--- a/deps/v8/src/base/platform/platform-ios.cc
++++ b/deps/v8/src/base/platform/platform-ios.cc
+@@ -2,36 +2,69 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
+-#include <dlfcn.h>
++#include <sys/mman.h>
++
++#include <mutex>
++#include <vector>
+ 
+ #include "src/base/base-export.h"
+ #include "src/base/build_config.h"
++#include "src/base/macros.h"
++#include "src/base/platform/platform.h"
+ 
+-// nodejs-mobile-build-fixes: pthread_jit_write_protect_np is not exported by
+-// the public iPhoneOS SDK at link time, so resolve it with dlsym(RTLD_DEFAULT)
+-// at runtime instead of a direct call. This keeps the binary linkable against
+-// the public SDK while still enabling V8's mac-style RWX write-protect thunk
+-// wherever the symbol exists (iOS 14+). NOTE: with the shipped iOS memory model
+-// V8_HAS_PTHREAD_JIT_WRITE_PROTECT is 0 on the iOS device, so this function is
+-// compiled out and the call is never reached; see patch
+-// 0005-no-map-jit-on-ios.patch and docs/RUNTIME_BUILD.md.
++// nodejs-mobile-build-fixes (patch 0006): iOS device JIT memory model.
++//
++// Device probing (iPhone SE 2, iOS 16.1.1) shows that on iOS:
++//   * mmap(MAP_JIT) is denied (EINVAL) and pthread_jit_write_protect_np is
++//     absent, so neither the macOS APRR model nor MAP_JIT can be used;
++//   * ordinary mappings DO support mprotect(PROT_READ|PROT_WRITE) and
++//     mprotect(PROT_READ|PROT_EXEC), i.e. explicit W^X toggling works;
++//   * requesting RWX silently drops PROT_EXEC.
++// V8 therefore has to run its RwxMemoryWriteScope machinery over mprotect.
++// RegisterIOSCodeRange() is called by the heap and wasm code for every
++// committed executable range; SetJitWriteProtected(0) makes them writable
++// (RW, while code is being written) and SetJitWriteProtected(1) makes them
++// executable (RX) again. This is the only executable-memory mechanism
++// available on the device; it trades macOS-style thread-local write protection
++// for explicit page-permission toggling.
+ namespace v8::base {
+ 
+-#if V8_HAS_PTHREAD_JIT_WRITE_PROTECT && defined(V8_OS_IOS)
++#if V8_OS_IOS
+ namespace {
+-using JitWriteProtectFn = void (*)(int);
+-JitWriteProtectFn GetJitWriteProtectFn() {
+-  static const JitWriteProtectFn fn = reinterpret_cast<JitWriteProtectFn>(
+-      dlsym(RTLD_DEFAULT, "pthread_jit_write_protect_np"));
+-  return fn;
++struct CodeRange {
++  void* base;
++  size_t size;
++};
++
++std::mutex& CodeRangesMutex() {
++  static std::mutex mutex;
++  return mutex;
++}
++
++std::vector<CodeRange>& CodeRanges() {
++  static std::vector<CodeRange> ranges;
++  return ranges;
+ }
+ }  // namespace
+ 
++V8_BASE_EXPORT void RegisterIOSCodeRange(void* base, size_t size) {
++  if (base == nullptr || size == 0) return;
++  std::lock_guard<std::mutex> guard(CodeRangesMutex());
++  CodeRanges().push_back({base, size});
++}
++
++#if V8_HAS_PTHREAD_JIT_WRITE_PROTECT
+ V8_BASE_EXPORT void SetJitWriteProtected(int enable) {
+-  if (JitWriteProtectFn fn = GetJitWriteProtectFn()) {
+-    fn(enable);
++  const int prot = enable ? (PROT_READ | PROT_EXEC) : (PROT_READ | PROT_WRITE);
++  std::lock_guard<std::mutex> guard(CodeRangesMutex());
++  for (const CodeRange& range : CodeRanges()) {
++    // Ignore failures: a range may have been decommitted or reused; subsequent
++    // toggles keep the mapping consistent.
++    int result = mprotect(range.base, range.size, prot);
++    USE(result);
+   }
+ }
+-#endif
++#endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT
++#endif  // V8_OS_IOS
+ 
+ }  // namespace v8::base
+
+--- a/deps/v8/src/heap/code-range.cc
++++ b/deps/v8/src/heap/code-range.cc
+@@ -231,6 +231,13 @@
+     // Should the reserved area ever become non-empty we shouldn't mark it as
+     // RWX below.
+     CHECK_EQ(reserved_area, 0);
++#if defined(V8_OS_IOS)
++    // nodejs-mobile-build-fixes (patch 0006): never request RWX on iOS - the
++    // kernel silently drops PROT_EXEC from RWX requests. The reservation stays
++    // PROT_NONE; individual code pages are committed (RW) and registered by
++    // MemoryAllocator::SetPermissionsOnExecutableMemoryChunk, then toggled
++    // RW<->RX by RwxMemoryWriteScope (SetJitWriteProtected).
++#else
+     void* base = reinterpret_cast<void*>(page_allocator_->begin());
+     size_t size = page_allocator_->size();
+     if (!params.page_allocator->SetPermissions(
+@@ -238,6 +245,7 @@
+       return false;
+     }
+     if (!params.page_allocator->DiscardSystemPages(base, size)) return false;
++#endif  // V8_OS_IOS
+   }
+   return true;
+ }
+@@ -417,6 +425,23 @@
+   }
+ 
+   if (V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT) {
++#if defined(V8_OS_IOS)
++    // nodejs-mobile-build-fixes (patch 0006): iOS W^X - commit RW, copy, then
++    // make RX. This blob is executed but never rewritten, so it is not
++    // registered for scope toggling.
++    if (!page_allocator()->SetPermissions(embedded_blob_code_copy, code_size,
++                                          PageAllocator::kReadWrite)) {
++      V8::FatalProcessOutOfMemory(isolate,
++                                  "Re-embedded builtins: set permissions");
++    }
++    memcpy(embedded_blob_code_copy, embedded_blob_code,
++           embedded_blob_code_size);
++    if (!page_allocator()->SetPermissions(embedded_blob_code_copy, code_size,
++                                          PageAllocator::kReadExecute)) {
++      V8::FatalProcessOutOfMemory(isolate,
++                                  "Re-embedded builtins: set permissions");
++    }
++#else
+     if (!page_allocator()->RecommitPages(embedded_blob_code_copy, code_size,
+                                          PageAllocator::kReadWriteExecute)) {
+       V8::FatalProcessOutOfMemory(isolate,
+@@ -426,6 +451,7 @@
+         "Enable write access to copy the blob code into the code range");
+     memcpy(embedded_blob_code_copy, embedded_blob_code,
+            embedded_blob_code_size);
++#endif  // V8_OS_IOS
+   } else {
+     if (!page_allocator()->SetPermissions(embedded_blob_code_copy, code_size,
+                                           PageAllocator::kReadWrite)) {
+
+--- a/deps/v8/src/heap/memory-allocator.cc
++++ b/deps/v8/src/heap/memory-allocator.cc
+@@ -7,6 +7,7 @@
+ #include <cinttypes>
+ 
+ #include "src/base/address-region.h"
++#include "src/base/platform/platform.h"
+ #include "src/common/globals.h"
+ #include "src/execution/isolate.h"
+ #include "src/flags/flags.h"
+@@ -597,6 +598,34 @@
+ 
+   if (V8_HEAP_USE_PTHREAD_JIT_WRITE_PROTECT && !jitless) {
+     DCHECK(isolate_->RequiresCodeRange());
++#if defined(V8_OS_IOS)
++    // nodejs-mobile-build-fixes (patch 0006): iOS only supports explicit W^X
++    // toggling with mprotect, so never request RWX. The metadata header stays
++    // read-write (it is never executed); the code body is committed read-write
++    // and registered so RwxMemoryWriteScope/SetJitWriteProtected can toggle it
++    // to RX for execution and back to RW for later patching.
++    bool ios_ok = vm->SetPermissions(start, pre_guard_offset,
++                                     PageAllocator::kReadWrite);
++    if (ios_ok) {
++      ios_ok = vm->SetPermissions(pre_guard_page, page_size,
++                                  PageAllocator::kNoAccess);
++    }
++    if (ios_ok) {
++      ios_ok = vm->SetPermissions(code_area, aligned_area_size,
++                                  PageAllocator::kReadWrite);
++    }
++    if (ios_ok) {
++      ios_ok = vm->SetPermissions(post_guard_page, page_size,
++                                  PageAllocator::kNoAccess);
++    }
++    if (ios_ok) {
++      base::RegisterIOSCodeRange(reinterpret_cast<void*>(code_area),
++                                 aligned_area_size);
++      UpdateAllocatedSpaceLimits(start, code_area + aligned_area_size,
++                                 EXECUTABLE);
++      return true;
++    }
++#else
+     // Commit the header, from start to pre-code guard page.
+     // We have to commit it as executable becase otherwise we'll not be able
+     // to change permissions to anything else.
+@@ -619,7 +648,7 @@
+       }
+       vm->DiscardSystemPages(start, pre_guard_offset);
+     }
+-
++#endif  // V8_OS_IOS
+   } else {
+     // Commit the non-executable header, from start to pre-code guard page.
+     if (vm->SetPermissions(start, pre_guard_offset,
+
+--- a/deps/v8/src/wasm/wasm-code-manager.cc
++++ b/deps/v8/src/wasm/wasm-code-manager.cc
+@@ -1931,8 +1931,19 @@
+   } else {
+     TRACE_HEAP("Setting rwx permissions for 0x%" PRIxPTR ":0x%" PRIxPTR "\n",
+                region.begin(), region.end());
++#if defined(V8_OS_IOS)
++    // nodejs-mobile-build-fixes (patch 0006): iOS never grants RWX (PROT_EXEC
++    // is dropped). Commit read-write then make read-execute; the range was
++    // registered in TryAllocate() so RwxMemoryWriteScope can toggle it later.
++    USE(permission);
++    success = SetPermissions(GetPlatformPageAllocator(), region.begin(),
++                             region.size(), PageAllocator::kReadWrite) &&
++              SetPermissions(GetPlatformPageAllocator(), region.begin(),
++                             region.size(), PageAllocator::kReadExecute);
++#else
+     success = SetPermissions(GetPlatformPageAllocator(), region.begin(),
+                              region.size(), permission);
++#endif  // V8_OS_IOS
+   }
+ 
+   if (V8_UNLIKELY(!success)) {
+@@ -1990,10 +2001,25 @@
+ 
+   ThreadIsolation::RegisterJitPage(mem.address(), mem.size());
+ 
++#if defined(V8_OS_IOS)
++  // nodejs-mobile-build-fixes (patch 0006): register the wasm code space so
++  // SetJitWriteProtected can toggle its pages RW<->RX for WasmCodeAllocator
++  // writes (plain-mprotect W^X model; no MAP_JIT on iOS).
++  base::RegisterIOSCodeRange(reinterpret_cast<void*>(mem.address()),
++                             mem.size());
++#endif  // V8_OS_IOS
++
+   // TODO(v8:8462): Remove eager commit once perf supports remapping.
+   if (v8_flags.perf_prof) {
++#if defined(V8_OS_IOS)
++    SetPermissions(GetPlatformPageAllocator(), mem.address(), mem.size(),
++                   PageAllocator::kReadWrite);
++    SetPermissions(GetPlatformPageAllocator(), mem.address(), mem.size(),
++                   PageAllocator::kReadExecute);
++#else
+     SetPermissions(GetPlatformPageAllocator(), mem.address(), mem.size(),
+                    PageAllocator::kReadWriteExecute);
++#endif  // V8_OS_IOS
+   }
+   return mem;
+ }
