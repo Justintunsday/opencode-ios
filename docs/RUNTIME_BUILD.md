@@ -1,14 +1,15 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
-Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly, iOS
-mprotect-based W^X model) + static Mach-O audit. The v6 artifact (run 41265520491,
-patches 0005+0006) is CI-green and is the candidate currently under device
-verification.**
-A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
-target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
-but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
-`\p{...}` Unicode property escapes were unsupported. This ICU-enabled rebuild is
-the fix for that blocker; its own device verification is still pending.
+Status: **DEVICE-VERIFIED** (v6, run 41265520491, patches 0001..0006): the
+native iPhoneOS arm64 Node.js 22.9.0 runtime works on the target iPhone
+(iPhone SE 2, iOS 16.1.1, Dopamine rootless) with JIT, WebAssembly, full ICU
+(Intl/`\p{...}`), `node:sqlite`, TLS/`fetch` and `process.platform === "ios"`,
+signed with the 2-key entitlement set. Device-required launcher flag:
+**`--single-threaded`** (the mprotect-based W^X model needs V8's background
+compiler/marking threads off; without it JIT/fetch can SIGBUS - see §6.5).
+The runtime is CI-built and statically audited in `build-runtime.yml`; the
+device run above was performed on real hardware (raw results in §9 device
+verification detail), not on a hosted runner.
 GitHub-hosted macOS runners cannot execute iPhoneOS binaries, so all CI evidence
 below is static.
 
@@ -34,6 +35,16 @@ executable**, built from the pinned nodejs-mobile source with the iPhoneOS SDK
 The artifact contract is defined in `docs/COORDINATION.md`; `package-rootless.yml`
 consumes this artifact and installs `node` under
 `/var/jb/usr/lib/opencode/runtime/node`.
+
+**Launcher requirement (device-verified):** invoke the runtime with
+`--single-threaded` (and `--experimental-sqlite` if the CLI needs `node:sqlite`).
+The iOS JIT memory model toggles code-page permissions process-wide with
+`mprotect`, so V8's background compiler/marking threads must be disabled to avoid
+`SIGBUS` while a write scope holds a code range writable (see §6.5). The generated
+`runtime-manifest.json` records this in `runtime_policy.launcher.required_flags`
+(`--single-threaded`, `--experimental-sqlite`) and in
+`device_verification.launcher_flags`; the launcher in the rootless package must
+pass them.
 
 ## 2. Upstream pins
 
@@ -304,10 +315,13 @@ compatibility.
   reports `ios`, not `darwin`. This was confirmed **on device**
   (`process.platform === "ios"` for the 22.9.0 build) and is recorded in
   `runtime-manifest.json` → `runtime_policy.process_platform`.
-- **JIT enabled (default V8 JIT), with iOS-specific memory handling.**
-  The build does not pass `--v8-options=--jitless`. On iOS, V8 must not use
-  `MAP_JIT` and must not request RWX pages; its write scopes toggle registered
-  code ranges RW<->RX with `mprotect` (patches 0005+0006, §6.4).
+- **JIT enabled (default V8 JIT), with iOS-specific memory handling and a
+  launcher requirement.** The build does not pass `--v8-options=--jitless`. On
+  iOS, V8 must not use `MAP_JIT` and must not request RWX pages; its write scopes
+  toggle registered code ranges RW<->RX with `mprotect` (patches 0005+0006,
+  §6.4). Because that toggle is process-wide, the launcher must pass
+  `--single-threaded` (§6.5); device-verified with it: JIT loops, wasm, Intl and
+  `fetch` all work.
 - **WebAssembly enabled.** `v8_enable_webassembly=1` (patch 0003 restores upstream
   behaviour). This is **required**, not optional: Node 22.9's built-in
   `fetch()`/undici instantiates a wasm llhttp parser at startup, so a no-wasm
@@ -501,6 +515,40 @@ MAP_JIT is never used. CI hard-gates the source call sites and that the linked
 binary contains `RegisterIOSCodeRange` (and does not reference the absent
 `pthread_jit_write_protect_np`).
 
+### 6.5 Launcher requirements (device-verified)
+
+The shipped v6 runtime is **device-verified to work** when the launcher passes:
+
+```
+--single-threaded [--experimental-sqlite]
+```
+
+Observed on the target iPhone (iPhone SE 2, iOS 16.1.1, Dopamine rootless,
+2-key-signed runtime, node sha256 `cf707ebe...`):
+
+- **default (multithreaded):** `--version` OK, plain JS OK, wasm
+  compile+instantiate OK, `Intl`/ICU 75/`\p{L}` OK - but a JIT loop and built-in
+  `fetch` each trap with `SIGBUS` (exit 138). Rationale: the mprotect
+  whole-range toggle is process-wide while macOS' APRR (used upstream) is
+  per-thread, so a background compiler/marking thread can execute code from a
+  range that another thread temporarily made RW.
+- **`--single-threaded` (or `--no-concurrent-recompilation`):** JIT loop rc=0,
+  `fetch("https://...")` rc=0 (HTTP 200), wasm OK - no further crashes. No
+  entitlement changes were needed.
+- Full OpenCode CLI matrix on device with the Node 22 bundle + `--single-threaded`
+  + `--experimental-sqlite`: `--version`, `--help` (now complete: full ICU makes
+  `Intl.Segmenter` work), `debug paths`, `debug config`, `models`, `auth list`,
+  `session list` (native `node:sqlite` DB with WAL) - all rc=0. A mock-provider
+  end-to-end agent turn rc=0 executed the shell tool on the device (marker file
+  written, git version captured) and the mock saw `GET /api/v1/models` plus
+  three chat completions with `toolResult=true`.
+
+Trade-off of `--single-threaded`: V8 runs without its background
+compiler/marking/GC helper threads, so optimization throughput is lower and GC
+may be less concurrent; functionally the CLI works (matrix above). Per-page
+mprotect granularity is possible future work if the requirement proves too
+costly, but it is not needed for the shipped runtime.
+
 ## 7. CI design (performance and debuggability)
 
 - `macos-15` + Xcode 16.4, `timeout-minutes: 360` on the build job.
@@ -591,6 +639,9 @@ only one pending run per group); they are not failures.
 
 ### Device verdicts for the CI-green builds (device evidence, 2026-10-31)
 
+The v6 artifact is device-verified (see detail below and §6.5); the table records
+how each CI-green build fared on the real iPhone and which patch it forced.
+
 | Build | Device result |
 | --- | --- |
 | v2 no-Intl (run 41171982508) | runs (`node --version`, `process.platform=="ios"`, fs/sqlite/TLS/child_process OK), but CLI rejected: `Intl` undefined + `\p{...}` regexp `SyntaxError`. Drove patch 0002 / full-icu. |
@@ -599,7 +650,31 @@ only one pending run per group); they are not failures.
 | v4 (run 41205805269) | **CI failure before build**: the workflow's patch-series marker check (`require_patched_source`) still looked for the old PR#150 comment line that patch 0004 replaces in `build_config.h`, so normalize-cache aborted. Fixed in `dfbc093` (one stable marker per patch 0001..0004), re-run as 41207449703. |
 | v4 (run 41207449703) | **device-rejected**: node 106,842,032 bytes sha256 `48eecd59...`, 4-key signed, MAP_JIT + `V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1`. Device: EXC_BREAKPOINT / SIGTRAP (exit 133), `v8::base::OS::Abort` <- `FatalOOM` <- `V8::FatalProcessOutOfMemory` <- `Heap::SetUp`; exact site `CodeRange::InitReservation` (src/heap/code-range.cc) doing `SetPermissions(base, 128MB, kReadWriteExecute)` on the MAP_JIT code range. Full 9-key entitlements also fail. Device probe then proved `mmap(MAP_JIT)` is denied (EINVAL) and `pthread_jit_write_protect_np` is absent on iOS 16.1.1. Drove patch 0005 (no MAP_JIT on iOS). |
 | v5 (run 41219489179) | **device-rejected**: no MAP_JIT (patch 0005) but the write-scope machinery was still compiled out, so V8 requested RWX code pages and iOS dropped PROT_EXEC -> same SIGBUS/trap class as v3. Confirmed by the device memory matrix; drove patch 0006. |
-| v6 (run [41265520491](https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491)) | **CI-green (device verification in progress)**: patches 0001..0006; V8's write scopes implemented over mprotect RW<->RX toggling of registered code ranges (JS code chunks + wasm spaces), no MAP_JIT, no RWX requests, 2-key entitlements. `make` 02:35Z -> ~04:10Z (~95 min, restored cache + V8-wide rebuild). **node 106,842,800 bytes sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`**, 2-key signed (ldid -e verified). Audits: check_macho PASS iPhoneOS arm64 minos 14.0; otool -L only libSystem/libc++; ICU 3/4 signals; WebAssembly 2/3; `[signed] JIT memory model OK: mprotect RW<->RX toggling over registered code ranges, no MAP_JIT, no RWX requests, 2-key entitlements` (binary contains `RegisterIOSCodeRange`, does not reference `pthread_jit_write_protect_np`); packager-gate self-check PASS; optional `ios-ripgrep` green in the same run. Operational note for device testing: because mprotect toggling is process-wide (macOS APRR is thread-local), V8 `--single-threaded` avoids background compiler/marking threads executing code while a write scope holds a range RW; the launcher may pass it and the trade-off is documented. |
+| **v6 (run [41265520491](https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491))** | **DEVICE-VERIFIED WORKS** (with `--single-threaded`). CI: patches 0001..0006; V8's write scopes implemented over mprotect RW<->RX toggling of registered code ranges (JS code chunks + wasm spaces), no MAP_JIT, no RWX requests, 2-key entitlements. `make` 02:35Z -> ~04:10Z (~95 min, restored cache + V8-wide rebuild). **node 106,842,800 bytes sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`**, 2-key signed (ldid -e verified). CI audits: check_macho PASS iPhoneOS arm64 minos 14.0; otool -L only libSystem/libc++; ICU 3/4 signals; WebAssembly 2/3; `[signed] JIT memory model OK: mprotect RW<->RX toggling over registered code ranges, no MAP_JIT, no RWX requests, 2-key entitlements`; packager-gate self-check PASS; optional `ios-ripgrep` green. Device: 2-key signature accepted; default multithreaded runs `--version`/plain JS/wasm/Intl but SIGBUS (138) on JIT loop + `fetch`; with `--single-threaded` (or `--no-concurrent-recompilation`) JIT loop rc=0, `fetch` rc=0 HTTP 200, wasm OK; full CLI matrix rc=0 including `--help` (Intl.Segmenter), `session list` on native node:sqlite (WAL), and a mock-provider agent turn whose shell tool executed on the iPhone. `process.platform === "ios"` device-confirmed. See §6.5 and the detail below. |
+
+### v6 device verification detail (2026-11-01)
+
+Raw device evidence for the v6 runtime (artifact from run 41265520491, node
+sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`,
+2-key ldid signature accepted by the loader, uid 501 `mobile`):
+
+| Check | Result |
+| --- | --- |
+| `node --version` / plain JS | rc=0 (`v22.9.0`) |
+| `process.platform` / `process.arch` | `ios` / `arm64` (device-confirmed) |
+| ICU / `Intl` / `\p{L}` | ICU 75; `typeof Intl === "object"`; `\p{L}` test true; `Intl.Segmenter` works |
+| WebAssembly | compile + instantiate minimal module OK |
+| JIT loop, default threads | **SIGBUS (138)** (background compiler/marking thread race) |
+| JIT loop, `--single-threaded` | rc=0 |
+| `fetch("https://...")`, default threads | **SIGBUS (138)** |
+| `fetch("https://...")`, `--single-threaded` | rc=0, HTTP 200 |
+| `node:sqlite` (native, `--experimental-sqlite`) | works; DB with WAL |
+| OpenCode CLI matrix (`--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list`) with Node22 bundle + `--single-threaded` + `--experimental-sqlite` | all rc=0; full `--help` works (full-ICU fixes `Intl.Segmenter`) |
+| Mock-provider end-to-end agent turn | rc=0; shell tool executed on device, marker file written (`opencode-ios-e2e-ok`, user `mobile`, `git version 2.39.1`); mock saw `GET /api/v1/models` + 3 chat completions with `toolResult=true` |
+
+Conclusion: the runtime is device-functional; the launcher MUST pass
+`--single-threaded` (§6.5). No entitlement changes were required (2-key set
+accepted for JIT+wasm+fetch).
 
 ## 9.1 Downstream consumption (packaging integration)
 
@@ -616,24 +691,29 @@ The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
 
 That package run consumed the **v3** runtime, which device testing then rejected
 (and v4/v5 also failed on-device: SIGBUS / SIGTRAP / RWX requests, §6.4). The
-package must be rebuilt from the **v6** runtime (run 41265520491). CI-side the
+package must be rebuilt from the **v6** runtime (run 41265520491, device-verified
+with `--single-threaded`), and the packaged `.deb` must be re-verified on device
+(install + launcher flag + CLI matrix) before it is called shippable. CI-side the
 chain (build -> static validation -> signing -> artifact -> packaging -> static
-package verification) has been proven repeatedly; device execution of the v6
-memory model remains the open gate.
+package verification) has been proven repeatedly; the runtime manifest now
+declares the launcher flags and the device-verified binary sha
+(`device_verification` block) so packagers can gate on it.
 
 ## 10. Limitations / unresolved issues
 
-1. **ICU rebuild not yet device-verified** - the no-Intl 22.9.0 build was
-   device-verified to run and its only CLI blocker was the missing
-   `Intl`/`\p{}` support; the `--with-intl=full-icu` artifact is pending its own
-   device run. All CI validation is static.
+1. **Device-verified with a launcher flag** - v6 is device-verified on the
+   target iPhone but ONLY with `--single-threaded` (or
+   `--no-concurrent-recompilation`); the launcher must pass it (§6.5). The
+   packaged `.deb` still needs its own device acceptance pass (install, launcher
+   flag, CLI matrix).
 2. **JIT + WebAssembly enabled; iOS JIT memory model is patches 0005+0006** -
-   see §6.3/§6.4. Device probing proved MAP_JIT/pthread_jit_write_protect are
-   unavailable on iOS 16.1.1 and only explicit mprotect W^X works, so V8's write
-   scopes toggle registered ranges RW<->RX; no RWX is requested. Trade-off:
-   process-wide mprotect means a write scope briefly makes the whole registered
-   range non-executable (correctness-first; per-page granularity is possible
-   follow-up work). The final device verdict for the v6 artifact is pending.
+   see §6.3/§6.4/§6.5. Device probing proved MAP_JIT and
+   `pthread_jit_write_protect_np` are unavailable on iOS 16.1.1 and only explicit
+   mprotect W^X works, so V8's write scopes toggle registered ranges RW<->RX with
+   no RWX requests. Trade-off: the process-wide toggle requires
+   `--single-threaded` (no V8 background compiler/marking threads; lower
+   optimization throughput, functionally fine). Per-page mprotect granularity is
+   possible future work if this becomes a bottleneck.
 3. **Signing is ldid ad-hoc with the device-verified 2-key set**
    (`platform-application` + `com.apple.private.security.no-sandbox`). The
    entitlement requirement itself was verified on the target device (the old

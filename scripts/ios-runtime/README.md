@@ -51,12 +51,20 @@ wrong sets).
 
 ## 2. Smoke tests (device — required before claiming runtime works)
 
+**Always invoke the runtime with `--single-threaded`** (device-verified; add
+`--experimental-sqlite` when the CLI needs `node:sqlite`). The iOS JIT memory
+model toggles code-page permissions process-wide with `mprotect`, so V8's
+background compiler/marking threads must be disabled; with the default
+multithreaded mode, a JIT loop and built-in `fetch` can crash with SIGBUS (138)
+even though `--version`, plain JS, wasm and `Intl` work. `--single-threaded`
+made all of them pass on the target iPhone.
+
 Run in NewTerm or over SSH. The runtime ships with **V8 JIT + WebAssembly
 enabled** and **full ICU** (the CLI bundle needs ECMA-402 `Intl`, `\p{...}`
 regexp escapes, and a wasm llhttp parser for Node's `fetch()`/undici).
 
 ```sh
-node --version                          # expect v22.9.0
+node --single-threaded --version        # expect v22.9.0
 node -p process.platform                # expect 'ios' (NOT 'darwin')
 node -p process.arch                    # expect 'arm64'
 node -p 'process.versions.v8'           # V8 version from Node 22.9.0
@@ -86,7 +94,10 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
 
 - **JIT + WebAssembly enabled** — with the device-verified 2-key entitlement set
   and the no-MAP_JIT / mprotect RW<->RX toggling iOS memory model (patches
-  0005+0006). Re-sign only with the artifact's own `entitlements.plist`.
+  0005+0006). The launcher MUST pass `--single-threaded` (and
+  `--experimental-sqlite` for `node:sqlite`); without it JIT code execution and
+  `fetch` can SIGBUS due to the process-wide mprotect toggle. Re-sign only with
+  the artifact's own `entitlements.plist`.
 - **ICU is required and compiled in** — `--with-intl=full-icu`, statically
   linked (all locales). The first no-ICU build was device-run but the CLI failed
   with `SyntaxError: Invalid regular expression: /[\p{Mark}...]/gu: Invalid

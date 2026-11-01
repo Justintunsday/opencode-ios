@@ -584,6 +584,14 @@ src = pathlib.Path(os.environ["NODE_SRC"])
 root = pathlib.Path(os.environ["ROOT"])
 node = dist / "node"
 
+# Runtime binary that was device-verified on the target iPhone (2026-11-01).
+# The manifest only claims device verification when the produced binary is
+# byte-identical to this verified build; any rebuild that changes the binary
+# reports UNVERIFIED ON DEVICE instead of making a stale claim.
+DEVICE_VERIFIED_SHA256 = (
+    "cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce"
+)
+
 
 def sha256(path):
     h = hashlib.sha256()
@@ -643,6 +651,9 @@ if target_os == "ios":
 else:
     platform_evidence = "config.gypi did not report OS=ios; inspect the build before trusting process.platform."
 
+node_sha256 = sha256(node)
+device_verified = node_sha256 == DEVICE_VERIFIED_SHA256
+
 manifest = {
     "artifact": "ios-node-runtime",
     "node_version": node_version or os.environ["NODE_VERSION_EXPECTED"],
@@ -689,7 +700,7 @@ manifest = {
     "binary": {
         "file": "node",
         "size_bytes": node.stat().st_size,
-        "sha256": sha256(node),
+        "sha256": node_sha256,
         "file_output": file_out,
         "linked_dylibs": dylibs,
         "entitlements_sha256": sha256(dist / "entitlements.plist"),
@@ -714,6 +725,19 @@ manifest = {
                       "RW->write->mprotect RX->execute works; MAP_JIT/RWX paths trap. Trade-off: "
                       "mprotect is process-wide, so a write scope briefly makes the whole "
                       "registered range non-executable (correctness-first; may be slower).",
+        "launcher": {
+            "required_flags": ["--single-threaded", "--experimental-sqlite"],
+            "required_flags_note": (
+                "The launcher MUST pass --single-threaded on iOS. The iOS JIT memory model "
+                "toggles code-page permissions process-wide with mprotect, so V8 background "
+                "compiler/marking threads must be disabled; without it, JIT execution and "
+                "Node's built-in fetch can SIGBUS (device-verified: default multithreaded "
+                "SIGBUS 138 on JIT loop and fetch; with --single-threaded JIT loop rc=0 and "
+                "fetch rc=0 HTTP 200). --experimental-sqlite is required for the CLI's native "
+                "node:sqlite session DB."
+            ),
+            "optional_flags": ["--no-concurrent-recompilation"],
+        },
         "intl": {
             "mode": "full-icu",
             "configure_flag": "--with-intl=full-icu",
@@ -776,22 +800,40 @@ manifest = {
         "revalidated_after_signing": True,
         "codesign_could_read_signature": (dist / "codesign-entitlements.xml").stat().st_size > 0,
     },
-    "device_status": "UNVERIFIED ON DEVICE",
+    "device_status": (
+        "DEVICE-VERIFIED (runtime; launcher must pass --single-threaded)"
+        if device_verified
+        else "UNVERIFIED ON DEVICE (binary differs from the device-verified build)"
+    ),
+    "device_verification": {
+        "verified": device_verified,
+        "verified_sha256": DEVICE_VERIFIED_SHA256,
+        "device": "iPhone SE 2 (iPhone12,8), iOS 16.1.1 20B101, Dopamine rootless, uid mobile",
+        "launcher_flags": ["--single-threaded"],
+        "evidence": (
+            "Device run on 2026-11-01 with the binary sha256 above, signed with the 2-key "
+            "set: process.platform=ios, process.arch=arm64, ICU 75 + Intl + \\p{L} + "
+            "Intl.Segmenter OK, wasm compile/instantiate OK, JIT loop and fetch OK with "
+            "--single-threaded (multithreaded default: SIGBUS 138 on those two), "
+            "node:sqlite native DB with WAL OK, full OpenCode CLI matrix rc=0 and a "
+            "mock-provider agent turn whose shell tool executed on the device."
+        ),
+        "detail_doc": "docs/RUNTIME_BUILD.md (device verification detail / section 6.5)",
+    },
     "device_status_note": (
-        "The 2-key entitlement set is device-verified, and a JIT-enabled Node 18 reference "
-        "binary runs JIT + WebAssembly on the target iPhone SE 2 with only these keys. Earlier "
-        "22.9.0 builds of this source were device-verified to run but were rejected by the CLI "
-        "first for missing Intl/\\p{} (fixed with full-icu) and then for missing WebAssembly in "
-        "Node fetch/undici (fixed by enabling V8 JIT+WebAssembly); the MAP_JIT variants then "
-        "aborted on the device (v3 SIGBUS, v4 SIGTRAP/FatalProcessOOM in "
-        "CodeRange::InitReservation, both unfixable by entitlements). Device probing proved "
-        "that iOS 16.1.1 only supports explicit mprotect W^X toggling, so patch 0006 "
-        "implements V8's write scopes over mprotect (RW<->RX over registered code ranges; no "
-        "MAP_JIT, no RWX). This v6 artifact is the rebuild for all those blockers; its device "
-        "execution is pending external verification. GitHub-hosted macOS runners cannot "
-        "execute iPhoneOS binaries; all payload checks in CI are static (Mach-O platform/minos, "
-        "dylib linkage, ldid signature, ICU/WebAssembly/JIT mprotect-model audits). See "
-        "docs/RUNTIME_BUILD.md and scripts/ios-runtime/README.md."
+        "The 2-key entitlement set is device-verified; a JIT-enabled Node 18 reference binary "
+        "and this 22.9.0 v6 build run JIT + WebAssembly on the target iPhone SE 2 with only "
+        "these keys. Device testing required the launcher flag --single-threaded: the iOS JIT "
+        "memory model toggles code-page permissions process-wide with mprotect (patch 0006; "
+        "no MAP_JIT, no RWX requests), so V8 background compiler/marking threads must be off; "
+        "without it JIT/code execution and fetch can SIGBUS. Earlier 22.9.0 iterations were "
+        "rejected on device for missing Intl (fixed with full-icu), missing WebAssembly (fixed "
+        "by enabling V8 JIT+WebAssembly), and the MAP_JIT/W^X variants (v3 SIGBUS, v4 "
+        "SIGTRAP/FatalProcessOOM in CodeRange::InitReservation, unfixable by entitlements). "
+        "GitHub-hosted macOS runners cannot execute iPhoneOS binaries; all payload checks in "
+        "CI are static (Mach-O platform/minos, dylib linkage, ldid signature, ICU/WebAssembly/"
+        "JIT mprotect-model audits). See docs/RUNTIME_BUILD.md and "
+        "scripts/ios-runtime/README.md."
     ),
 }
 
