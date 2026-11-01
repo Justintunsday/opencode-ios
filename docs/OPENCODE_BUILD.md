@@ -149,6 +149,7 @@ consumer can tell exactly which series produced the artifact.
 | [41273112229](https://github.com/Justintunsday/opencode-ios/actions/runs/41273112229) | `266730a` | **success** | Adds patch 0010: forward `--single-threaded`/`--max-old-space-size=` to spawned server children (device-verified direction: without forwarding the `serve --service` child SIGBUSes on the v6 Node 22.9 runtime). Both jobs green, 10 patches (series `6fc8c51a9d5ffe73…`). Default Node 22 artifact: `opencode.mjs` 21,391,147 bytes, sha256 `2e916ffad16fb7ae2b71d4446a527d1fa11ec82e94d7cd12932373d734cbd410`, 22 assets, required Node 22.9.0 smoke 18/18; manifest launcher argv now `node --single-threaded --experimental-sqlite …`. Node 18 fallback: `opencode.mjs` 21,395,527 bytes, sha256 `5e0fa4f5fc4185e827da9f69a6c3d6d6147b33eeec8bc54d409057eb0ed4e8a4`, 24 assets, required Node 18.20.4 smoke passed. Local host check: child command line inherited `--single-threaded --max-old-space-size=1536 --no-warnings`. |
 | [41278475579](https://github.com/Justintunsday/opencode-ios/actions/runs/41278475579) | `15f27fa` | **success** | Adds patch 0011 (iOS TUI/`mini` headless guidance instead of OpenTUI renderer crash). Both jobs green, 11 patches (series `ea1a11182447d4d6…`). Default Node 22 artifact: `opencode.mjs` 21,392,407 bytes, sha256 `484b2c1c6b8d932e5cde74d197b260e73abf8e25600f38d79239c6a8abf60f9d`, 22 assets, required Node 22.9.0 smoke passed. Node 18 fallback: `opencode.mjs` 21,396,787 bytes, sha256 `756b9b01599147f32bb331707ec8c4835d68ccd6905c8dc307dec1cf7a0a16a5`, 24 assets, required Node 18.20.4 smoke passed. Verified on the CI artifacts with matching host runtimes: `opencode` and `opencode mini` exit 1 with the guidance text, no stack frames, no `Starting background server` line. |
 | [41284206666](https://github.com/Justintunsday/opencode-ios/actions/runs/41284206666) | `bb386ba` | **success** | Adds patch 0012 (pure-JS iOS line REPL for `opencode`/`opencode mini`; real TUI needs Node >= 26.4 + node:ffi and is impossible on Node 22.9) plus a sql.js shim flush-retry fix for Node 18. Both jobs green, 12 patches (series `ffa915acdcf7a658…`). Default Node 22 artifact: `opencode.mjs` 21,396,302 bytes, sha256 `ee15a9b185656e3c52350aa286986266e4677b6d851fb8a15036f72bfdef7fac`, 22 assets, required Node 22.9.0 smoke passed (+24.22.2/26.4.0). Node 18 fallback: `opencode.mjs` 21,400,899 bytes, sha256 `6208f99dd2256eafd7eaa4e16475d736aa7c3a8fda49057d3b9d03f3a1e0fc29`, 24 assets, required Node 18.20.4 smoke passed. Verified on the CI artifacts with matching host runtimes: non-TTY no-arg prints the guidance (TTY/node:ffi wording) and exits 1 with no stack; forced-TTY REPL handles `/help`, unknown `/cmd`, `/new`, `/exit` and exits 0 with no OpenTUI crash. Device PTY/mock-provider acceptance pending. |
+| [41288234583](https://github.com/Justintunsday/opencode-ios/actions/runs/41288234583) | `1cbf01c` | **success** | Adds patch 0013: iOS REPL turn lifecycle (fresh server connection per turn/attempt, per-turn private `--standalone` server disposed via `close()`, managed-service re-discover, transport-class retry with `Retrying turn...` line, first prompt waits for readiness), fixing the device-reported `Transport: terminated` / `Transport: fetch failed` from turn 2. Both jobs green, 13 patches (series `f2411070ce57768b…`). Default Node 22 artifact: `opencode.mjs` 21,397,471 bytes, sha256 `b5ed68a445def947412e309d395c069dff41874eb7f2d734fa236cb7d6a2b3d6`, 22 assets, required Node 22.9.0 smoke passed. Node 18 fallback: `opencode.mjs` 21,402,068 bytes, sha256 `0bfdf8f5c8699d828e10c1fc23bbcc8ed0b29c0309f99624a014bfb1fa729df7`, 24 assets, required Node 18.20.4 smoke passed. Host mock-provider E2E on **both CI artifacts**: 4 consecutive REPL prompts all reached the provider on fresh servers, shell-tool marker written, E2E_OK ×4, `/exit` exit 0, no leftover children; managed-service mode also 4/4; retry path verified with an unreachable provider (one `Retrying turn...` line, clean error, loop survives). |
 
 The workflow never claims device success: `bundle-manifest.json` always records
 `verification_status.device_verified = false` and the runner only executes stock host
@@ -610,11 +611,11 @@ agent turn is still required to call this end-to-end verified.
 
 CI evidence for this variant: the `bundle-node18` job in `build-opencode.yml` runs exactly the
 same matrix on the macOS runner and passed it in
-[run 41284206666](https://github.com/Justintunsday/opencode-ios/actions/runs/41284206666)
-(both jobs green, 12 patches incl. the node:inspector stub, standalone direct-spawn,
-child-flag forwarding, the TUI guidance and the line REPL): artifact
-`opencode-cli-node18-ios`, `opencode.mjs` 21,400,899 bytes, sha256
-`6208f99dd2256eafd7eaa4e16475d736aa7c3a8fda49057d3b9d03f3a1e0fc29`, 24 assets /
+[run 41288234583](https://github.com/Justintunsday/opencode-ios/actions/runs/41288234583)
+(both jobs green, 13 patches incl. the node:inspector stub, standalone direct-spawn,
+child-flag forwarding, the TUI guidance, the line REPL and the REPL turn-lifecycle fix):
+artifact `opencode-cli-node18-ios`, `opencode.mjs` 21,402,068 bytes, sha256
+`0bfdf8f5c8699d828e10c1fc23bbcc8ed0b29c0309f99624a014bfb1fa729df7`, 24 assets /
 33,614,156 bytes, manifest `variant=node18-fallback`,
 `host_smoke_required_node_version=18.20.4`, `host_smoke_required_passed=true`; the required
 Node 18.20.4 checks and all informational checks passed (Node 18.20.4 + 22.9.0). Device
@@ -624,7 +625,7 @@ history: the 7-patch artifact reached CLI startup and hit the inspector link err
 0009). The primary Node 22 artifact reached full device verification with patch 0010 (§12),
 so this variant remains a hedge; its own device agent turn was pending at the time of
 writing. The manifest's `verification_status.device_verified` stays `false`. The default
-Node 22 artifact from the same run (`opencode.mjs` sha256 `ee15a9b1…`, 22 assets) is the
+Node 22 artifact from the same run (`opencode.mjs` sha256 `b5ed68a4…`, 22 assets) is the
 artifact offered for the final device matrix / `.deb`.
 
 ### Device risk / open questions for shipping the Node 18 variant
