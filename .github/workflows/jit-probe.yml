@@ -31,8 +31,10 @@ jobs:
           mkdir -p dist
           xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
             -O2 -Wall -Wextra scripts/jit-probe/main.c -o dist/jitprobe-2key
+          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
+            -O2 -Wall -Wextra scripts/jit-probe/dlopen-probe.c -o dist/dlopenprobe-2key
           cp dist/jitprobe-2key dist/jitprobe-jitkeys
-          file dist/jitprobe-2key
+          file dist/jitprobe-2key dist/dlopenprobe-2key
       - name: Sign both variants
         run: |
           set -euo pipefail
@@ -52,17 +54,20 @@ jobs:
             '  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>' \
             '</dict></plist>' > dist/entitlements-jitkeys.plist
           ldid -Sdist/entitlements-2key.plist dist/jitprobe-2key
+          ldid -Sdist/entitlements-2key.plist dist/dlopenprobe-2key
           ldid -Sdist/entitlements-jitkeys.plist dist/jitprobe-jitkeys
           ldid -e dist/jitprobe-2key > dist/entitlements-2key-signed.xml
           ldid -e dist/jitprobe-jitkeys > dist/entitlements-jitkeys-signed.xml
           python3 scripts/check_macho.py dist/jitprobe-2key --max-minos 16.1.1
-          shasum -a 256 dist/jitprobe-2key dist/jitprobe-jitkeys | tee dist/SHA256SUMS
+          python3 scripts/check_macho.py dist/dlopenprobe-2key --max-minos 16.1.1
+          shasum -a 256 dist/jitprobe-2key dist/jitprobe-jitkeys dist/dlopenprobe-2key | tee dist/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ios-jit-probe
           path: |
             dist/jitprobe-2key
             dist/jitprobe-jitkeys
+            dist/dlopenprobe-2key
             dist/entitlements-*.plist
             dist/entitlements-*-signed.xml
             dist/SHA256SUMS
