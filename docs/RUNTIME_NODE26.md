@@ -130,4 +130,4 @@ minimum: `node --version`, `node --jitless -e 'console.log(1+1)'`,
 | 41297273225 | failed at configure gate: config.gypi comment-prefix handling fixed (JSON parse after stripping comment lines). |
 | 41297837897 | configure passed, make failed on the first real error class: bundled abseil/gtest compiled without `-std=gnu++20` because Node 26's gyp make generator had no iOS flavor handling → fixed by patch 0003 (Lead-provided). |
 | 41301667378 | make failed on the next class: host-toolset abseil objects got both `-mmacosx-version-min=13.5` and an empty `-miphoneos-version-min=` from `xcode_emulation.py` → fixed by patch 0004. |
-| 41303517433 | rebuild with patches 0001..0004 (clean rebuild forced on patch-series change); awaiting result. |
+| 41302321280 | rebuild with patches 0001..0004 (clean rebuild forced on patch-series change); awaiting result. |
