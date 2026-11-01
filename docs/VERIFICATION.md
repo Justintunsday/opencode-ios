@@ -200,7 +200,7 @@ commands from a NewTerm 3 shell or SSH. Full install instructions:
 | 10 | Liveness/signature | `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node` then `opencode --version` | re-signed runtime still starts (repair path works; shipped entitlements are the verified minimal pair) |
 | 11 | Shell-tool fallback | `sh /var/jb/bin/sh -c 'echo shell-ok'` and (after auth) a CLI shell-tool call | rootless dash runs; CLI-spawned shells resolve through the launcher's `PATH` prepend |
 | 12 | git tooling (optional) | `sudo apt-get install -y git`; `git --version`; a git tool call through the CLI | git installed/works; without it the CLI error is actionable |
-| 13 | TUI (degraded PTY) | `cd ~/Documents && opencode` | TUI starts; shell tool panes use fallback (see limitations) |
+| 13 | TUI/`mini` unsupported behaviour | under a PTY: `opencode` (no args) and `opencode mini` | expected **clean usage guidance and exit 1, no stack trace** — the interactive TUI cannot start on iOS (OpenTUI has no iPhoneOS renderer). Patch `0011` adds the guidance. There is no interactive TUI test to pass. |
 | 14 | Agent turn + standalone fix (needs network+auth) | `opencode run "summarise this repository"`; `opencode run --standalone ...` | request completes; the patch-0009 standalone child-server start works |
 | 15 | Inspector/CPU profiling | `opencode --inspect ...` (documented stub) | fails gracefully with the documented stub message, not a crash (node18 inspector is stubbed by patch 0008) |
 | 16 | Uninstall | `sudo dpkg -r opencode` (then `-P`) | package files gone; `~/.config/opencode` and sessions preserved |
@@ -268,9 +268,11 @@ account identifiers or keys are recorded anywhere in this repository):
 | device.overall | PASS | `FINAL_PACKAGED_ACCEPTANCE_RESULT=PASS` |
 
 Observed device limitations are recorded in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md)
-(single-threaded V8; local-mock transport flake ~1/3 first attempts; 2 GB memory
-pressure / stale `serve --service` child holding port 49374; PTY/TUI not fully
-validated; no real external AI provider exercised on-device).
+(single-threaded V8; interactive TUI and `opencode mini` cannot start because
+OpenTUI has no iPhoneOS renderer — patch `0011` makes them print clean guidance
+and exit 1 instead of a stack trace; local-mock transport flake ~1/3 first
+attempts with retry; 2 GB memory pressure / stale `serve --service` child holding
+port 49374; no real external AI provider exercised on-device).
 
 ### Interim device evidence (preliminary, superseded by the packaged run)
 
@@ -322,6 +324,7 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | **Node 18 `--help` on the community runtime** | **FAIL — environment-specific:** the community runtime is small-ICU, so `--help` crashes in `JSSegmenter::Create`. The shipped runtime is our own full-ICU Node 18 build (`build-runtime-node18.yml`), which is why the packaging gate requires full-ICU and `Intl.Segmenter`. |
 | **Node 18 `run --standalone` child server** | **FAIL (preliminary):** the standalone command could not start its child server; CLI patch `0009` addresses it; device retest with the final package pending. |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
+| **Interactive TUI on device (released v2.2.5-ios.2)** | **UNSUPPORTED — user-reported:** bare `opencode` and `opencode mini` abort with `Error: Failed to initialize OpenTUI render library: Unsupported OpenTUI Node asset target: ios-arm64` (OpenTUI has no iPhoneOS renderer; non-interactive/pipe fallback cannot provide the TUI renderer). CLI patch `0011` replaces the stack trace with clean usage guidance + exit 1; headless CLI remains the supported interface (v2.2.5-ios.3 re-acceptance pending). |
 | **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |
 | **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 
