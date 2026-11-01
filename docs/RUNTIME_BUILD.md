@@ -1,8 +1,9 @@
 # Runtime build: native iPhoneOS arm64 Node.js 22.9.0
 
 Status: **CI build of the `node` CLI (full-icu + JIT + WebAssembly, iOS
-mprotect-based W^X model) + static Mach-O audit; the v6 build (patches 0005+0006)
-is the candidate for device verification.**
+mprotect-based W^X model) + static Mach-O audit. The v6 artifact (run 41265520491,
+patches 0005+0006) is CI-green and is the candidate currently under device
+verification.**
 A no-Intl 22.9.0 build of this same source was **device-verified to run** on the
 target iPhone (Node version/platform/arch/fs/child_process/TLS/sqlite all OK),
 but the OpenCode CLI bundle was rejected by V8 because `Intl` was absent and
@@ -598,7 +599,7 @@ only one pending run per group); they are not failures.
 | v4 (run 41205805269) | **CI failure before build**: the workflow's patch-series marker check (`require_patched_source`) still looked for the old PR#150 comment line that patch 0004 replaces in `build_config.h`, so normalize-cache aborted. Fixed in `dfbc093` (one stable marker per patch 0001..0004), re-run as 41207449703. |
 | v4 (run 41207449703) | **device-rejected**: node 106,842,032 bytes sha256 `48eecd59...`, 4-key signed, MAP_JIT + `V8_HAS_PTHREAD_JIT_WRITE_PROTECT=1`. Device: EXC_BREAKPOINT / SIGTRAP (exit 133), `v8::base::OS::Abort` <- `FatalOOM` <- `V8::FatalProcessOutOfMemory` <- `Heap::SetUp`; exact site `CodeRange::InitReservation` (src/heap/code-range.cc) doing `SetPermissions(base, 128MB, kReadWriteExecute)` on the MAP_JIT code range. Full 9-key entitlements also fail. Device probe then proved `mmap(MAP_JIT)` is denied (EINVAL) and `pthread_jit_write_protect_np` is absent on iOS 16.1.1. Drove patch 0005 (no MAP_JIT on iOS). |
 | v5 (run 41219489179) | **device-rejected**: no MAP_JIT (patch 0005) but the write-scope machinery was still compiled out, so V8 requested RWX code pages and iOS dropped PROT_EXEC -> same SIGBUS/trap class as v3. Confirmed by the device memory matrix; drove patch 0006. |
-| v6 (run [41265520491](https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491)) | CI build dispatched 2026-11-01T02:30Z after patch 0006: V8's write scopes implemented over mprotect RW<->RX toggling of registered code ranges (JS code chunks + wasm spaces), no MAP_JIT, no RWX requests, 2-key entitlements. Configure gate passed; device verification pending. Operational note for device testing: because mprotect toggling is process-wide (macOS APRR is thread-local), running with V8 `--single-threaded` avoids background compiler/marking threads executing code while a write scope holds a range RW; the launcher may pass it and the trade-off is documented. |
+| v6 (run [41265520491](https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491)) | **CI-green (device verification in progress)**: patches 0001..0006; V8's write scopes implemented over mprotect RW<->RX toggling of registered code ranges (JS code chunks + wasm spaces), no MAP_JIT, no RWX requests, 2-key entitlements. `make` 02:35Z -> ~04:10Z (~95 min, restored cache + V8-wide rebuild). **node 106,842,800 bytes sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`**, 2-key signed (ldid -e verified). Audits: check_macho PASS iPhoneOS arm64 minos 14.0; otool -L only libSystem/libc++; ICU 3/4 signals; WebAssembly 2/3; `[signed] JIT memory model OK: mprotect RW<->RX toggling over registered code ranges, no MAP_JIT, no RWX requests, 2-key entitlements` (binary contains `RegisterIOSCodeRange`, does not reference `pthread_jit_write_protect_np`); packager-gate self-check PASS; optional `ios-ripgrep` green in the same run. Operational note for device testing: because mprotect toggling is process-wide (macOS APRR is thread-local), V8 `--single-threaded` avoids background compiler/marking threads executing code while a write scope holds a range RW; the launcher may pass it and the trade-off is documented. |
 
 ## 9.1 Downstream consumption (packaging integration)
 
@@ -613,11 +614,12 @@ The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
 | packager capability gate | `Runtime build/capability profile is usable by the CLI` - **PASS** (this is the gate that rejects no-ICU / no-wasm / jitless runtimes) |
 | package artifact | `OpenCode-iOS-rootless` 52,953,183 bytes (.deb + SHA256SUMS + package-report.json) |
 
-That package run consumed the **v3** runtime, which the device then rejected with
-the JIT SIGBUS (§6.4); the package must be rebuilt from the **v4** runtime (run
-41205805269) instead. CI-side the chain (build -> static validation -> signing ->
-artifact -> packaging -> static package verification) is proven; device
-execution remains the open gate.
+That package run consumed the **v3** runtime, which device testing then rejected
+(and v4/v5 also failed on-device: SIGBUS / SIGTRAP / RWX requests, §6.4). The
+package must be rebuilt from the **v6** runtime (run 41265520491). CI-side the
+chain (build -> static validation -> signing -> artifact -> packaging -> static
+package verification) has been proven repeatedly; device execution of the v6
+memory model remains the open gate.
 
 ## 10. Limitations / unresolved issues
 
