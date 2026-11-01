@@ -112,7 +112,7 @@ published. The pinned runs below identify the exact device-tested artifacts.
 | Variant / runtime | `node22` / v6 mprotect W^X; runtime node sha256 `cf707ebe…` (unchanged device-verified binary) |
 | CLI artifact | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41291337297> (patch `0014`: REPL turn lifecycle + retry/warm-up); `opencode.mjs` 21,397,681 bytes, sha256 `e99ac8d12f083539289fbeeb6ddc07a40348e8eec0db3a76c3d628409a826950` |
 | Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP |
-| Verification workflow | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41293124128> (test-port; artifact id/counts filled when green) |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41293124128> (artifact `port-verification`, id `13077908178`): 48 PASS / 0 FAIL / 1 SKIP, `ci_status=PASS` |
 | Device status | **PENDING** — maintainer packaged REPL acceptance in progress; until recorded, CI-validated only |
 
 **Superseded candidate — v2.2.5-ios.4 (CI-green; device REPL acceptance FAILED; do not publish)**
