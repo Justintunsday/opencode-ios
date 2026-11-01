@@ -170,6 +170,11 @@ jobs:
               RUNTIME_WORKFLOW="build-runtime.yml"; RUNTIME_ARTIFACT="ios-node-runtime"
               CLI_WORKFLOW="build-opencode.yml"; CLI_ARTIFACT="opencode-cli-node-ios"
               JITSHIM_ENABLED="true"
+              # Pin the device-verified v6 mprotect-W^X runtime (run 41265520491)
+              # unless the dispatch explicitly pins another run.
+              if [ -z "$RUNTIME_RUN_PIN" ]; then
+                RUNTIME_RUN_PIN="41265520491"
+              fi
               ;;
             node18)
               RUNTIME_WORKFLOW="build-runtime-node18.yml"; RUNTIME_ARTIFACT="ios-node18-runtime"

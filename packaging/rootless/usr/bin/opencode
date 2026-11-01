@@ -97,10 +97,15 @@ fi
 
 MAX_OLD_SPACE="${OPENCODE_IOS_MAX_OLD_SPACE_MB:-1536}"
 
+# --single-threaded is REQUIRED and device-verified: on iOS the V8 W^X model
+# toggles memory permissions process-wide (mprotect RW<->RX). V8 background
+# threads race that toggle and the process dies with SIGBUS on JIT-heavy code.
+# Running V8 single-threaded removes the race (JIT loops, WebAssembly, fetch,
+# Intl all pass on device with the mprotect W^X runtime). Do not remove it.
 # Node flags must precede the entry script; CLI arguments follow the script
 # path, so "$@" is preserved verbatim for the CLI.
-set -- --experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings \
-    "--max-old-space-size=$MAX_OLD_SPACE" "$CLI" "$@"
+set -- --single-threaded --experimental-sqlite --disable-warning=ExperimentalWarning \
+    --no-warnings "--max-old-space-size=$MAX_OLD_SPACE" "$CLI" "$@"
 
 if [ "${OPENCODE_IOS_JITLESS:-0}" = "1" ]; then
     set -- --jitless "$@"

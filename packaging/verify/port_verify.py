@@ -1261,6 +1261,12 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     if "OPENCODE_IOS_MAX_OLD_SPACE_MB" not in code_text:
         problems.append("OPENCODE_IOS_MAX_OLD_SPACE_MB escape hatch missing")
     if variant == VARIANT_NODE22:
+        if "--single-threaded" not in code_text:
+            problems.append(
+                "--single-threaded missing: required on iOS because the V8 W^X "
+                "mprotect toggle is process-wide and background V8 threads race it "
+                "(device-verified SIGBUS without the flag)"
+            )
         if "--experimental-sqlite" not in code_text:
             problems.append(
                 "--experimental-sqlite missing (required for node:sqlite on Node 22)"
@@ -1305,10 +1311,11 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
         if variant == VARIANT_NODE22:
             evidence = (
                 "#!/var/jb/bin/sh, PATH prepend, TMPDIR fallback, exec, \"$@\" "
-                "forwarding, --experimental-sqlite, --no-warnings, assets/iOS env "
-                "exports, presence-based DYLD_INSERT_LIBRARIES for the optional JIT "
-                "shim, JITless/NODE_FLAGS/MAX_OLD_SPACE escape hatches; no invalid "
-                "flags, no uname, no credentials"
+                "forwarding, --single-threaded (required on iOS mprotect W^X), "
+                "--experimental-sqlite, --no-warnings, assets/iOS env exports, "
+                "presence-based DYLD_INSERT_LIBRARIES for the optional JIT shim, "
+                "JITless/NODE_FLAGS/MAX_OLD_SPACE escape hatches; no invalid flags, "
+                "no uname, no credentials"
             )
         else:
             evidence = (
@@ -2246,6 +2253,7 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
         manifest.get("node_version") if isinstance(manifest, dict) else ""
     ) or ""
     metrics["runtime_variant"] = variant
+    metrics["runtime_jit_memory"] = policy.get("jit_memory") if isinstance(policy, dict) else None
     problems = []
     notes = []
 
@@ -2344,9 +2352,12 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     patch_files = ([str(item.get("file", "")) for item in patches
                     if isinstance(item, dict)] if isinstance(patches, list) else None)
     jit_enabled = _capability_enabled(jit_policy)
+    # Accepted iOS V8 W^X patch families: patch 0004 (MAP_JIT write-protect),
+    # 0005 (no MAP_JIT on iOS) and 0006 (mprotect RW<->RX toggling).
+    wx_patch_names = ("jit-write-protect", "no-map-jit", "map-jit", "mprotect", "w^x")
     wx_patch_declared = bool(
         patch_files and any(
-            ("jit-write-protect" in name.lower()) or ("no-map-jit" in name.lower())
+            any(marker in name.lower() for marker in wx_patch_names)
             for name in patch_files
         )
     )
@@ -2915,6 +2926,7 @@ def _build_package_report(ctx, checks, sources, manifest, args):
                 "runtime_manifest_sha256": metrics.get("runtime_manifest_sha256", ""),
             },
             "capabilities": runtime_capabilities,
+            "jit_memory": metrics.get("runtime_jit_memory"),
             "configure_flags": metrics.get("runtime_configure_flags", []),
             "patches": metrics.get("runtime_patches", []),
             "ripgrep": metrics.get("ripgrep", {"included": False}),

@@ -13,8 +13,9 @@ this repository claims on-device success.
 | Host-runtime JS smoke | GitHub Actions `macos-15` runner: host Node.js **22.9.0** for node22 and host Node.js **18.20.4** for node18 (nodejs.org, checksum-pinned) | **CI-verified** when the workflows are green |
 | Native iPhoneOS runtime compile | GitHub Actions `macos-15` runner + iPhoneOS SDK: `build-runtime.yml` (node22) / `build-runtime-node18.yml` (node18) | **CI-verified** |
 | Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling, JIT/WASM/ICU requirements) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — see *Interim device evidence* below |
-| Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not yet the CI-built full-ICU runtime) | **CLI commands device-verified (preliminary)**; the shipped runtime still needs its acceptance run |
-| Node 22 native runtime execution (JIT code paths) | Real target iPhone | **device-incompatible so far** (`v4`: SIGTRAP/FatalOOM at V8 code-range reservation; `v5`/`v6` mprotect approaches still in CI/device investigation) |
+| Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **Device-working with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
+| Node 22 v6 CLI commands | Real target iPhone, maintainer-executed | **`--version`, `--help`, `debug paths` rc=0** on device; commands that spawn a child server currently SIGBUS pending CLI patch `0010` (child whitelist must pass `--single-threaded`) |
+| Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not yet the CI-built full-ICU runtime) | **CLI commands device-verified (preliminary)**; the shipped Node 18 runtime still needs its acceptance run |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device | **UNVERIFIED ON DEVICE** — requires the user runbook below |
 
 > **UNVERIFIED ON DEVICE — requires real iPhone SE 2 (iOS 16.1.1, Dopamine rootless).**
@@ -31,8 +32,27 @@ exactly one and `package-report.json` records which (`variant` / `runtime_kind`)
 
 | Variant | Runtime | Status |
 | --- | --- | --- |
-| **`node18`** (primary) | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim | **Under final CI packaging + device acceptance.** The Node 18 CLI bundle already runs on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created). Our own full-ICU Node 18 runtime is built by `build-runtime-node18.yml` and replaces that reference runtime (the community one is small-ICU: `--help` crashes in `Intl.Segmenter`). |
-| **`node22`** (experimental) | Node.js **22.9.0** iPhoneOS arm64, full-ICU, built-in sqlite | **Not device-runnable yet.** v4 (MAP_JIT + patch 0004) crashed at V8 code-range reservation; v5/v6 mprotect-based W^X variants are in CI + device investigation. Not shippable. |
+| **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **Device-working with the mandatory `--single-threaded` launcher flag** (runtime run `41265520491`: node sha256 `cf707ebe…`, 2-key signed). JIT loop, WebAssembly compile+instantiate, HTTPS `fetch` 200, ICU 75/`\p{L}` and `Intl.Segmenter` PASS; `opencode --version`, `--help`, `debug paths` rc=0 on device. Commands that spawn a server child currently SIGBUS pending CLI patch `0010`. Packaged acceptance run pending. |
+| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim | **Documented fallback.** The Node 18 CLI bundle already runs on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created); our own full-ICU Node 18 runtime is built by `build-runtime-node18.yml` and awaits acceptance. |
+
+Node 22 v6 device evidence (maintainer, real iPhone SE 2 / iOS 16.1.1 /
+Dopamine rootless; raw outputs will be recorded below once the packaged
+acceptance run is done):
+
+- 2-key entitlement set exactly (`platform-application` +
+  `com.apple.private.security.no-sandbox`); v6 runtime node sha256
+  `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`
+  (106,842,800 bytes), CI run `41265520491`.
+- With `--single-threaded`: `node -e` JIT loop rc=0; JIT+WASM; `fetch https` 200;
+  `Intl`/ICU 75/`\p{L}` OK; WebAssembly compile+instantiate OK.
+- Without `--single-threaded`: JIT-heavy code SIGBUS (signal 10/`138`) — V8
+  background threads race the process-wide `mprotect` toggle. The launcher must
+  therefore always pass `--single-threaded`.
+- CLI on device with v6 + `--single-threaded`: `--version`, `--help` (full help
+  now works: full ICU fixes `Intl.Segmenter`) and `debug paths` rc=0.
+- Commands that spawn a server child SIGBUS because the CLI child-spawn
+  whitelist drops `--single-threaded`; CLI patch `0010` adds it to the whitelist
+  and device retest follows.
 
 Node 18 CLI device evidence (maintainer, community Node 18.20.4 iPhoneOS runtime,
 before the CI-built full-ICU runtime existed):
@@ -43,36 +63,39 @@ before the CI-built full-ICU runtime existed):
 - `--help` → crashes in `Intl.Segmenter` **only because that reference runtime is
   small-ICU**; the shipped runtime is full-ICU, so this is expected to pass on the
   packaged runtime and is part of the acceptance run.
-- One CLI bug observed (standalone server child start) is addressed by CLI patch
-  `0009`; device retest pending with the final package.
+- One CLI bug observed (standalone server child start) is addressed by CLI patches
+  `0009`/`0010`; device retest pending with the final package.
 
 ### Latest CI-verified package
 
-The node18-variant package is the delivery candidate. Fill/refresh this table from
-the artifact of the most recent green `package-rootless.yml` run **with
-`variant=node18`** (the pinned run identifies the device-test artifact):
+The node22-v6 package is the delivery candidate. Fill/refresh this table from the
+artifact of the most recent green `package-rootless.yml` run **with
+`variant=node22`** pinned to runtime run `41265520491` (the pinned run identifies
+the device-test artifact):
 
 | Item | Value |
 | --- | --- |
-| Package workflow run (node18) | **PENDING** — dispatch `package-rootless.yml` with `variant=node18` after the full-ICU Node 18 runtime build is green |
+| Package workflow run (node22 v6) | **PENDING** — dispatched pinned to runtime run `41265520491`; fill run URL/id when green |
 | Package artifact | `OpenCode-iOS-rootless` (artifact id recorded from the run) |
 | `.deb` SHA-256 | recorded in the artifact's `SHA256SUMS`; copy the exact value here when the run is green |
 | Version / arch | `2.2.5-1` / `iphoneos-arm64` |
-| Runtime artifact run | latest successful `build-runtime-node18.yml` run with `ios-node18-runtime` |
-| Runtime node | Node.js 18.20.4 iPhoneOS arm64, full-ICU + WebAssembly + JIT, 2-key entitlements, dylibs only `libSystem`/`libc++` |
-| CLI artifact | latest successful `build-opencode.yml` run with `opencode-cli-node18-ios` (variant `node18-fallback`, patch series `patches/opencode`, sql.js shim declared) |
+| Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491> (v6 mprotect W^X; node sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`, 106,842,800 bytes, 2-key signed; `runtime_policy.jit_memory` = mprotect RW⇄RX, no MAP_JIT/no RWX) |
+| Launcher contract | node22 launcher passes `--single-threaded` (mandatory), `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size` |
+| Optional bundled `rg` | `ios-ripgrep` from the same runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
+| CLI artifact | pinned `opencode-cli-node-ios` run (record run URL/id + `opencode.mjs` sha256 when green; patch series includes `0010` once released) |
 | Package validation | to be filled from the run (`ci_status`, PASS/FAIL/SKIP counts) |
 | Verification workflow | to be filled: `test-port.yml` on the pinned package run |
-| Device status | **UNVERIFIED ON DEVICE** — pending the maintainer's acceptance run with this exact `.deb` |
+| Device status | **UNVERIFIED ON DEVICE for the packaged artifact** — the maintainer's raw v6 device evidence above used the runtime artifact directly; the packaged acceptance run is pending |
 
-### Node 22 pipeline history (all superseded, not shippable)
+### Node 22 pipeline history (superseded, not shippable)
 
 | Build | Outcome |
 | --- | --- |
 | v1 intermediate (run `41185611403`, `.deb` sha `13a0483d...`) | WASM-disabled runtime: every CLI command failed with `ReferenceError: WebAssembly is not defined`. |
 | v3 (run `41202900005`, `.deb` sha `cf5db02a...`) | JIT+WASM, no iOS V8 W^X path: SIGBUS on V8-generated code. |
 | v4 (package run `41218342323`, `.deb` sha `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`) | CI-green (45/0/0 package, 46/0/0 verification); on device SIGTRAP → `FatalOOM` in `CodeRange::InitReservation` because iOS denies `mprotect` RWX. |
-| v5/v6 | mprotect-based W^X repackaging in progress (`0005`/`0006` patch work); no device-runnable Node 22 artifact yet. |
+| v5 | mprotect W^X first attempt (`0005`); superseded by v6. |
+| **v6** (run `41265520491`) | **Device-working with `--single-threaded`** (see device evidence above); this is the primary packaging path. Child-spawn commands await CLI patch `0010`. |
 
 **Artifact identity across docs commits.** The packaged documentation is part of
 the `.deb`, so CI rebuilds triggered by documentation-only commits produce
@@ -80,10 +103,10 @@ byte-different `.debs` (different SHA-256) even though the runtime, CLI bundle a
 launcher code are identical. Pinned runs above identify specific artifacts; later
 green runs on docs commits are pipeline evidence only.
 
-**Honesty note.** The node18 CLI device evidence above was produced with a
-community Node 18 runtime, not the CI-built runtime that ships in the `.deb`.
-Until the maintainer runs the packaged acceptance procedure, the package remains
-`UNVERIFIED ON DEVICE`.
+**Honesty note.** The device evidence above is maintainer-reported raw output from
+the runtime artifact/CLI bundle, not from the packaged `.deb`. Until the maintainer
+runs the packaged acceptance procedure and the raw outputs are recorded below, the
+package remains `UNVERIFIED ON DEVICE`.
 
 ## Where the evidence lives
 
@@ -237,6 +260,8 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | iOS JIT memory-permission probe | Separate diagnostic workflow (`iOS JIT memory probe dylib`) builds `libjitprobe.dylib` (artifact `ios-jit-probe`, never shipped) to report which executable-memory primitives the jailbreak permits; used to choose the v5/shim approach. |
 | **v5 runtime / jit-shim candidate** | **PENDING** — v5 runtime run in progress; optional `ios-jit-shim` is consumed by packaging when published. Device PASS only after the maintainer's raw outputs. |
 | ICU-enabled iOS Node reference | the community reference Node 18.20.4 binary on the same iPhone reports `process.versions.icu = 74.2` and `typeof Intl === "object"`, confirming an ICU-enabled iOS Node build works on this exact device |
+| **Node 22 v6 runtime on device (mprotect W^X)** | **PASS with `--single-threaded`:** JIT loop rc=0, WebAssembly compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`; node sha256 `cf707ebe…` (run `41265520491`). Without `--single-threaded`: SIGBUS (signal 10) on JIT-heavy code — V8 background threads race the process-wide mprotect toggle. |
+| **Node 22 v6 CLI on device** | **PASS (partial):** `--version`, `--help` (full ICU fixes `Intl.Segmenter`) and `debug paths` rc=0 with `--single-threaded`. Commands spawning a server child SIGBUS until CLI patch `0010` adds `--single-threaded` to the child-spawn whitelist. |
 | **Node 18 CLI bundle on community Node 18.20.4 runtime** (maintainer probe) | **PASS (preliminary):** `--version` → `opencode2-node v2.2.5` (rc=0); `debug paths`, `debug config`, `models`, `session list` all rc=0; the sql.js sqlite shim created/persisted the database. This is **not** the packaged runtime: it validates the Node 18 CLI bundle and the V8 10.2 device memory model. |
 | **Node 18 `--help` on the community runtime** | **FAIL — environment-specific:** the community runtime is small-ICU, so `--help` crashes in `JSSegmenter::Create`. The shipped runtime is our own full-ICU Node 18 build (`build-runtime-node18.yml`), which is why the packaging gate requires full-ICU and `Intl.Segmenter`. |
 | **Node 18 `run --standalone` child server** | **FAIL (preliminary):** the standalone command could not start its child server; CLI patch `0009` addresses it; device retest with the final package pending. |
@@ -266,6 +291,7 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | --- | --- | --- |
 | device.install | PENDING | |
 | device.variant | PENDING | |
+| device.single-threaded | PENDING | |
 | device.version | PENDING | |
 | device.help | PENDING | |
 | device.paths | PENDING | |
@@ -303,9 +329,13 @@ On the iPhone:
 cd ~/Documents                       # HOME=/var/jb/var/mobile
 sha256sum -c SHA256SUMS
 sudo dpkg -i OpenCode-iOS-rootless.deb
-# variant/runtime identity (node18 candidate expects 18.20.4)
+# variant/runtime identity + mandatory launcher flag
 dpkg -s opencode | head -n 12
 /var/jb/usr/lib/opencode/runtime/node -p process.versions.node
+grep -n -- '--single-threaded' /var/jb/usr/bin/opencode   # must appear (node22 variant)
+# JIT-heavy + WASM + fetch sanity with the same flags the launcher uses
+/var/jb/usr/lib/opencode/runtime/node --single-threaded -e 'let s=0; for (let i=0;i<3e6;i++) s+=i%7; console.log("jit",s)'
+/var/jb/usr/lib/opencode/runtime/node --single-threaded -e 'new WebAssembly.Module(Buffer.from("0061736d01000000","hex")); console.log("wasm-ok")'
 opencode --version; echo "version_exit=$?"
 opencode --help;    echo "help_exit=$?"
 sh /var/jb/usr/share/doc/opencode/device-smoke.sh

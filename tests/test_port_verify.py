@@ -8,8 +8,10 @@ They do not need macOS/Xcode; they run on any Python 3 with the standard library
 and are executed by `python3 -m unittest discover -s tests -v` in both
 package-rootless.yml and test-port.yml.
 """
+import argparse
 import io
 import json
+import re
 import struct
 import tarfile
 import tempfile
@@ -458,6 +460,110 @@ class JitShimTest(unittest.TestCase):
                       port_verify.OPTIONAL_DATA)
         self.assertIn("var/jb/usr/lib/opencode/runtime/libjitshim.dylib",
                       port_verify.EXECUTABLE_DATA)
+
+
+class LauncherVariantTest(unittest.TestCase):
+    REPO = Path(__file__).resolve().parent.parent
+
+    def _launcher(self, name):
+        return (self.REPO / "packaging/rootless/usr/bin" / name).read_text(
+            encoding="utf-8"
+        )
+
+    def _code(self, text):
+        return "\n".join(
+            line for line in text.splitlines() if not line.lstrip().startswith("#")
+        )
+
+    def test_node22_launcher_passes_single_threaded(self):
+        code = self._code(self._launcher("opencode"))
+        self.assertIn("--single-threaded", code)
+        self.assertIn("--experimental-sqlite", code)
+        self.assertIn("--disable-warning=ExperimentalWarning", code)
+        self.assertIn('"$@"', code)
+
+    def test_node22_launcher_comment_explains_single_threaded(self):
+        text = self._launcher("opencode")
+        self.assertIn("device-verified", text.lower())
+        self.assertIn("mprotect", text.lower())
+
+    def test_node18_launcher_has_no_node22_only_flags_in_code(self):
+        code = self._code(self._launcher("opencode-node18"))
+        self.assertNotIn("--experimental-sqlite", code)
+        self.assertNotIn("--disable-warning", code)
+        self.assertNotIn("--use-system-ca", code)
+        self.assertIn("--no-warnings", code)
+        self.assertIn("TMPDIR", code)
+        self.assertIn("OPENCODE_IOS_NODE_FLAGS", code)
+
+    def test_launchers_share_tmpdir_and_assets_contract(self):
+        for name in ("opencode", "opencode-node18"):
+            code = self._code(self._launcher(name))
+            self.assertIn("TMPDIR", code, name)
+            self.assertIn("OPENCODE_NODE_ASSETS_DIR", code, name)
+            self.assertIn("OPENCODE_IOS=1", code, name)
+            self.assertIn("PATH=", code, name)
+
+
+class VariantInferenceTest(unittest.TestCase):
+    def test_normalize_variant(self):
+        self.assertEqual(port_verify.normalize_variant("node18"), port_verify.VARIANT_NODE18)
+        self.assertEqual(port_verify.normalize_variant("node18-fallback"), port_verify.VARIANT_NODE18)
+        self.assertEqual(port_verify.normalize_variant("node22"), port_verify.VARIANT_NODE22)
+        self.assertEqual(port_verify.normalize_variant(""), "")
+        self.assertEqual(port_verify.normalize_variant("garbage"), "")
+
+    def test_infer_variant_from_sources(self):
+        self.assertEqual(
+            port_verify.infer_variant({}, {"variant": "node18"}, None, ""),
+            port_verify.VARIANT_NODE18,
+        )
+        self.assertEqual(
+            port_verify.infer_variant({}, {"runtime_kind": "node22"}, None, ""),
+            port_verify.VARIANT_NODE22,
+        )
+
+    def test_infer_variant_from_runtime_manifest(self):
+        with tempfile.TemporaryDirectory() as td:
+            runtime = Path(td) / "var/jb/usr/lib/opencode/runtime"
+            runtime.mkdir(parents=True)
+            (runtime / "runtime-manifest.json").write_text(
+                json.dumps({"node_version": "18.20.4"})
+            )
+            ctx = {"extract_dir": Path(td)}
+            self.assertEqual(
+                port_verify.infer_variant(ctx, None, None, ""),
+                port_verify.VARIANT_NODE18,
+            )
+
+    def test_explicit_variant_wins(self):
+        self.assertEqual(
+            port_verify.infer_variant({}, {"variant": "node18"}, None, "node22"),
+            port_verify.VARIANT_NODE22,
+        )
+
+    def test_render_control_node18(self):
+        with tempfile.TemporaryDirectory() as td:
+            template = Path(td) / "control.in"
+            template.write_text(
+                "Package: opencode\nVersion: @VERSION@\nMaintainer: @MAINTAINER@\n"
+                "Installed-Size: @INSTALLED_SIZE@\nDescription: test\n"
+                " running on Node.js @NODE_VERSION@.\n @VARIANT_DESCRIPTION@\n"
+            )
+            out = Path(td) / "control"
+            rc = port_verify.cmd_render_control(
+                argparse.Namespace(
+                    template=str(template), out=str(out), version="2.2.5-1",
+                    maintainer="Test <test@example.com>", installed_size=123,
+                    variant="node18", node_version="",
+                )
+            )
+            self.assertEqual(rc, 0)
+            text = out.read_text()
+            self.assertIn("Node.js 18.20.4", text)
+            self.assertIn("sql.js", text)
+            self.assertIn("Node 22", text)
+            self.assertIsNone(re.search(r"@[A-Z_]+@", text))
 
 
 class VerifyCliTest(unittest.TestCase):
