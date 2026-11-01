@@ -110,3 +110,11 @@ Final released artifact: `OpenCode-iOS-rootless.deb`, 52,926,812 bytes, SHA-256
 device-verified `v6` Node 22.9.0 runtime, the patch-0014 CLI bundle and the optional
 `/var/jb/usr/bin/rg`). The Node 18 fallback runtime/bundle remains available as a documented
 alternative, but node22+v6 is the device-verified primary deliverable.
+
+## Node.js 26 iOS runtime (dedicated repository)
+
+The Node.js **26.13 iPhoneOS arm64** runtime port (needed for the real OpenTUI TUI via
+`node:ffi`) has its own dedicated repository:
+**https://github.com/Justintunsday/nodejs26-ios**.
+The device-verified Node 22.9 runtime remains the runtime of this OpenCode port and is built in
+this repository (`build-runtime.yml`).
