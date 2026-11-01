@@ -20,7 +20,7 @@ hosted runners cannot execute iOS binaries.
 | Native iPhoneOS runtime compile | GitHub Actions `macos-15` runner + iPhoneOS SDK: `build-runtime.yml` (node22) / `build-runtime-node18.yml` (node18) | **CI-verified** |
 | Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling, JIT/WASM/ICU requirements) | Real target iPhone, maintainer-executed probes | **Device-verified** (bootstrap) and **DEVICE-VERIFIED for the released package** — see *Device verification results* |
 | Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **DEVICE-VERIFIED with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
-| Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device |
+| Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device; interactive TTY `opencode` runs the line-based REPL (full TUI unavailable — OpenTUI needs Node >= 26.4 + `node:ffi`) |
 | Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the CI-built full-ICU runtime) | **CLI commands device-verified (preliminary)**; the repo-built Node 18 runtime artifact is now CI-green and is packaged as the documented **alternative** (no primary acceptance requirement) |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `8a625f75…` (v2.2.5-ios.3) and `2f96fc18…` (v2.2.5-ios.2) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on both releases (2026-11-01)**; `v2.2.5-ios.3` additionally passed the packaged PTY/TUI-guidance tests; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
@@ -216,7 +216,7 @@ NewTerm 3 shell or SSH. Full install instructions: [`INSTALL.md`](INSTALL.md).
 | 10 | Liveness/signature | `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node` then `opencode --version` | re-signed runtime still starts (repair path works; shipped entitlements are the verified minimal pair) |
 | 11 | Shell-tool fallback | `sh /var/jb/bin/sh -c 'echo shell-ok'` and (after auth) a CLI shell-tool call | rootless dash runs; CLI-spawned shells resolve through the launcher's `PATH` prepend |
 | 12 | git tooling (optional) | `sudo apt-get install -y git`; `git --version`; a git tool call through the CLI | git installed/works; without it the CLI error is actionable |
-| 13 | TUI/`mini` unsupported behaviour | under a PTY: `opencode` (no args) and `opencode mini` | expected **clean usage guidance and exit 1, no stack trace** — the interactive TUI cannot start on iOS (OpenTUI has no iPhoneOS renderer). Patch `0011` adds the guidance. There is no interactive TUI test to pass. |
+| 13 | Interactive REPL / TUI-unsupported behaviour | under a real TTY: `opencode` (no args) then `/help`, a prompt, `/exit`; `opencode mini`; non-TTY: `opencode </dev/null` | **TTY: line-based REPL starts** (streamed assistant text + tool activity, `/new`, `/exit`, `/help`, Ctrl-C cancels turn, session continuity) — the full-screen TUI is unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). `opencode mini` aliases the REPL. **Non-TTY: clean guidance, exit 1.** |
 | 14 | Agent turn + standalone fix (needs network+auth) | `opencode run "summarise this repository"`; `opencode run --standalone ...` | request completes; the patch-0009 standalone child-server start works |
 | 15 | Inspector/CPU profiling | `opencode --inspect ...` (documented stub) | fails gracefully with the documented stub message, not a crash (node18 inspector is stubbed by patch 0008) |
 | 16 | Uninstall | `sudo dpkg -r opencode` (then `-P`) | package files gone; `~/.config/opencode` and sessions preserved |
@@ -307,11 +307,12 @@ account identifiers or keys are recorded anywhere in this repository):
 | device.overall | PASS | `FINAL_PACKAGED_ACCEPTANCE_RESULT=PASS` |
 
 Observed device limitations are recorded in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md)
-(single-threaded V8; interactive TUI and `opencode mini` cannot start because
-OpenTUI has no iPhoneOS renderer — patch `0011` makes them print clean guidance
-and exit 1 instead of a stack trace; local-mock transport flake ~1/3 first
-attempts with retry; 2 GB memory pressure / stale `serve --service` child holding
-port 49374; no real external AI provider exercised on-device).
+(single-threaded V8; full-screen TUI unavailable because OpenTUI needs Node >= 26.4
++ `node:ffi` — iOS `opencode` in a TTY uses a line-based REPL added in patch
+`0012`, `opencode mini` aliases it, non-TTY gets guidance + exit 1; local-mock
+transport flake ~1/3 first attempts with retry; 2 GB memory pressure / stale
+`serve --service` child holding port 49374; no real external AI provider
+exercised on-device).
 
 ### Interim device evidence (preliminary, superseded by the packaged run)
 
@@ -363,7 +364,7 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | **Node 18 `--help` on the community runtime** | **FAIL — environment-specific:** the community runtime is small-ICU, so `--help` crashes in `JSSegmenter::Create`. The shipped runtime is our own full-ICU Node 18 build (`build-runtime-node18.yml`), which is why the packaging gate requires full-ICU and `Intl.Segmenter`. |
 | **Node 18 `run --standalone` child server** | **FAIL (preliminary):** the standalone command could not start its child server; CLI patch `0009` addresses it; device retest with the final package pending. |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
-| **Interactive TUI on device** | **UNSUPPORTED — user-reported on v2.2.5-ios.2:** bare `opencode` and `opencode mini` aborted with `Error: Failed to initialize OpenTUI render library: Unsupported OpenTUI Node asset target: ios-arm64` (OpenTUI has no iPhoneOS renderer). CLI patch `0011` replaces the stack trace with clean usage guidance + exit 1; **v2.2.5-ios.3 device acceptance PASSED the packaged PTY tests** (guidance only, rc=1, no leftover server). Headless CLI is the supported interface. |
+| **Interactive TUI on device** | **Full-screen TUI is unavailable** — `@opentui/core` 0.8.0's Node binding requires Node >= 26.4 with `--experimental-ffi` (`node:ffi`); the device-verified iPhoneOS runtime is Node 22.9.0 (`bad option: --experimental-ffi` on device). **Patch `0012` adds a line-based interactive REPL** for `opencode` in a TTY (`opencode mini` aliases it; non-TTY → guidance + exit 1); REPL device PTY acceptance recorded for `v2.2.5-ios.4` below. Headless CLI remains supported. |
 | **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |
 | **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 

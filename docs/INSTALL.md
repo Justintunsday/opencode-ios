@@ -265,20 +265,22 @@ session `HOME` is `/var/jb/var/mobile`, so those paths expand to
 
 ```sh
 cd ~/Documents/my-project
+opencode                 # interactive REPL in a TTY (NewTerm 3 / SSH)
 opencode --help          # commands and flags
-opencode run "summarise this repository"   # headless, requires auth+network
+opencode run "summarise this repository"   # headless one-shot, needs auth+network
 opencode models          # offline model catalog
 ```
 
-**The interactive TUI is NOT available on iOS.** Running bare `opencode` or
-`opencode mini` cannot start: those frontends need the OpenTUI native renderer,
-which has no iPhoneOS build. On device you get
-`Error: Failed to initialize OpenTUI render library: Unsupported OpenTUI Node
-asset target: ios-arm64` with older builds; the current iOS CLI (patch `0011`,
-shipped in `v2.2.5-ios.3`, device-verified via PTY) prints clean usage guidance and
-exits 1 instead of a stack trace. Use the headless interfaces
-(`opencode run ...`, `--help`, `models`, `debug ...`, `session ...`), which are the
-device-verified workflow. See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
+**Interactive mode on iOS is a line-based REPL, not the full-screen TUI.** The
+full OpenTUI interface cannot run on the iPhoneOS Node 22.9 runtime (`@opentui/core`
+needs Node >= 26.4 + `node:ffi`/`--experimental-ffi`, which this runtime does not
+have). Instead, `opencode` started in a TTY (NewTerm 3 / SSH) enters a plain
+readline REPL: streamed assistant text and tool activity, `/help`, `/new`,
+`/exit`, Ctrl-C cancels the current turn, and the session continues between turns.
+`opencode mini` aliases the same REPL. When standard input is not a TTY
+(`opencode </dev/null`, scripts, cron) it prints usage guidance and exits 1 — use
+`opencode run "..."` for automation. A future Node 26+ iPhoneOS runtime could
+enable the real TUI. See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 Git support: `git` is not installed by the rootless bootstrap by default; the
 package declares `Recommends: git`, not a hard dependency. Install it when you
@@ -290,11 +292,13 @@ sudo apt-get install -y git   # Procursus apt, device-verified: git 2.39.1
 git --version
 ```
 
-TUI/terminal caveats: interactive PTY panes and native file watchers have no
-iPhoneOS builds, so shell tool calls use pipe-based `child_process` fallback and
-file-watch features degrade to polling/backend fallbacks. The shell fallback needs
-a working rootless shell (`/var/jb/bin/sh` -> dash); the launcher's `PATH` prepend
-makes that available to the CLI. Headless `run` mode is the supported path. See
+TUI/terminal caveats: the full-screen TUI is unavailable (OpenTUI needs Node >= 26.4
++ `node:ffi`); interactive `opencode` in a TTY uses the line-based REPL instead.
+Interactive PTY panes and native file watchers have no iPhoneOS builds, so shell
+tool calls use pipe-based `child_process` fallback and file-watch features degrade
+to polling/backend fallbacks. The shell fallback needs a working rootless shell
+(`/var/jb/bin/sh` -> dash); the launcher's `PATH` prepend makes that available to
+the CLI. `opencode run "..."` is the supported path for scripts/automation. See
 [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 ## 9. Upgrade / uninstall
@@ -383,8 +387,8 @@ test.
 | `opencode: native runtime not found` | Incomplete extraction. Reinstall the `.deb`; the launcher prints the expected path. |
 | `opencode: CLI bundle not found` | Incomplete extraction. Reinstall the `.deb`. |
 | Out-of-memory / jetsam kill during a large session | Lower the heap: `OPENCODE_IOS_MAX_OLD_SPACE_MB=1024 opencode`, or set it in `~/.profile`. |
-| Bare `opencode` / `opencode mini` exits with an OpenTUI error or clean guidance (rc=1) | Expected: the interactive TUI cannot run on iOS because OpenTUI has no iPhoneOS renderer. Newer builds (patch `0011`) print guidance and exit 1 without a stack trace. Use `opencode run ...`/`--help`/`models`/`debug ...` instead. |
-| Interactive TUI garbled or terminal panes unavailable | There is no iOS TUI/PTY native module; use the headless CLI (`opencode run ...`/`--help`). Shell tool calls use the rootless dash via `PATH`. |
+| Bare `opencode` in a **non-TTY** exits with guidance (rc=1) | Expected: interactive iOS mode needs a TTY for the line-based REPL. Use NewTerm 3 / SSH for interactive sessions, or `opencode run "..."` for scripts/automation. |
+| Full-screen TUI unavailable | Expected: OpenTUI needs Node >= 26.4 + `node:ffi`, which the iPhoneOS Node 22.9 runtime lacks. Interactive `opencode` in a TTY uses the line-based REPL instead; `opencode mini` aliases it. |
 | File changes are not picked up live | Expected watcher fallback (polling/none). Re-run the command or use a watch-free workflow. |
 | `firmware` dependency error from `dpkg` | Rootless bootstrap package is missing/broken; repair the bootstrap via Sileo rather than `--force-depends`. |
 | No provider requests / TLS errors | Check network and certificate trust; agent calls require internet and configured auth. Basic device HTTPS/TLS and `curl` were verified on the target device; proxied/managed networks remain untested. |
