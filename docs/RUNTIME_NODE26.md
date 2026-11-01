@@ -26,6 +26,17 @@ covers the OpenTUI Zig kernel/FFI bring-up.
 
 ## Patches (`patches/nodejs26/`)
 
+`0006-node-crypto-ios-no-sectrustsettings.patch` — `src/crypto/crypto_context.cc`
+guards the macOS keychain/trust-settings certificate reader with
+`#ifdef __APPLE__` (also true on iOS), but the `SecTrustSettings*` APIs only
+exist in the macOS Security framework. The iOS build failed with `use of
+undeclared identifier 'kSecTrustSettingsApplication'` (and the related
+`kSecTrustSettings*`/`SecTrustSettings*` symbols). The patch guards the Apple
+trust-store implementation with `defined(__APPLE__) && !TARGET_OS_IPHONE` and
+makes the system-certificate dispatch fall through to
+`GetOpenSSLSystemCertificates()` on iOS (bundled/default root certs unchanged;
+only `--use-system-ca` finds no Apple keychain on iOS).
+
 `0005-cares-ios-no-sys-random.patch` — Node 26's c-ares ships one
 `config/darwin/ares_config.h` for macOS and iOS, and it defines
 `HAVE_SYS_RANDOM_H` (present in the macOS SDK but NOT in the iPhoneOS SDK). The
@@ -139,4 +150,5 @@ minimum: `node --version`, `node --jitless -e 'console.log(1+1)'`,
 | 41297837897 | configure passed, make failed on the first real error class: bundled abseil/gtest compiled without `-std=gnu++20` because Node 26's gyp make generator had no iOS flavor handling → fixed by patch 0003 (Lead-provided). |
 | 41301667378 | make failed on the next class: host-toolset abseil objects got both `-mmacosx-version-min=13.5` and an empty `-miphoneos-version-min=` from `xcode_emulation.py` → fixed by patch 0004. |
 | 41302321280 | make failed on `deps/cares`: `'sys/random.h' file not found` (darwin config defines HAVE_SYS_RANDOM_H, absent on iOS) → fixed by patch 0005. |
-| 41304176095 | rebuild with patches 0001..0005 (clean rebuild forced on patch-series change); awaiting result. |
+| 41303097661 | make failed at Node sources after deps+V8 compiled: `src/crypto/crypto_context.cc` macOS SecTrustSettings APIs undeclared on iOS → fixed by patch 0006. |
+| run7 | rebuild with patches 0001..0006 (clean rebuild forced on patch-series change); awaiting result. |
