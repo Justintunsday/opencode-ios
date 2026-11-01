@@ -187,7 +187,7 @@ cmd_build() {
   (
     cd "$SRC/packages/native"
     ZIG_GLOBAL_CACHE_DIR="$BUILD_DIR/zig-cache/global" ZIG_LOCAL_CACHE_DIR="$BUILD_DIR/zig-cache/local" \
-      "$bin" build -Dlibrary-target="$TARGET" -Doptimize=ReleaseFast -Dios-sdk="$IOS_SDK" -Duucode-tables=uucode-tables.zig --sysroot "$IOS_SDK" --summary all
+      "$bin" build -Dlibrary-target="$TARGET" -Doptimize=ReleaseFast -Dios-sdk="$IOS_SDK" -Duucode-tables=uucode-tables.zig --summary all
   ) >"$logfile" 2>&1
   local rc=$?
   set -e
