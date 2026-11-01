@@ -179,7 +179,17 @@ jobs:
         # configure flags). See docs/RUNTIME_BUILD.md section 7.
         env:
           CACHE_HIT: ${{ steps.cache-build.outputs.cache-hit }}
-        run: bash scripts/build-ios-runtime.sh normalize-cache "${CACHE_HIT:-false}"
+        run: |
+          set -euo pipefail
+          # A failed/corrupt cache restore can leave a partially extracted
+          # out/Release behind (observed 2026-11-01: 16 GiB entry failed in
+          # gtar with "Illegal byte sequence"). Never normalize or build on top
+          # of a partial tree: drop it and do a clean (cold) build instead.
+          if [ "${CACHE_HIT}" != "true" ]; then
+            echo "::warning::build cache was not restored; discarding any partial out/Release extraction (clean build)"
+            rm -rf "$NODEJS_MOBILE_DIR/out/Release"
+          fi
+          bash scripts/build-ios-runtime.sh normalize-cache "${CACHE_HIT:-false}"
 
       - name: Configure Node.js 22.9.0 for iPhoneOS arm64 (fast gate)
         # Runs ./configure (which also generates out/Makefile via the bundled
