@@ -100,22 +100,52 @@ Static validation (hard gates in the script, so a green run means all of these p
 
 | Field | Value |
 | --- | --- |
-| Run | [41313516105](https://github.com/Justintunsday/opencode-ios/actions/runs/41313516105) (success; commit `7b98627`) |
+| Run | [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358) (success; commit `3392dcb`; earlier green run [41313516105](https://github.com/Justintunsday/opencode-ios/actions/runs/41313516105)) |
 | Artifact | `opentui-ios-renderer` (zip 1,585,492 bytes) |
-| Library | `libopentui.dylib`, **3,785,600 bytes**, sha256 **`95d84e79788edfa1c6362e49e868400c736164b40b6ced26d63f8f3c2761c35e`** |
+| Library | `libopentui.dylib`, **3,785,600 bytes**, sha256 **`954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`** |
 | Mach-O | thin arm64 `MH_DYLIB`, `LC_BUILD_VERSION` platform **iOS**, minOS **15.0.0** (gate <= 16.1.1), ldid-signed with the device-verified 2-key node entitlements |
 | Dependencies (`otool -L`) | own `@rpath/libopentui.dylib` id + `/usr/lib/libc++.1.dylib`, `/usr/lib/libc++abi.dylib`, `/usr/lib/libSystem.B.dylib`, `/usr/lib/libobjc.A.dylib`, `CoreFoundation`, `CoreAudio`, `AudioToolbox`, `Foundation`, `AVFoundation`, `AVFAudio` (all iOS system libs) |
 | Build time | ~2.5 min (Zig build step; full job ~3 min warm) |
-| Patch | `0001-ios-target-and-sdk.patch` (sha256 `cdf73ce4…` at run time; see patch header) |
+| Patch | `0001-ios-target-and-sdk.patch` (sha256 `3e52a956…`; the patch header records the first green run) |
 
 The `dylib` sha256 is **not reproducible across runs** because the `ldid` signature blob is not
 deterministic; the compiled renderer payload itself is reproducible, and each artifact ZIPs own
 `SHA256SUMS` is authoritative for that run. The CLI bundle artifacts have the same property.
 
+## Phase D device precondition (dlopen, device-verified)
+
+The Lead device-tested the loadability precondition on the target iPhone (iOS 16.1.1, Dopamine
+rootless jailbreak) with a dedicated `dlopenprobe-2key` probe (opencode-ios run 41315221320,
+51,424 B, sha256 `724e6fc69ea2f6f4973021c10a9d9922573a6fec225977dbe2e37ec30b464548`, same 2-key
+entitlements as the CLI runtime) loading this artifact's dylib (sha256 `954289152c…`). Evidence file
+in the lead workspace: `C:\opencode\device\PHASE_D_DLOPEN_EVIDENCE.md`.
+
+| Test path | Result |
+| --- | --- |
+| `/usr/lib/libz.dylib` (system baseline) | `DLOPEN_OK` |
+| `/var/mobile/libopentui.dylib` | `DLOPEN_FAIL: file system sandbox blocked mmap()` |
+| `/private/var/tmp/octest/libopentui.dylib` | `DLOPEN_FAIL: file system sandbox blocked mmap()` |
+| `/var/jb/tmp/octest/libopentui.dylib` | `DLOPEN_OK`, `DLCLOSE_OK` rc=0 |
+| `/var/jb/var/mobile/octest/libopentui.dylib` | `DLOPEN_OK`, `DLCLOSE_OK` rc=0 |
+| `/var/jb/usr/lib/opencode/libopentui.dylib` (root-owned 755, package path) | **`DLOPEN_OK`**, `DLCLOSE_OK` rc=0 |
+
+Packaging requirement for Phase D: ship the renderer **under the rootless jailbreak prefix**
+(`/var/jb/...`), e.g.
+`/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` — the CLI assets
+directory already lives under `/var/jb/usr/lib/opencode/cli/`, so the renderer belongs in the
+normal asset tree. Do **not** load it from `/var/mobile` or `/tmp` (sandbox blocks executable
+`mmap` there). The asset path must be derived from the installed CLI asset root, not from the
+bundled module's original location. No JIT/extra entitlements are needed for `dlopen` itself:
+2-key signatures on both the dylib and the loading binary are sufficient. `node:ffi`'s own
+`dlopen` should follow the same sandbox rules; that is the remaining device unknown, blocked on
+the Node 26 runtime (Phase A/B).
+
 ## Known limitations / remaining Phase D work
 
-- **Not device-verified.** The library has never been loaded on the iPhone; CI only proves it is a
-  correctly built/signed iPhoneOS dylib. A device run needs the Node 26 iPhoneOS runtime first.
+- **Not verified inside the Node runtime.** CI proves it is a correctly built/signed iPhoneOS dylib,
+  and a 2-key-signed `dlopen` probe loaded it successfully on the device from `/var/jb` paths (see
+  the Phase D device precondition above). Loading it from `node:ffi` inside the Node 26 runtime is
+  still untested (blocked on the Node 26 Phase A/B runtime).
 - **Hybrid C++ ABI (Zig 0.16.0 workaround).** The C++ translation units are compiled with Zig's
   bundled libc++/libc++abi headers (ABI version 1, hardening mode none, Zig's feature defines) but
   linked against the iPhoneOS SDK's libc++/libc++abi stubs. Both are LLVM libc++ (ABI 1) so this is
@@ -133,6 +163,7 @@ deterministic; the compiled renderer payload itself is reproducible, and each ar
 - **Audio**: miniaudio is compiled with its CoreAudio backend (CoreAudio/AudioToolbox/AudioUnit
   linked); iOS AVAudioSession behaviour is untested on device.
 - Phase D (CLI side, to be tracked separately): accept `ios-arm64` in the OpenTUI asset resolver,
-  ship `libopentui.dylib` in the CLI assets bundle (so `stage`/manifest include it), pass
+  ship `libopentui.dylib` in the CLI assets bundle under the `/var/jb` deb root prefix (see the
+  Phase D device precondition above; never load from `/var/mobile`/`/tmp`), pass
   `--experimental-ffi` in the launcher, and replace the iOS REPL fallback with the real TUI once
   the Node 26 runtime + FFI + renderer all pass on device.
