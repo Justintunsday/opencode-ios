@@ -1,0 +1,104 @@
+# Node.js 26.13.0 iPhoneOS runtime — Phase A (build feasibility gate)
+
+Status: **Phase A in progress** — goal is a CI-green native iPhoneOS arm64 Node
+26.13.0 `node` executable plus static Mach-O/entitlement validation. V8 14.6's
+iOS executable-memory model is **not** adapted to iOS 16.1.1 yet (Phase B), so
+JIT/WebAssembly execution on the device is expected to need that follow-up work.
+
+## Why Node 26
+
+The real OpenTUI TUI loads its native Zig core through Node's `node:ffi`, which
+exists since Node 26.1 and requires Node >= 26.4. The device-verified runtime is
+Node 22.9.0, which has neither `--experimental-ffi` nor `node:ffi`
+(device-confirmed: `bad option: --experimental-ffi`). Node 26 is therefore the
+Phase A prerequisite; Phase B then ports our V8 W^X work to V8 14.6, and Phase C
+covers the OpenTUI Zig kernel/FFI bring-up.
+
+## Pins
+
+| Item | Value |
+| --- | --- |
+| source | `https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz` (upstream nodejs/node; no nodejs-mobile branch exists for 24/26) |
+| tarball sha256 | `986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191` (127,162,302 B) |
+| Node version | 26.13.0 (V8 14.6.202.34) |
+| Xcode / SDK | 16.4 / iPhoneOS SDK 18.5 |
+| target | iPhoneOS arm64, `IPHONEOS_DEPLOYMENT_TARGET=15.0` |
+
+## Patches (`patches/nodejs26/`)
+
+`0001-configure-ios.patch` — Node 26 lists `ios` in `valid_os` but only maps
+android to a gyp `OS` value. This sets `o['variables']['OS']='ios'` and
+`iossim=false` for `--dest-os=ios`, selecting the upstream iOS gyp branches in
+`tools/v8_gypfiles/toolchain.gypi`, `tools/v8_gypfiles/v8.gyp`, `deps/uv`,
+`deps/zlib`, `deps/cares`, `tools/icu` and `node.gyp(i)`.
+
+`0002-common-gypi-ios.patch` — adds the missing iPhoneOS `target_defaults` block
+to `common.gypi` (the equivalent of nodejs-mobile Node 22's `OS=="ios"` block):
+Xcode settings (`SDKROOT=iphoneos`, `IPHONEOS_DEPLOYMENT_TARGET=15.0`,
+`ARCHS=arm64`, `CLANG_CXX_LANGUAGE_STANDARD=gnu++20`, `-Wl,-no_pie`), plus
+`_toolset=="host"` overrides that keep ICU/node host tools as runnable macOS
+binaries during the cross build. It also adds `iossim` and includes `ios` in the
+V8 archive path variables.
+
+## Build recipe
+
+`scripts/build-ios-runtime-node26.sh` (used by
+`.github/workflows/build-runtime-node26.yml`):
+
+```
+GYP_DEFINES="target_arch=arm64 host_os=mac target_os=ios"
+./configure --dest-os=ios --dest-cpu=arm64 --cross-compiling \
+  --with-intl=full-icu --openssl-no-asm \
+  --without-node-code-cache --without-node-snapshot \
+  --without-ffi --v8-disable-temporal-support
+make -j3
+```
+
+- `--without-ffi` defers libffi/iOS bring-up to Phase C (FFI is what OpenTUI
+  needs, but it is not needed for the Phase A build gate).
+- `--v8-disable-temporal-support` avoids a Rust toolchain: Node 26's Temporal
+  support (ICU4X) needs cargo/rustc >= 1.86 and cross-compiling Rust to
+  `aarch64-apple-ios` is out of scope for Phase A/Phase C's JS-only TUI goal.
+
+The job restores a cached `nodejs26/out/Release` tree (keyed on the patch
+series sha256 + cache epoch) so iterations are incremental; a cache miss falls
+back to a clean cold build.
+
+## Validation (CI, static only)
+
+- Mach-O iPhoneOS arm64 executable (scripts/check_macho.py --max-minos 16.1.1)
+- `xcrun vtool` platform IOS, minos <= 16.1.1
+- `xcrun otool -L` allowlist: only `/usr/lib/` and
+  `/System/Library/Frameworks/` dependencies
+- full-ICU present (`v8_enable_i18n_support=1`, multi-signal audit)
+- WebAssembly compiled in (`v8_enable_webassembly=1`)
+- ldid ad-hoc signature with the same device-verified **2-key** entitlement set
+  used by the Node 22 runtime (`platform-application` +
+  `com.apple.private.security.no-sandbox`), exact-set gate
+- `runtime-manifest.json` (node sha256/size/dylibs, pins, patch hashes) and
+  `SHA256SUMS`
+
+GitHub-hosted runners cannot execute iPhoneOS binaries, so the artifact is
+marked `UNVERIFIED ON DEVICE`. Device testing of the Phase A artifact checks the
+minimum: `node --version`, `node --jitless -e 'console.log(1+1)'`,
+`process.platform`, and what JIT/wasm do before the Phase B W^X work.
+
+## Remaining work (Phase B/C risks)
+
+- **Phase B — V8 14.6 iOS W^X:** V8 14.6's iOS code-range model expects
+  MAP_JIT/RWX pages (BrowserEngineCore, iOS 17.4+); the target iPhone SE 2 runs
+  iOS 16.1.1, which only supports plain `mprotect` RW<->RX toggling. The Phase B
+  patch series must port `patches/nodejs-mobile/0005+0006` to V8 14.6 (check
+  `src/heap/code-range.cc`, `memory-allocator.cc`, `wasm-code-manager.cc`,
+  `src/base/platform/platform-darwin.cc`/`ios-headers.h` API differences).
+- **Phase C — node:ffi + OpenTUI Zig kernel:** enable `--experimental-ffi`
+  without `--without-ffi`, cross-build `deps/libffi` for iPhoneOS, adapt
+  `src/ffi/jit_memory.cc` to the iOS 16.1.1 mprotect model, then cross-build
+  OpenTUI's Zig core (native renderer packages are currently darwin/linux/win32
+  only) and load it via `node:ffi`.
+
+## CI runs
+
+| Run | Result |
+| --- | --- |
+| pending | first Phase A build after the initial patch series |
