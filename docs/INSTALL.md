@@ -31,13 +31,17 @@ Rootless environment facts (device-verified on the target iPhone):
 | `HOME` | SSH/NewTerm sessions run as `mobile` (uid 501) with `HOME=/var/jb/var/mobile`. Config/data therefore resolve to `/var/jb/var/mobile/.config/opencode` and `/var/jb/var/mobile/.local/share/opencode`. |
 | `PATH` | SSH default: `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`. The packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` so shells/tools spawned by the CLI resolve. |
 | `git` | **Not installed by default.** The package `Recommends: git`; install it with `sudo apt-get install -y git` (Procursus apt, git 2.39.1) for git tool support. |
-| Entitlements | The device-verified minimal runtime entitlement set is `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient. The v4 JIT runtime additionally used a tentative 4-key set, but it is still device-incompatible (see shipping status below). |
-| Runtime capabilities | The shipped runtime must be **full-ICU** with **WebAssembly and JIT enabled** (Node 22.9's built-in fetch/undici requires wasm llhttp; a wasm-disabled runtime fails on device with `ReferenceError: WebAssembly is not defined`). Packaging CI rejects runtimes built `--with-intl=none` or with `--jitless`/WebAssembly disabled. JIT execution additionally needs a device-compatible iOS W^X memory model (v5 plain-mprotect approach) or the optional jailbreak JIT shim. |
-| Optional JIT shim | If the `ios-jit-shim` artifact is published, the package installs `/var/jb/usr/lib/opencode/runtime/libjitshim.dylib` (0755) and the launcher exports `DYLD_INSERT_LIBRARIES` for it **only when present**. It is a jailbreak-only JIT interposer (relaxes W^X/mprotect for V8) and is recorded in `package-report.json`; without it the launcher behaves normally. |
+| Entitlements | The device-verified minimal runtime entitlement set is `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient. The current Node 18 and Node 22 runtime builds use this 2-key set. |
+| Runtime variants | The package is built from **one** of two runtimes and ships exactly one: **Node 18.20.4** (primary; V8 10.2 memory model, device-proven) or **Node 22.9.0** (experimental; newer V8 W^X model, device verification pending). Detect the installed variant with `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`; the `.deb` metadata description and `package-report.json` (`variant`/`runtime_kind`) also state it. |
+| Runtime capabilities | The shipped runtime must be **full-ICU** with **WebAssembly and JIT enabled** (Node's built-in fetch/undici requires wasm llhttp; a wasm-disabled runtime fails on device with `ReferenceError: WebAssembly is not defined`). Packaging CI rejects runtimes built `--with-intl=none` or with `--jitless`/WebAssembly disabled, and requires `Intl.Segmenter` data (full-ICU; small-ICU trims it). |
+| sqlite implementation | **Node 18**: the CLI maps `node:sqlite` to a bundled **sql.js WebAssembly shim** (`cli/assets/node18-sqlite/`), which persists the database as a whole file (no WAL; a crash can lose recent writes — see `KNOWN_LIMITATIONS.md`). **Node 22**: uses built-in `node:sqlite`. |
+| Optional JIT shim | Node 22 variant only: if the `ios-jit-shim` artifact is published, the package installs `/var/jb/usr/lib/opencode/runtime/libjitshim.dylib` (0755) and the launcher exports `DYLD_INSERT_LIBRARIES` for it **only when present**. It is a jailbreak-only JIT interposer (relaxes W^X/mprotect for V8) and is recorded in `package-report.json`; without it the launcher behaves normally. The Node 18 variant does not use the shim. |
 | Launcher shebang | `/var/jb/usr/bin/opencode` starts with `#!/var/jb/bin/sh` because the kernel execs it directly and `/bin/sh` does not exist. Maintainer scripts keep `#!/bin/sh`, which rootless Procursus `dpkg` handles (device-verified). |
+| `TMPDIR` | Some SSH/NewTerm sessions do not export `TMPDIR`; both launchers provide a writable fallback (`/var/jb/tmp`, `/var/jb/var/tmp`, `/tmp`) and export it. |
 
 Node.js 22.9.0 is older than the Node version upstream OpenCode normally targets;
-see [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
+the Node 18 fallback intentionally uses Node 18.20.4 (the V8 memory model that is
+device-proven on iOS 16.1.1). See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 ## 1. Requirements
 
@@ -67,27 +71,43 @@ The artifact contains:
 | --- | --- |
 | `OpenCode-iOS-rootless.deb` | the installable package |
 | `SHA256SUMS` | SHA-256 of the `.deb` |
-| `package-report.json` | contents manifest, Mach-O audit, sizes, sha256s, source run ids |
+| `package-report.json` | contents manifest, Mach-O audit, sizes, sha256s, source run ids, **variant/runtime_kind** |
 
 Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 `UPSTREAM.lock`). The exact SHA-256 of the published `.deb` is recorded in
 `SHA256SUMS` and inside `package-report.json`.
 
-> **Shipping status (2026-11-01):** **no artifact is device-runnable yet; do not
-> install a candidate expecting a working CLI.** The v4-runtime package (run
-> `41218342323`, `.deb` SHA-256
+### Which runtime variant is in this package?
+
+One package ships exactly one runtime; the artifact name is the same for both:
+
+| Variant | Runtime | Status | How to tell |
+| --- | --- | --- | --- |
+| `node18` | Node.js **18.20.4** iPhoneOS arm64, bundled sql.js sqlite shim | **Primary**, CLI runs on device with a community Node 18 runtime; our full-ICU Node 18 runtime is CI-built and awaiting its device acceptance run | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
+| `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite | **Experimental**; the JIT memory model is not yet device-runnable (CI builds v5/v6 W^X variants) | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
+
+Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`
+prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manifest.json`
+declares the capability profile.
+
+> **Shipping status (2026-11-01):** the **Node 18 variant is the primary
+> deliverable**, pending the maintainer's acceptance run on the final package
+> (device evidence so far: with a device-proven community Node 18.20.4 iPhoneOS
+> runtime the Node 18 CLI bundle runs `--version`, `debug paths`, `debug config`,
+> `models` and `session list` with rc=0 and sql.js sqlite persistence works; that
+> reference runtime is small-ICU and `--help` crashes in `Intl.Segmenter`, which
+> is why the shipped runtime is our own full-ICU Node 18 build). The **Node 22
+> variant is experimental and not device-runnable yet**: the v4-runtime package
+> (run `41218342323`, `.deb` SHA-256
 > `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`) passes every
-> CI check but is **device-incompatible**: on the iPhone the JIT runtime crashes
-> while reserving V8 code range (`EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in
-> `CodeRange::InitReservation`, iOS denies `mprotect` to RWX). The v3-runtime
-> package (run `41202900005`) trapped earlier with SIGBUS on generated code, and
-> WASM-disabled packages (`.deb` sha `13a0483d...`) fail with
-> `ReferenceError: WebAssembly is not defined`. Resolution in progress: **v5
-> runtime** (plain-mprotect W^X, patch `0005-no-map-jit-on-ios.patch`) and/or the
-> **optional `ios-jit-shim`** interposer injected via `DYLD_INSERT_LIBRARIES`.
-> Install only a package whose `package-report.json` shows the matching runtime
-> and, for JIT builds, the v5/shim path, and only after the maintainer records a
-> device run in `docs/VERIFICATION.md`.
+> CI check but crashes on the iPhone while reserving V8 code range
+> (`EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in `CodeRange::InitReservation`: iOS
+> denies `mprotect` to RWX); v5/v6 mprotect-based W^X and the optional
+> `ios-jit-shim` interposer are still under device investigation. Do **not**
+> install the superseded v3-runtime package (run `41202900005`; SIGBUS on
+> generated code) or WASM-disabled packages (`.deb` sha `13a0483d...`;
+> `ReferenceError: WebAssembly is not defined`). Install a package only after the
+> maintainer records a matching device run in `docs/VERIFICATION.md`.
 
 ## 3. Transfer the package to the device
 
@@ -145,38 +165,50 @@ and does **not** depend on any node/nodejs package.
 
 ```sh
 opencode --version
+/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 18.x or 22.x
 opencode --help
 ```
 
 The launcher (`/var/jb/usr/bin/opencode`, POSIX `dash`/`sh`, shebang
-`#!/var/jb/bin/sh`) prepends `/var/jb/bin:/var/jb/usr/bin` to `PATH`, exports
-`OPENCODE_NODE_ASSETS_DIR` and `OPENCODE_IOS=1`, and executes:
+`#!/var/jb/bin/sh`) prepends `/var/jb/bin:/var/jb/usr/bin` to `PATH`, provides a
+`TMPDIR` fallback, exports `OPENCODE_NODE_ASSETS_DIR` and `OPENCODE_IOS=1`, and
+executes the runtime. The exact Node flags depend on the shipped variant:
 
 ```sh
+# node18 variant (primary): Node 18 rejects the newer Node 22-only flags
+/var/jb/usr/lib/opencode/runtime/node --no-warnings \
+  --max-old-space-size=1536 \
+  /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
+
+# node22 variant (experimental)
 /var/jb/usr/lib/opencode/runtime/node \
   --experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings \
   --max-old-space-size=1536 \
   /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
 ```
 
-`--experimental-sqlite` is required by `node:sqlite` on Node 22.9 and is not a
-bug. The launcher shebang is `/var/jb/bin/sh` because rootless iOS has no
-`/bin/sh` and the kernel executes `/var/jb/usr/bin/opencode` directly. If
-`opencode` is not found, add `export PATH="/var/jb/usr/bin:$PATH"` to
-`~/.profile`. Your session `HOME` is `/var/jb/var/mobile` (SSH/NewTerm), so config
-and sessions live beneath it.
+On the **Node 18 variant** the CLI maps `node:sqlite` to the bundled sql.js
+WebAssembly shim (`cli/assets/node18-sqlite/sql-wasm.js|wasm`): sessions are
+persisted as a whole database file under `~/.local/share/opencode` (no WAL; a
+crash can lose recent writes — see `KNOWN_LIMITATIONS.md`). The launcher shebang
+is `/var/jb/bin/sh` because rootless iOS has no `/bin/sh` and the kernel executes
+`/var/jb/usr/bin/opencode` directly. If `opencode` is not found, add
+`export PATH="/var/jb/usr/bin:$PATH"` to `~/.profile`. Your session `HOME` is
+`/var/jb/var/mobile` (SSH/NewTerm), so config and sessions live beneath it.
 
-The shipped runtime is built with **full ICU and with WebAssembly + JIT
-enabled**, signed with the device-verified 2-key entitlement set. WebAssembly and
-JIT are required: Node 22.9's built-in fetch/undici needs wasm llhttp, and a
-jitless/no-wasm build fails with
-`ReferenceError: WebAssembly is not defined` for every CLI command. The
-`OPENCODE_IOS_JITLESS=1` escape hatch adds `--jitless` (debug/fallback only): it
-disables JIT and WebAssembly, so network/fetch-dependent commands will not work.
-Escape hatches (documented in `KNOWN_LIMITATIONS.md`):
+The shipped runtime (either variant) is built with **full ICU and with
+WebAssembly + JIT enabled**, signed with the device-verified 2-key entitlement
+set. WebAssembly and JIT are required: Node's built-in fetch/undici needs wasm
+llhttp, and a jitless/no-wasm build fails with
+`ReferenceError: WebAssembly is not defined` for every CLI command.
+`Intl.Segmenter` requires full-ICU: Node 18's community small-ICU runtime crashes
+on `--help`, so the shipped Node 18 runtime is our own full-ICU build. The
+`OPENCODE_IOS_JITLESS=1` escape hatch (node22 variant only) adds `--jitless`
+(debug/fallback only): it disables JIT and WebAssembly, so network/fetch-dependent
+commands will not work. Escape hatches (documented in `KNOWN_LIMITATIONS.md`):
 
 ```sh
-OPENCODE_IOS_JITLESS=1 opencode --version     # debug only: disables JIT+WASM
+OPENCODE_IOS_JITLESS=1 opencode --version     # node22 debug only: disables JIT+WASM
 OPENCODE_IOS_MAX_OLD_SPACE_MB=1024 opencode   # lower V8 heap (2 GB devices)
 OPENCODE_IOS_NODE_FLAGS=--trace-warnings opencode   # extra Node/V8 flags
 ```
@@ -259,16 +291,18 @@ Success criteria:
 | Check | Expected output |
 | --- | --- |
 | runtime present | `OK   native iPhoneOS Node runtime present` |
+| runtime variant | `runtime variant: Node 18 …` (or `Node 22 …`; both layouts identical) |
 | CLI bundle present | `OK   CLI bundle present` |
 | launcher executable | `OK   launcher present and executable` |
 | rootless shell | `OK   rootless shell executable: /var/jb/bin/sh` (rootless iOS has no `/bin/sh`) |
 | shell in PATH | `OK   sh resolves in PATH: /var/jb/usr/bin/sh` |
-| HOME writable | `OK   HOME is writable: /var/jb/var/mobile` |
+| HOME/TMPDIR writable | `OK   HOME is writable: /var/jb/var/mobile` and `OK   TMPDIR is writable` (a WARN is acceptable if the shell exports neither) |
 | git (optional) | `OK   git present: git version 2.39.1` — or a `WARN ... install with: sudo apt-get install -y git` |
-| runtime capabilities | `OK   runtime capabilities: WebAssembly=object, v8_enable_webassembly=1, fetch=function, Intl=object` |
+| runtime capabilities | `OK   runtime capabilities: WebAssembly=object, v8_enable_webassembly=1, fetch=function, Intl=object, Intl.Segmenter=function` |
 | WebAssembly compilation | `OK   WebAssembly module compilation works (JIT/executable memory available)` |
 | `opencode --version` | exit 0 and the OpenCode version (2.2.5) printed |
-| `opencode --help` | exit 0 with a usage block |
+| `opencode --help` | exit 0 with a usage block (requires full-ICU; a WARN is shown on small-ICU Node 18 runtimes) |
+| sqlite persistence | `OK   opencode session list …` and `OK   sqlite database file present …` (Node 18 uses the sql.js shim) |
 | argument forwarding | `OK   launcher forwards CLI arguments` |
 | overall | `DEVICE SMOKE TEST: PASS (offline checks only; model connectivity not tested)` |
 
@@ -276,8 +310,11 @@ Manual equivalent (what proves success):
 
 ```sh
 opencode --version; echo "exit=$?"      # exit=0 and a version string
-opencode --help;    echo "exit=$?"      # exit=0 and usage text
+/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 18.x or 22.x
+opencode --help;    echo "exit=$?"      # exit=0 and usage text (full-ICU)
 opencode debug paths                    # config/data under /var/jb/var/mobile (optional)
+opencode models                         # offline model list (optional)
+opencode session list; echo "exit=$?"   # exit=0 proves sqlite (sql.js on Node 18)
 opencode auth list                      # works offline once installed (optional)
 sh /var/jb/bin/sh -c 'echo shell-ok'    # shell-tool fallback shell works
 command -v git && git --version          # git tool support (optional)
@@ -295,7 +332,11 @@ test.
 | --- | --- |
 | Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Entitlement/code-signature problem. The package ships the **device-verified minimal entitlement set**: `platform-application` + `com.apple.private.security.no-sandbox` (`runtime/entitlements.xml`). Re-sign the runtime with exactly those shipped entitlements, then retry: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`. Do **not** substitute the older allow-jit / allow-unsigned-executable-memory / disable-library-validation / dynamic-codesigning sets: those were empirically SIGKILLed on the target device (exit 137), while the 2-key set was device-proven to run the JIT+WebAssembly-enabled runtime. `ldid` is installed on the target device; it is not a package dependency. |
 | Every command fails with `ReferenceError: WebAssembly is not defined` | The runtime was built with WebAssembly disabled (device-verified on the intermediate package: Node's fetch/undici needs wasm llhttp) or `OPENCODE_IOS_JITLESS=1` is set in the environment. Install the final package built from a WebAssembly+JIT-enabled runtime (check `package-report.json` → `runtime.build-profile`: "WebAssembly enabled; JIT enabled") and unset `OPENCODE_IOS_JITLESS`. |
-| CLI crashes early with `EXC_BREAKPOINT`/SIGTRAP, `FatalOOM`, or `CodeRange::InitReservation` | The JIT runtime's iOS memory model is incompatible (iOS denied `mprotect` RWX; device-verified on the v4 runtime). Use a package with the v5 runtime (plain-mprotect W^X, `0005-no-map-jit-on-ios.patch`) and/or the optional `libjitshim.dylib` (`ios-jit-shim`) interposer, which the launcher injects via `DYLD_INSERT_LIBRARIES` only when shipped. Do not try to fix this with entitlement changes alone. |
+| CLI crashes early with `EXC_BREAKPOINT`/SIGTRAP, `FatalOOM`, or `CodeRange::InitReservation` | The **node22 experimental** variant's JIT memory model is not yet compatible with iOS 16.1.1 (iOS denies `mprotect` RWX; device-verified on the v4 runtime; v6 mprotect W^X builds are still under device investigation). Install the **node18 variant** (check `package-report.json` → `variant`). Do not try to fix this with entitlement changes alone. |
+| `bad option: --experimental-sqlite` / `--disable-warning` / `--use-system-ca` | A **node22** launcher/flags were used with the Node 18 runtime (or a hand-edited launcher). Node 18.20.4 rejects those flags. Reinstall the node18 package and use its installed launcher unmodified (it passes `--no-warnings` and `--max-old-space-size` only). |
+| `opencode --help` crashes in `Intl.Segmenter` / `JSSegmenter::Create` (node18) | The runtime is a small-ICU Node 18 build (device-verified with a community small-ICU binary). The shipped Node 18 runtime is our own **full-ICU** build; reinstall the package from the latest green `package-rootless.yml` node18 run (check `package-report.json` → `runtime.capabilities.intl_mode: full-icu`). |
+| sqlite writes appear to be lost after a crash (node18) | Expected sql.js shim behaviour: the database is persisted as a whole file with no WAL, so a hard crash can lose recent writes (see `KNOWN_LIMITATIONS.md`). Close/quit the CLI cleanly; Node 22 (experimental) uses native `node:sqlite` with WAL. |
+| `opencode: native runtime not found` with a stale launcher | The package variant changed (e.g. node22 → node18). Reinstall the `.deb`; both variants install the same paths and launcher. |
 | JIT shim present but no effect / `DYLD_INSERT_LIBRARIES` ignored | The shim is a jailbreak-only W^X interposer and several factors can disable injection (hardened runtime restrictions, missing `dynamic-codesigning`, other injected tweaks). Check `package-report.json` → `runtime.jitshim` for whether the shim was shipped and its audit; run with a clean environment (no `DYLD_*` overrides of your own) and report outputs. Without the shim the launcher launches normally. |
 | `bad option: --use-system-ca` / `--experimental-ffi` | A custom launcher/wrapper is passing Node flags that do not exist in Node 22.9. Use the installed launcher unmodified (it passes `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size` only). The device jitless runtime accepts `--jitless` fine; `--use-system-ca`/`--experimental-ffi` must never be passed. |
 | `/var/jb/bin/sh: not found` / `bad interpreter` when running `opencode` | Launcher was replaced or the package was edited by hand. Rootless iOS has no `/bin/sh`; the launcher must keep the `#!/var/jb/bin/sh` shebang. Reinstall the `.deb`. |
@@ -316,6 +357,7 @@ Collect diagnostics for bug reports:
 ```sh
 uname -a
 dpkg -s opencode
+/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # runtime variant
 opencode --version; echo "exit=$?"
 sh /var/jb/usr/share/doc/opencode/device-smoke.sh
 ```
@@ -331,7 +373,9 @@ must not be presented as device proof.
 To move the port out of `UNVERIFIED ON DEVICE`, open an issue with:
 
 1. Device model, iOS version, jailbreak (e.g. "iPhone SE2, iOS 16.1.1, Dopamine rootless").
-2. The exact package version and `.deb` SHA-256 (from `SHA256SUMS`).
+2. The exact package version, `.deb` SHA-256 (from `SHA256SUMS`) **and variant**
+   (`package-report.json` → `variant`, or
+   `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`).
 3. Full output of `sh /var/jb/usr/share/doc/opencode/device-smoke.sh`.
 4. Which device tests in [`VERIFICATION.md`](VERIFICATION.md) passed/failed.
 5. Whether `opencode auth login` + a minimal `opencode run` worked.

@@ -175,7 +175,7 @@ infer_variant() {
         return 0
     fi
     for candidate_file in "$SOURCES" "$PACKAGE_REPORT" \
-            "$EXTRACT_PREFIX/usr/lib/opencode/runtime/runtime-manifest.json"; do
+            "$EXTRACT_DIR/var/jb/usr/lib/opencode/runtime/runtime-manifest.json"; do
         [ -n "$candidate_file" ] && [ -f "$candidate_file" ] || continue
         value="$("$PYTHON" -c 'import json, sys
 try:
