@@ -199,12 +199,14 @@ cmd_build() {
 # --- package / validate ------------------------------------------------------
 find_dylib() {
   local candidate
-  for candidate in \
-    "$SRC/packages/native/zig-out/lib/aarch64-ios/$DYLIB_NAME" \
-    "$SRC/packages/native/zig-out/lib/$TARGET/$DYLIB_NAME"; do
-    [ -f "$candidate" ] && { echo "$candidate"; return 0; }
-  done
-  die "built $DYLIB_NAME not found under $SRC/packages/native/zig-out/lib/"
+  candidate="$(find "$SRC/packages/native/zig-out" -name "$DYLIB_NAME" -type f 2>/dev/null | head -n 1 || true)"
+  if [ -n "$candidate" ]; then
+    echo "$candidate"
+    return 0
+  fi
+  log "zig-out tree (for diagnosis):"
+  find "$SRC/packages/native/zig-out" -maxdepth 4 -type f 2>/dev/null | sed -n '1,40p' >&2 || true
+  die "built $DYLIB_NAME not found under $SRC/packages/native/zig-out"
 }
 
 validate_macho() {
