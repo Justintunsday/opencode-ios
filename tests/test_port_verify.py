@@ -566,6 +566,30 @@ class VariantInferenceTest(unittest.TestCase):
             self.assertIsNone(re.search(r"@[A-Z_]+@", text))
 
 
+    def test_render_control_node22_primary(self):
+        with tempfile.TemporaryDirectory() as td:
+            template = Path(td) / "control.in"
+            template.write_text(
+                "Package: opencode\nVersion: @VERSION@\nMaintainer: @MAINTAINER@\n"
+                "Installed-Size: @INSTALLED_SIZE@\nDescription: test\n"
+                " running on Node.js @NODE_VERSION@.\n @VARIANT_DESCRIPTION@\n"
+            )
+            out = Path(td) / "control"
+            rc = port_verify.cmd_render_control(
+                argparse.Namespace(
+                    template=str(template), out=str(out), version="2.2.5-1",
+                    maintainer="Test <test@example.com>", installed_size=123,
+                    variant="node22", node_version="",
+                )
+            )
+            self.assertEqual(rc, 0)
+            text = out.read_text()
+            self.assertIn("Node.js 22.9.0", text)
+            self.assertIn("primary", text)
+            self.assertIn("--single-threaded", text)
+            self.assertNotIn("experimental Node.js", text)
+
+
 class VerifyCliTest(unittest.TestCase):
     def test_verify_mode_is_accepted_by_the_cli(self):
         parser = port_verify.build_parser()

@@ -66,8 +66,9 @@ EXPECTED_SECTION = "Development"
 EXPECTED_PRIORITY = "optional"
 EXPECTED_HOMEPAGE_PREFIX = "https://github.com/"
 
-# Runtime variants: the Node 18 fallback is the device-proven primary runtime;
-# the Node 22.9 build is the experimental mprotect/W^X path.
+# Runtime variants: node22 v6 (mprotect W^X, device-verified with the mandatory
+# --single-threaded launcher flag) is the primary shipping line; node18 is the
+# documented alternative fallback (V8 10.2 memory model, sql.js sqlite shim).
 VARIANT_NODE22 = "node22"
 VARIANT_NODE18 = "node18"
 VARIANT_LABELS = {
@@ -84,15 +85,16 @@ RUNTIME_KIND = {
 }
 VARIANT_CONTROL_DESCRIPTION = {
     VARIANT_NODE22: (
-        "This build ships the experimental Node.js 22.9.0 runtime variant\n"
-        " (V8 12.4 mprotect-based W^X; device verification pending; the Node 18\n"
-        " fallback variant is the primary deliverable)."
+        "This build ships the primary Node.js 22.9.0 runtime variant with the\n"
+        " v6 mprotect-based W^X memory model (2-key entitlements; device-verified\n"
+        " on the target iPhone with the launcher's mandatory --single-threaded\n"
+        " flag). The Node 18 runtime is the alternative fallback variant."
     ),
     VARIANT_NODE18: (
         "This build ships the Node.js 18.20.4 fallback runtime (V8 10.2\n"
         " memory model, device-proven JIT/WebAssembly/full-ICU on the target\n"
-        " iPhone) with the bundled sql.js WebAssembly sqlite shim; the Node 22\n"
-        " variant remains experimental."
+        " iPhone) with the bundled sql.js WebAssembly sqlite shim; the primary\n"
+        " variant is Node 22.9 (v6 mprotect W^X, --single-threaded launcher)."
     ),
 }
 
@@ -2254,8 +2256,52 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     ) or ""
     metrics["runtime_variant"] = variant
     metrics["runtime_jit_memory"] = policy.get("jit_memory") if isinstance(policy, dict) else None
+    # Machine-readable producer guidance: the runtime manifest may declare
+    # device-verification status and the launcher flags it requires.
+    launcher_policy = policy.get("launcher") if isinstance(policy, dict) else None
+    required_flags = []
+    if isinstance(launcher_policy, dict):
+        required_flags = [
+            str(flag) for flag in launcher_policy.get("required_flags", [])
+            if isinstance(flag, str) and flag.strip()
+        ]
+    metrics["runtime_launcher_required_flags"] = required_flags
+    metrics["runtime_device_status"] = (
+        str(manifest.get("device_status", "")) if isinstance(manifest, dict) else ""
+    )
+    metrics["runtime_device_verification"] = (
+        manifest.get("device_verification") if isinstance(manifest, dict) else None
+    )
     problems = []
     notes = []
+    if required_flags:
+        launcher_path = Path(extract_dir) / "var/jb/usr/bin/opencode"
+        if launcher_path.is_file():
+            launcher_text = read_text(launcher_path)
+            launcher_code = "\n".join(
+                line for line in launcher_text.splitlines()
+                if not line.lstrip().startswith("#")
+            )
+            missing_flags = [flag for flag in required_flags if flag not in launcher_code]
+            if missing_flags:
+                problems.append(
+                    "launcher is missing launcher flags required by the runtime "
+                    "manifest (runtime_policy.launcher.required_flags): "
+                    + ", ".join(missing_flags)
+                )
+            else:
+                notes.append(
+                    "launcher passes manifest-required flags: " + ", ".join(required_flags)
+                )
+    elif variant == VARIANT_NODE22:
+        notes.append("runtime manifest does not declare launcher.required_flags")
+    device_verification = metrics["runtime_device_verification"]
+    if isinstance(device_verification, dict) and device_verification.get("verified") is True:
+        notes.append(
+            "runtime manifest declares DEVICE-VERIFIED evidence "
+            f"(sha256={str(device_verification.get('verified_sha256', ''))[:16]}…, "
+            f"launcher_flags={device_verification.get('launcher_flags', [])})"
+        )
 
     if not flags_declared:
         if variant == VARIANT_NODE22:
@@ -2927,6 +2973,9 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             },
             "capabilities": runtime_capabilities,
             "jit_memory": metrics.get("runtime_jit_memory"),
+            "device_status": metrics.get("runtime_device_status", ""),
+            "device_verification": metrics.get("runtime_device_verification"),
+            "launcher_required_flags": metrics.get("runtime_launcher_required_flags", []),
             "configure_flags": metrics.get("runtime_configure_flags", []),
             "patches": metrics.get("runtime_patches", []),
             "ripgrep": metrics.get("ripgrep", {"included": False}),
@@ -2939,8 +2988,11 @@ def _build_package_report(ctx, checks, sources, manifest, args):
         "device_execution": {
             "status": DEVICE_STATUS,
             "banner": DEVICE_BANNER,
-            "note": "No device execution was performed; the package was built and "
-                    "validated on a hosted macOS runner only.",
+            "note": "No device execution was performed by CI; the package was built "
+                    "and validated on a hosted macOS runner only. Producer runtime "
+                    "manifest device markers are recorded under runtime.device_status "
+                    "/ runtime.device_verification as producer evidence, not CI proof.",
+            "producer_runtime_device_status": metrics.get("runtime_device_status", ""),
             "device_tests": DEVICE_TESTS,
         },
         "workflow": {
