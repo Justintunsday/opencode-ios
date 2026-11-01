@@ -282,15 +282,18 @@ full-screen TUI.** The full OpenTUI interface cannot run on the iPhoneOS Node
 which this runtime does not have). In a TTY (NewTerm 3 / SSH) `opencode` enters a
 plain readline REPL (streamed assistant text and tool activity, `/help`, `/new`,
 `/exit`, Ctrl-C cancels the current turn, session continuity); `opencode mini`
-aliases it. When standard input is not a TTY (`opencode </dev/null`, scripts) it
-prints guidance and exits 1 — use `opencode run "..."` for automation. **Status:**
-the first packaged REPL candidate (`v2.2.5-ios.4`) failed device agent turns
-(fixed in CLI patch `0013`); the current released `v2.2.5-ios.3` prints guidance
-and exits 1 for bare `opencode`/`opencode mini`. `v2.2.5-ios.5` is the REPL
-release candidate under device acceptance — see
-[`VERIFICATION.md`](VERIFICATION.md) for exact artifact status before installing.
-A future Node 26+ iPhoneOS runtime could enable the real TUI. See
-[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
+aliases it. **Occasional transport errors on the first attempt are expected** (the
+same intermittent iPhoneOS network/runtime flake appears with headless
+`opencode run`): the REPL retries with a fresh connection and the turn succeeds on
+retry (patch `0014` raises retries with backoff). When standard input is not a
+TTY (`opencode </dev/null`, scripts) it prints guidance and exits 1 — use
+`opencode run "..."` for automation. **Status:** the first packaged REPL candidate
+(`v2.2.5-ios.4`) failed device agent turns (fixed in CLI patches `0013`/`0014`);
+the current released `v2.2.5-ios.3` prints guidance and exits 1 for bare
+`opencode`/`opencode mini`. `v2.2.5-ios.5` is the REPL release candidate under
+device acceptance — see [`VERIFICATION.md`](VERIFICATION.md) for exact artifact
+status before installing. A future Node 26+ iPhoneOS runtime could enable the real
+TUI. See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 Git support: `git` is not installed by the rootless bootstrap by default; the
 package declares `Recommends: git`, not a hard dependency. Install it when you

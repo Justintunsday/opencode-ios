@@ -12,9 +12,14 @@ acceptance and is kept for traceability. The candidate `v2.2.5-ios.4`
 packaged REPL device acceptance (REPL starts and `/help`/`/exit` work, but agent
 turns failed with `Transport: terminated` / `Transport: fetch failed` — the REPL
 reused one dead `ServerConnection`; a headless `opencode run --standalone` control
-passed), so it is **superseded and NOT device-verified**. A fix is in CLI patch
-`0013`; `v2.2.5-ios.5` awaits device acceptance. No CI run claims device
-execution: hosted runners cannot execute iOS binaries.
+passed), so it is **superseded and NOT device-verified**. CLI patch `0013` fixes
+the turn lifecycle (fresh connection per turn); device testing of that CLI shows
+the REPL working (4 consecutive turns, shell-tool marker written, pty exit 0) with
+**occasional first-attempt transport errors that succeed on retry** — the same
+intermittent iPhoneOS network/runtime flake as headless `opencode run`. Patch
+`0014` raises transport retries for robustness; **`v2.2.5-ios.5` packaging/acceptance
+is pending that CLI**. No CI run claims device execution: hosted runners cannot
+execute iOS binaries.
 
 ## Status summary
 
@@ -28,7 +33,7 @@ execution: hosted runners cannot execute iOS binaries.
 | Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **DEVICE-VERIFIED with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
 | Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device. **Interactive REPL: first packaged attempt (v2.2.5-ios.4) FAILED device agent turns** (transport connection reuse bug; `/help`/`/exit` OK); fix in patch `0013`, `v2.2.5-ios.5` acceptance pending. Full-screen TUI remains unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). |
 | Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the repo-built runtime) | **CLI commands device-verified (preliminary)** for the Node 18 bundle; the repo-built runtime/package remains the documented **alternative** and is **UNVERIFIED ON DEVICE** (no full-TUI expectation: node18 also gets the line REPL when packaged with patch 0012+) |
-| Interactive line-based REPL (patch `0012`) | Real target iPhone, maintainer PTY test of packaged `v2.2.5-ios.4` | **FAIL — superseded, not device-verified:** REPL starts and `/help`/`/exit` work, but agent turns fail (`Transport: terminated` → `Transport: fetch failed`; no provider traffic; marker not written) while the same headless `opencode run --standalone` control passes. Root cause: REPL reuses one `ServerConnection` across turns; fix in CLI patch `0013`, `v2.2.5-ios.5` acceptance pending. |
+| Interactive line-based REPL (patches `0012`–`0014`) | Real target iPhone, maintainer PTY tests | **Device-functional (patch `0013` CLI):** REPL intro/prompt, `/new`, `/help`, `/exit` all work; 4 consecutive prompts each reached the mock provider (transport errors on some first attempts are retried with a fresh connection, then E2E_OK); shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt`; mock saw 13 chat requests (4 with `toolResult=true`); pty exit 0. **Superseded packaged candidate `v2.2.5-ios.4`** (patch `0012`) had failed agent turns (connection reuse) — not device-verified. Patch `0014` (retry hardening) packaging/acceptance for `v2.2.5-ios.5` pending. Full-screen TUI unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `8a625f75…` (v2.2.5-ios.3) and `2f96fc18…` (v2.2.5-ios.2) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on both releases (2026-11-01)**; `v2.2.5-ios.3` additionally passed the packaged PTY/TUI-guidance tests; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
 > **Device status:** the current release **`v2.2.5-ios.3`** (`.deb` SHA-256
@@ -106,7 +111,7 @@ artifacts.
 | Variant / runtime | `node22` / v6 mprotect W^X; runtime node sha256 `cf707ebe…` (unchanged) |
 | CLI artifact | run `41284206666` (patch `0012`: line REPL); `opencode.mjs` sha256 `ee15a9b185656e3c52350aa286986266e4677b6d851fb8a15036f72bfdef7fac` |
 | Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP; test-port run `41285258247` (artifact `13073949712`) 48/0/1 |
-| Device result | **FAIL (packaged REPL agent turns):** REPL starts, `/help`/`/exit` work, but agent turns error `Transport: terminated` then `Transport: fetch failed` with no provider traffic; marker not written. Same headless `opencode run --standalone` control PASSED on the same device/HOME/mock. Root cause: REPL reuses one `ServerConnection` across turns; fix in CLI patch `0013`. |
+| Device result | **FAIL (packaged REPL agent turns, patch `0012`):** REPL starts, `/help`/`/exit` work, but agent turns error `Transport: terminated` then `Transport: fetch failed` with no provider traffic; marker not written. Same headless `opencode run --standalone` control PASSED on the same device/HOME/mock. Root cause: REPL reuses one `ServerConnection` across turns; fixed by CLI patch `0013` (device-functional: 4 turns + marker, retries on first-attempt transport flake); patch `0014` hardens retries. Superseded — do not publish. |
 
 **Current release — v2.2.5-ios.3**
 
@@ -402,7 +407,8 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | **Node 18 `--help` on the community runtime** | **FAIL — environment-specific:** the community runtime is small-ICU, so `--help` crashes in `JSSegmenter::Create`. The shipped runtime is our own full-ICU Node 18 build (`build-runtime-node18.yml`), which is why the packaging gate requires full-ICU and `Intl.Segmenter`. |
 | **Node 18 `run --standalone` child server** | **FAIL (preliminary):** the standalone command could not start its child server; CLI patch `0009` addresses it; device retest with the final package pending. |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
-| **Interactive TUI on device** | **Full-screen TUI is unavailable** — `@opentui/core` 0.8.0's Node binding requires Node >= 26.4 with `--experimental-ffi` (`node:ffi`); the device-verified iPhoneOS runtime is Node 22.9.0 (`bad option: --experimental-ffi` on device). **Line-based REPL (patch `0012`)**: first packaged attempt `v2.2.5-ios.4` FAILED device agent turns (connection-reuse bug; `/help`/`/exit` OK) and is superseded; patch `0013` is the fix and `v2.2.5-ios.5` acceptance is pending. Non-TTY invocations print guidance + exit 1. Headless CLI remains supported. |
+| **Interactive line REPL on device (patch `0013` CLI, v6 runtime + mock provider)** | **PASS (device-functional):** REPL starts cleanly (intro/prompt), `/new`, `/help`, `/exit` work; 4 consecutive prompts each reached the mock provider — some first attempts logged a `Transport: terminated`/retry line, then `E2E_OK`; shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt` (`opencode-ios-e2e-ok` / `mobile` / `git version 2.39.1` / `repl5-work`); mock saw 13 chat requests, 4 with `toolResult=true`; pty exit 0. Patch `0014` raises retries to reduce first-attempt flakiness. |
+| **Interactive TUI on device** | **Full-screen TUI is unavailable** — `@opentui/core` 0.8.0's Node binding requires Node >= 26.4 with `--experimental-ffi` (`node:ffi`); the device-verified iPhoneOS runtime is Node 22.9.0 (`bad option: --experimental-ffi` on device). **Line-based REPL (patch `0012`)**: first packaged attempt `v2.2.5-ios.4` FAILED device agent turns (connection-reuse bug; `/help`/`/exit` OK) and is superseded; patch `0013` fixed the turn lifecycle (device-functional evidence above) and patch `0014` hardens retries; `v2.2.5-ios.5` packaged acceptance pending. Non-TTY invocations print guidance + exit 1. Headless CLI remains supported. |
 | **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |
 | **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 
