@@ -140,7 +140,24 @@ bundled module's original location. No JIT/extra entitlements are needed for `dl
 `dlopen` should follow the same sandbox rules; that is the remaining device unknown, blocked on
 the Node 26 runtime (Phase A/B).
 
+### Launch flags and node:ffi API (validated on stock Node 26.13.0 host)
+
+- `node:ffi` is **enabled by default** in Node 26.13.0: `node -e "require('node:ffi')"` works with no
+  flags. `--no-experimental-ffi` disables it; `--experimental-ffi` is still accepted but redundant;
+  `--allow-ffi` belongs to the permission model (and errors without `--permission`). The Phase D
+  launcher therefore must not *depend* on `--experimental-ffi` (keeping it for explicitness is fine
+  on 26.13, but it is not the switch that enables FFI).
+- `require('node:ffi')` exports `dlopen`/`dlclose`/`dlsym`/`DynamicLibrary`/`suffix`/…, and
+  `ffi.dlopen(path, definitions)` returns `{ lib, functions }` — exactly what OpenTUI 0.8.0
+  destructures (`const { lib, functions } = nodeFfi.dlopen(...)`); `dlsym` returns a bigint. So
+  OpenTUI's Node FFI backend is API-compatible with Node 26.13.
+- Caveat: the Phase A runtime is currently built with `--without-ffi` as a fallback artifact; Phase D
+  targets the FFI-enabled follow-up build (`deps/libffi` iOS cross-build is the noted risk). Keep the
+  `--single-threaded` requirement (the V8 W^X toggle is process-wide) and the `/var/jb` asset-path
+  rule from the dlopen evidence above.
+
 ## Known limitations / remaining Phase D work
+
 
 - **Not verified inside the Node runtime.** CI proves it is a correctly built/signed iPhoneOS dylib,
   and a 2-key-signed `dlopen` probe loaded it successfully on the device from `/var/jb` paths (see
