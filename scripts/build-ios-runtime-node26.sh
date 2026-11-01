@@ -170,11 +170,12 @@ cmd_normalize_cache() {
     warn "configure flags changed; stamping all sources to now to force a correct full rebuild"
     find "$NODE_SRC" -path "$NODE_SRC/out" -prune -o -type f -exec touch {} +
   else
-    warn "patch series changed; re-stamping only the files rewritten by the patch (incremental rebuild)"
-    ( cd "$NODE_SRC" && git diff --name-only 2>/dev/null | while read -r f; do [ -f "$f" ] && touch "$f"; done || true )
-    # Tarball-based source has no .git: fall back to re-stamping the files that
-    # the patch series is known to touch so `make` rebuilds their dependents.
-    touch "$NODE_SRC/configure.py" "$NODE_SRC/common.gypi"
+    # The tarball-based source has no .git, so we cannot list the files the new
+    # patch series touched. Never risk reusing objects built with the old patch
+    # series flags (this bit us: abseil/gtest compiled without -std=gnu++20
+    # before the gyp make-generator ios fix); force a clean rebuild instead.
+    warn "patch series changed; stamping all sources to now to force a clean rebuild (tarball source has no git metadata)"
+    find "$NODE_SRC" -path "$NODE_SRC/out" -prune -o -type f -exec touch {} +
   fi
 }
 

@@ -26,6 +26,21 @@ covers the OpenTUI Zig kernel/FFI bring-up.
 
 ## Patches (`patches/nodejs26/`)
 
+`0003-gyp-make-ios.patch` (provided by the Lead, verified against pristine
+v26.13.0) — Node 26 bundles a newer Chromium gyp whose **make generator** only
+recognizes the `mac` flavor (only the Xcode generator understands iOS, and
+Chromium does not build iOS through gyp; nodejs-mobile's Node 22 gyp fork carried
+the iOS handling). Without this, `--dest-os=ios` emits no `-isysroot`,
+`-miphoneos-version-min`, `-arch` or `-std=gnu++20` flags and bundled abseil
+fails with `"C++ versions less than C++17 are not supported."`. The patch ports
+the minimal `ios` flavor handling into `tools/gyp/pylib/gyp/generator/make.py`
+(17 sites: OS default, XcodeSettings creation, cflags/cflags_cc/ldflags from
+xcode_settings, action env expansion, library/rpath/install_name handling, flock
+helper) and `tools/gyp/pylib/gyp/common.py` (mac_toolchain_dir). No
+`xcode_emulation.py` change is needed: Node 26's copy already understands iOS
+(`_archs` includes iphoneos/iossim, IPHONEOS_DEPLOYMENT_TARGET and SDKROOT
+handling).
+
 `0001-configure-ios.patch` — Node 26 lists `ios` in `valid_os` but only maps
 android to a gyp `OS` value. This sets `o['variables']['OS']='ios'` and
 `iossim=false` for `--dest-os=ios`, selecting the upstream iOS gyp branches in
