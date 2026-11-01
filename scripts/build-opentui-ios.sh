@@ -50,6 +50,7 @@ ZIG_MIRRORS=(
 
 TARGET="${OPENTUI_IOS_TARGET:-aarch64-ios.15.0}"
 MAX_MINOS="${OPENTUI_IOS_MAX_MINOS:-16.1.1}"
+UUCODE_TABLES_GZ="$PATCHES_DIR/files/uucode-tables.zig.gz"
 DYLIB_NAME="libopentui.dylib"
 ARTIFACT_NAME="opentui-ios-renderer"
 
@@ -171,6 +172,14 @@ cmd_build() {
   log "iPhoneOS SDK: $IOS_SDK"
   log "SDK version: $(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || echo unknown)"
 
+  # Vendored pre-generated uucode tables: the iOS build must not compile/run the native
+  # uucode_generate host tool, because the global --sysroot (iPhoneOS SDK) would otherwise be
+  # applied to that host executable and it would link against iPhoneOS libSystem.
+  [ -f "$UUCODE_TABLES_GZ" ] || die "missing vendored uucode tables: $UUCODE_TABLES_GZ"
+  log "extracting vendored uucode tables (skips the host table generator)"
+  gzip -dc "$UUCODE_TABLES_GZ" >"$SRC/packages/native/uucode-tables.zig" ||
+    die "failed to extract vendored uucode tables"
+
   local logfile="$BUILD_DIR/zig-build.log"
   mkdir -p "$BUILD_DIR"
   log "zig build -Dlibrary-target=$TARGET -Doptimize=ReleaseFast (log: $logfile)"
@@ -178,7 +187,7 @@ cmd_build() {
   (
     cd "$SRC/packages/native"
     ZIG_GLOBAL_CACHE_DIR="$BUILD_DIR/zig-cache/global" ZIG_LOCAL_CACHE_DIR="$BUILD_DIR/zig-cache/local" \
-      "$bin" build -Dlibrary-target="$TARGET" -Doptimize=ReleaseFast -Dios-sdk="$IOS_SDK" --sysroot "$IOS_SDK" --summary all
+      "$bin" build -Dlibrary-target="$TARGET" -Doptimize=ReleaseFast -Dios-sdk="$IOS_SDK" -Duucode-tables=uucode-tables.zig --sysroot "$IOS_SDK" --summary all
   ) >"$logfile" 2>&1
   local rc=$?
   set -e

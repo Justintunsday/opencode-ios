@@ -26,6 +26,7 @@ mprotect RX`, no `MAP_JIT`), which is what makes a Zig-built dylib viable on thi
 | Zig | `0.16.0` (`zig-aarch64-macos-0.16.0.tar.xz`, sha256 `b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489`) |
 | iOS target | `aarch64-ios.15.0`, deployment target minOS 15.0 (validation gate: minOS <= 16.1.1) |
 | Xcode | `macos-15` runner image, iPhoneOS SDK from `xcrun --sdk iphoneos --show-sdk-path` |
+| uucode tables | pre-generated `uucode-tables.zig` (vendored gzipped in `patches/opentui-ios/files/uucode-tables.zig.gz`; generated once with Zig 0.16.0 for the exact fields OpenTUI requests) |
 | Signing | `ldid -S` with the device-verified 2-key node entitlements (`scripts/ios-runtime/entitlements.plist`) |
 
 OpenTUI's Zig dependencies (yoga, uucode, ghostty) are vendored in
@@ -36,7 +37,7 @@ OpenTUI's Zig dependencies (yoga, uucode, ghostty) are vendored in
 
 | # | Patch | Files | Purpose |
 | --- | --- | --- | --- |
-| 0001 | `ios-target-and-sdk` | `packages/native/build.zig`, `packages/native/src/clipboard/host.zig` | Adds the `aarch64-ios.15.0` library target; resolves an iPhoneOS SDK (`-Dios-sdk=` / `IOS_SDK_PATH`); adds `.ios` arms for the miniaudio/image/libwebp C flags (`-isysroot <iPhoneOS.sdk>`), iPhoneOS framework linking (CoreFoundation/CoreAudio/AudioToolbox/AudioUnit/pthread, no AppKit/UIKit), SDK include/framework/lib search paths, and an `.ios` arm for the clipboard worker switch. iOS keeps the "clipboard unsupported" path (the macOS NSPasteboard shim is AppKit-only). |
+| 0001 | `ios-target-and-sdk` | `packages/native/build.zig`, `packages/native/src/clipboard/host.zig` | Adds the `aarch64-ios.15.0` library target; resolves an iPhoneOS SDK (`-Dios-sdk=` / `IOS_SDK_PATH`); adds `.ios` arms for the miniaudio/image/libwebp C flags (`-isysroot <iPhoneOS.sdk>`), iPhoneOS framework linking (CoreFoundation/CoreAudio/AudioToolbox/AudioUnit/pthread, no AppKit/UIKit), SDK include/framework/lib search paths, explicit SDK include/framework paths for the three `translate-c` steps (a global build sysroot does not reach translate-c), and an `.ios` arm for the clipboard worker switch. It also adds a `-Duucode-tables=<path>` option used by the iOS build to supply a pre-generated `tables.zig`, skipping the native `uucode_generate` host executable (which would otherwise inherit the iPhoneOS `--sysroot` and fail to link macOS libc). iOS keeps the "clipboard unsupported" path (the macOS NSPasteboard shim is AppKit-only). |
 
 Apply with `git apply` from the OpenTUI checkout root (the script does this).
 
@@ -53,12 +54,20 @@ bash scripts/build-opentui-ios.sh package
 bash scripts/build-opentui-ios.sh validate   # static audit of the packaged dylib
 ```
 
-The build is:
+The script extracts the vendored uucode tables and the build is:
 
 ```bash
+gzip -dc patches/opentui-ios/files/uucode-tables.zig.gz > packages/native/uucode-tables.zig
 zig build -Dlibrary-target=aarch64-ios.15.0 -Doptimize=ReleaseFast \
-  -Dios-sdk="$(xcrun --sdk iphoneos --show-sdk-path)"
+  -Dios-sdk="$(xcrun --sdk iphoneos --show-sdk-path)" \
+  -Duucode-tables=uucode-tables.zig --sysroot "$(xcrun --sdk iphoneos --show-sdk-path)"
 ```
+
+The iPhoneOS SDK is passed both as the build `--sysroot` (needed for libSystem/headers of the
+target library; Zig does not ship Darwin libc stubs) and as explicit SDK paths in `build.zig`.
+That global sysroot is only safe because the iOS graph contains no host executables: the uucode
+table generator is skipped via the vendored tables. Any future host tool added to this build path
+must be pre-generated/vendored the same way, not compiled inside the iOS `zig build` invocation.
 
 from `dist/opentui-build/opentui/packages/native`; the dylib lands in
 `packages/native/zig-out/lib/aarch64-ios/libopentui.dylib`. Environment overrides:
