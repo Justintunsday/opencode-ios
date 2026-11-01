@@ -59,7 +59,13 @@ gh run list --workflow build-opencode.yml -L 1 --json databaseId,conclusion
 Workflow: `.github/workflows/build-opencode.yml` (`workflow_dispatch` + push paths
 `patches/opencode/**`, `scripts/build-opencode-bundle.sh`, `src/opencode-ios/**`,
 `UPSTREAM.lock`, the workflow itself). All steps delegate to
-`scripts/build-opencode-bundle.sh` so the same commands run locally.
+`scripts/build-opencode-bundle.sh` so the same commands run locally. Two jobs build two
+artifacts from the same patch series:
+
+- `bundle` → `opencode-cli-node-ios` (default Node 22.9 runtime bundle, primary deliverable);
+- `bundle-node18` → `opencode-cli-node18-ios` (conditional Node 18.20.4 fallback hedge,
+  `OPENCODE_IOS_NODE18=1`, extra sql.js payload; §13). It is independent and does not change
+  the default artifact.
 
 1. **fetch** — shallow-fetch the pinned upstream commit into `upstream-src/opencode`
    (gitignored; codeload tarball fallback if the shallow fetch fails). The checkout must
@@ -130,7 +136,8 @@ consumer can tell exactly which series produced the artifact.
 | [41172138603](https://github.com/Justintunsday/opencode-ios/actions/runs/41172138603) | `9b74a90` | **success** | Stock upstream bundle baseline (no patches, target `darwin-arm64`). Node 24/26 passed `--version`/`--help` and all deeper commands; Node 22.9 failed as expected (`SyntaxError: node:sea does not provide an export named 'getAssetKeys'`, exit 1) — this is why the iOS patch series exists. Artifact sha256 (opencode.mjs) `d706daffa028e779e5c876a4b9edc11fa3867b162c61d1ab38337a1aca31728a`. |
 | 41174945683 | `bede0f8` | **success** | First patched iOS build (`ios-arm64`, 5 patches); required smoke version is the shipped Node 22.9.0. All 18 host-Node smoke commands passed (6 commands × Node 22.9.0 / 24.22.2 / 26.4.0), sqlite probe shows `--experimental-sqlite` required on 22.9.0 only. Artifact: `opencode.mjs` 21,388,775 bytes, sha256 `bb52eed4607adffbb7fbf4a052e0799b7616fd0511b80d3a395d6876ebc23907`; 22 assets (31.36 MB), 0 native binaries; patch series sha256 `76f1b66c4c0ff6906848186902bfd0566dc416a2b3897f1f9e2d241bf8fb42d9`. |
 | [41176539017](https://github.com/Justintunsday/opencode-ios/actions/runs/41176539017) | `14a5d9f` | **success** | First 6-patch build: adds patch 0006 (TMPDIR fallback, persistent-PTY capability false, ripgrep install hint). 18/18 host-Node smoke commands passed; asset tree byte-identical to the previous run (`06ef5eb6…`, 22 files / 32,881,480 bytes — deterministic). Artifact: `opencode.mjs` 21,389,137 bytes, sha256 `69ce398b9d60bca0d93110417a91f910962e722b48271c3da58c8e5d8f7657ce`; patch series sha256 `5cb5ceb52c96c7631010de11e13dfc10774d2fd627adcb274b599e1756360c4a`. This payload is the one packaged into the green `.deb` (package run 41185611403). |
-| [41192939688](https://github.com/Justintunsday/opencode-ios/actions/runs/41192939688) | `2179099` | **success** | Current artifact: documentation-only correction of runtime-capability text in the patch comments and `bundle-manifest.json` (WebAssembly/JIT now provided by the runtime; wasm payloads remain lazy). **Bundle payload is byte-identical to run 41176539017**: `opencode.mjs` sha256 `69ce398b…`, same 22-file asset tree. 18/18 host-Node smoke commands passed; patch series sha256 `02b80588924db742…`. |
+| [41192939688](https://github.com/Justintunsday/opencode-ios/actions/runs/41192939688) | `2179099` | **success** | Documentation-only correction of runtime-capability text in the patch comments and `bundle-manifest.json` (WebAssembly/JIT now provided by the runtime; wasm payloads remain lazy). **Bundle payload is byte-identical to run 41176539017**: `opencode.mjs` sha256 `69ce398b…`, same 22-file asset tree. 18/18 host-Node smoke commands passed; patch series sha256 `02b80588924db742…`. |
+| [41266035760](https://github.com/Justintunsday/opencode-ios/actions/runs/41266035760) | `be216d3` | **success** | Adds patch 0007 + the conditional Node 18 fallback variant; **both jobs green**. Default Node 22 artifact: `opencode.mjs` 21,389,249 bytes, sha256 `2e506a36eca415a158600302319b7ab3c4830c6ee661f37675eb835904fad8d9` (bundle changed only because 0007 removes iterator helpers in shared code), 22 assets (32,881,480 bytes), required Node 22.9.0 smoke 18/18. Node 18 fallback artifact `opencode-cli-node18-ios`: `opencode.mjs` 21,393,413 bytes, sha256 `f1ef6ea78f3fb80417f28040bbddb6f8bbf902376e69a35a26d37a459ce82018`, 24 assets (33,614,156 bytes incl. sql.js), required Node 18.20.4 smoke 12/12 (plus Node 22.9.0 informational 6/6). Patch series sha256 `628a195774f7bd6a…`. |
 
 The workflow never claims device success: `bundle-manifest.json` always records
 `verification_status.device_verified = false` and the runner only executes stock host
@@ -515,9 +522,14 @@ nodejs.org, SHA-256 verified) and Node 22.9.0, throw-away `HOME`:
 | 22.9.0 (informational) | PASS | PASS | PASS | PASS | PASS | PASS | runtime `node:sqlite` + `--experimental-sqlite` |
 
 CI evidence for this variant: the `bundle-node18` job in `build-opencode.yml` runs exactly the
-same matrix on the macOS runner; the run id and artifact hash are recorded in the job summary
-and manifest (`build.run_url`). The manifest's `verification_status.device_verified` stays
-`false`.
+same matrix on the macOS runner and passed it in
+[run 41266035760](https://github.com/Justintunsday/opencode-ios/actions/runs/41266035760)
+(both jobs green): artifact `opencode-cli-node18-ios`, `opencode.mjs` 21,393,413 bytes,
+sha256 `f1ef6ea78f3fb80417f28040bbddb6f8bbf902376e69a35a26d37a459ce82018`, 24 assets /
+33,614,156 bytes, 7 patches, manifest `variant=node18-fallback`,
+`host_smoke_required_node_version=18.20.4`, `host_smoke_required_passed=true`, 24/24 smoke
+checks passed across Node 18.20.4 (required) and 22.9.0 (informational). The manifest's
+`verification_status.device_verified` stays `false`.
 
 ### Device risk / open questions for shipping the Node 18 variant
 
