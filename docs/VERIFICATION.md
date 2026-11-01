@@ -5,10 +5,16 @@ evidence**. The current released artifact — `v2.2.5-ios.3`, `.deb` SHA-256
 `8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc` — is
 **DEVICE-VERIFIED**: packaged acceptance PASS=14/FAIL=0 plus packaged PTY tests
 showing clean TUI-unavailable guidance (2026-11-01); the raw log is in
-[`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The previous released artifact
-(`v2.2.5-ios.2`, `.deb` SHA-256 `2f96fc18…`) passed the same 14-test packaged
-acceptance and is kept for traceability. No CI run claims device execution:
-hosted runners cannot execute iOS binaries.
+[`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The previous release
+`v2.2.5-ios.2` (`.deb` SHA-256 `2f96fc18…`) also passed the 14-test packaged
+acceptance and is kept for traceability. The candidate `v2.2.5-ios.4`
+(`299ee574…`, first line-based REPL) was built and CI-green but **FAILED**
+packaged REPL device acceptance (REPL starts and `/help`/`/exit` work, but agent
+turns failed with `Transport: terminated` / `Transport: fetch failed` — the REPL
+reused one dead `ServerConnection`; a headless `opencode run --standalone` control
+passed), so it is **superseded and NOT device-verified**. A fix is in CLI patch
+`0013`; `v2.2.5-ios.5` awaits device acceptance. No CI run claims device
+execution: hosted runners cannot execute iOS binaries.
 
 ## Status summary
 
@@ -20,8 +26,9 @@ hosted runners cannot execute iOS binaries.
 | Native iPhoneOS runtime compile | GitHub Actions `macos-15` runner + iPhoneOS SDK: `build-runtime.yml` (node22) / `build-runtime-node18.yml` (node18) | **CI-verified** |
 | Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling, JIT/WASM/ICU requirements) | Real target iPhone, maintainer-executed probes | **Device-verified** (bootstrap) and **DEVICE-VERIFIED for the released package** — see *Device verification results* |
 | Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **DEVICE-VERIFIED with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
-| Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device; interactive TTY `opencode` runs the line-based REPL (full TUI unavailable — OpenTUI needs Node >= 26.4 + `node:ffi`) |
-| Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the CI-built full-ICU runtime) | **CLI commands device-verified (preliminary)**; the repo-built Node 18 runtime artifact is now CI-green and is packaged as the documented **alternative** (no primary acceptance requirement) |
+| Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device. **Interactive REPL: first packaged attempt (v2.2.5-ios.4) FAILED device agent turns** (transport connection reuse bug; `/help`/`/exit` OK); fix in patch `0013`, `v2.2.5-ios.5` acceptance pending. Full-screen TUI remains unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). |
+| Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the repo-built runtime) | **CLI commands device-verified (preliminary)** for the Node 18 bundle; the repo-built runtime/package remains the documented **alternative** and is **UNVERIFIED ON DEVICE** (no full-TUI expectation: node18 also gets the line REPL when packaged with patch 0012+) |
+| Interactive line-based REPL (patch `0012`) | Real target iPhone, maintainer PTY test of packaged `v2.2.5-ios.4` | **FAIL — superseded, not device-verified:** REPL starts and `/help`/`/exit` work, but agent turns fail (`Transport: terminated` → `Transport: fetch failed`; no provider traffic; marker not written) while the same headless `opencode run --standalone` control passes. Root cause: REPL reuses one `ServerConnection` across turns; fix in CLI patch `0013`, `v2.2.5-ios.5` acceptance pending. |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `8a625f75…` (v2.2.5-ios.3) and `2f96fc18…` (v2.2.5-ios.2) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on both releases (2026-11-01)**; `v2.2.5-ios.3` additionally passed the packaged PTY/TUI-guidance tests; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
 > **Device status:** the current release **`v2.2.5-ios.3`** (`.deb` SHA-256
@@ -43,7 +50,7 @@ exactly one and `package-report.json` records which (`variant` / `runtime_kind`)
 | Variant | Runtime | Status |
 | --- | --- | --- |
 | **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **DEVICE-VERIFIED for the released `.deb`s** (`v2.2.5-ios.3` current, `v2.2.5-ios.2` previous; packaged acceptance PASS=14/0 on both + packaged PTY TUI-guidance tests on `.3`) with the mandatory `--single-threaded` launcher flag. Runtime run `41273024931` (node sha256 `cf707ebe…`, 2-key signed): JIT loop, WebAssembly, HTTPS `fetch` 200, ICU 75/`\p{L}`, `Intl.Segmenter` PASS; CLI matrix and mock-provider agent turn PASS through the packaged launcher. |
-| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim | **Documented alternative.** The Node 18 CLI bundle ran on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created); the repo-built full-ICU Node 18 runtime artifact is CI-green (`ios-node18-runtime`) and is packaged as the alternative only (no primary acceptance requirement). |
+| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64 (V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim) | **Documented alternative, CI-validated only (UNVERIFIED ON DEVICE).** Interim package `41285467457` (`.deb` sha256 `ed745667…`, runtime `41280461231`) was CI-green but its runtime manifest still carried the otool header line; it is **superseded** by the corrected-manifest runtime rebuild `41285669688` (final node sha from that artifact's `SHA256SUMS`). The Node 18 CLI bundle earlier ran on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created). |
 
 Node 22 v6 device evidence (maintainer, real iPhone SE 2 / iOS 16.1.1 /
 Dopamine rootless; raw outputs will be recorded below once the packaged
@@ -81,8 +88,25 @@ not depend on this):
 
 The node22-v6 package is the shipped artifact. Current release **`v2.2.5-ios.3`**
 (pins runtime `41273024931`, patch-0011 CLI `41278475579`) supersedes
-`v2.2.5-ios.2` (kept for traceability). The pinned runs below identify the exact
-device-tested artifacts.
+`v2.2.5-ios.2` (kept for traceability). The **candidate `v2.2.5-ios.4`** (runtime
+`41273024931`, patch-0012 CLI `41284206666`) is **superseded / NOT
+device-verified**: its packaged REPL started but agent turns failed on device, so
+it must not be published. `v2.2.5-ios.5` (patch-0013 CLI, same runtime) awaits
+device acceptance. The pinned runs below identify the exact device-tested
+artifacts.
+
+**Superseded candidate — v2.2.5-ios.4 (CI-green; NOT device-verified; do not publish)**
+
+| Item | Value |
+| --- | --- |
+| Package workflow run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41284719984> (pinned runtime `41273024931`, CLI `41284206666`) |
+| Package artifact | `OpenCode-iOS-rootless`, artifact id `13074840907` |
+| `.deb` | `OpenCode-iOS-rootless.deb`, 52,947,004 bytes |
+| `.deb` SHA-256 | `299ee574a8b983b435c41d65e2cfbd26914dcb4f2dad2887f7413e074f1fdc56` |
+| Variant / runtime | `node22` / v6 mprotect W^X; runtime node sha256 `cf707ebe…` (unchanged) |
+| CLI artifact | run `41284206666` (patch `0012`: line REPL); `opencode.mjs` sha256 `ee15a9b185656e3c52350aa286986266e4677b6d851fb8a15036f72bfdef7fac` |
+| Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP; test-port run `41285258247` (artifact `13073949712`) 48/0/1 |
+| Device result | **FAIL (packaged REPL agent turns):** REPL starts, `/help`/`/exit` work, but agent turns error `Transport: terminated` then `Transport: fetch failed` with no provider traffic; marker not written. Same headless `opencode run --standalone` control PASSED on the same device/HOME/mock. Root cause: REPL reuses one `ServerConnection` across turns; fix in CLI patch `0013`. |
 
 **Current release — v2.2.5-ios.3**
 
@@ -113,7 +137,18 @@ device-tested artifacts.
 | Verification workflow | run `41274690207` (artifact `13070776185`), 48/0/1 |
 | Device status | DEVICE-VERIFIED packaged acceptance PASS=14/0; superseded by `.3` (TUI guidance) |
 
-### Node 22 pipeline history (superseded, not shippable)
+### Node 18 alternative build (CI-validated only — UNVERIFIED ON DEVICE)
+
+The Node 18 variant is **not** the release artifact; it is documented as an
+alternative fallback with sql.js sqlite persistence.
+
+| Item | Value |
+| --- | --- |
+| Status | **CI-validated only; UNVERIFIED ON DEVICE** (the Node 18 CLI bundle itself ran earlier on a community Node 18 runtime — see *Interim device evidence*) |
+| Runtime workflow | `build-runtime-node18.yml`; final corrected-manifest run **`41285669688`** (vtool-derived minOS, clean `linked_dylibs`, no `--jitless` literal, full-ICU/JIT/WASM, 2-key entitlements; final node sha256 taken from that run's `SHA256SUMS`) |
+| CLI artifact | `opencode-cli-node18-ios` from the patch-0012+ CLI build (`41284206666` or newer) |
+| Interim package (superseded) | run `41285467457`, artifact `13074039935`, `.deb` 49,480,056 B sha256 `ed745667a7568d81a33f4362eb612af34d4fe20c50d843b1907235022b63a9bf`, CI 47/0/1; built from runtime run `41280461231` whose manifest still listed the otool header line. Rebuilt from `41285669688` with a final package run (id/sha recorded when green) |
+| Device status | not device-accepted; no primary acceptance requirement (documented alternative) |
 
 | Build | Outcome |
 | --- | --- |
@@ -128,9 +163,12 @@ documentation is part of the `.deb`, so any later docs/code commit produces a
 different `.deb` SHA-256. The released artifacts
 `v2.2.5-ios.3` (`8a625f75…`) and `v2.2.5-ios.2` (`2f96fc18…`) must **not** be
 rebuilt or replaced without re-running device acceptance on the new SHA-256.
-Their packaged docs reflect the repository state at their build commits; **this
+`v2.2.5-ios.4` (`299ee574…`) was **not released** (device REPL acceptance
+failed) and must **not** be published or described as device-verified. Their
+packaged docs reflect the repository state at their build commits; **this
 repository document** is the authoritative post-release record. Later green
-package runs are pipeline evidence only.
+package runs are pipeline evidence only. The next release candidate is
+`v2.2.5-ios.5` (patch-`0013` CLI), which awaits packaged device acceptance.
 
 **Honesty note.** Device evidence for the releases is recorded in
 [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) and condensed in *Device
@@ -364,7 +402,7 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | **Node 18 `--help` on the community runtime** | **FAIL — environment-specific:** the community runtime is small-ICU, so `--help` crashes in `JSSegmenter::Create`. The shipped runtime is our own full-ICU Node 18 build (`build-runtime-node18.yml`), which is why the packaging gate requires full-ICU and `Intl.Segmenter`. |
 | **Node 18 `run --standalone` child server** | **FAIL (preliminary):** the standalone command could not start its child server; CLI patch `0009` addresses it; device retest with the final package pending. |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
-| **Interactive TUI on device** | **Full-screen TUI is unavailable** — `@opentui/core` 0.8.0's Node binding requires Node >= 26.4 with `--experimental-ffi` (`node:ffi`); the device-verified iPhoneOS runtime is Node 22.9.0 (`bad option: --experimental-ffi` on device). **Patch `0012` adds a line-based interactive REPL** for `opencode` in a TTY (`opencode mini` aliases it; non-TTY → guidance + exit 1); REPL device PTY acceptance recorded for `v2.2.5-ios.4` below. Headless CLI remains supported. |
+| **Interactive TUI on device** | **Full-screen TUI is unavailable** — `@opentui/core` 0.8.0's Node binding requires Node >= 26.4 with `--experimental-ffi` (`node:ffi`); the device-verified iPhoneOS runtime is Node 22.9.0 (`bad option: --experimental-ffi` on device). **Line-based REPL (patch `0012`)**: first packaged attempt `v2.2.5-ios.4` FAILED device agent turns (connection-reuse bug; `/help`/`/exit` OK) and is superseded; patch `0013` is the fix and `v2.2.5-ios.5` acceptance is pending. Non-TTY invocations print guidance + exit 1. Headless CLI remains supported. |
 | **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |
 | **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 

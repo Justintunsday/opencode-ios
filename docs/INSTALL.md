@@ -113,7 +113,12 @@ declares the capability profile.
 > (no stack trace, no background server left running). Raw logs:
 > [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The previous release
 > `v2.2.5-ios.2` (`2f96fc18…`, same PASS=14/0) is kept for traceability but is
-> superseded by `.3`. The launcher's mandatory `--single-threaded` flag is what
+> superseded by `.3`. **Candidate `v2.2.5-ios.4`** (line-based REPL, patch `0012`)
+> is **NOT released/device-verified**: its REPL started on device but agent turns
+> failed (`Transport: terminated`/`fetch failed`, connection-reuse bug); fix is in
+> CLI patch `0013` and **`v2.2.5-ios.5` is under device acceptance** — check
+> [`VERIFICATION.md`](VERIFICATION.md) for the exact released artifact before
+> installing. The launcher's mandatory `--single-threaded` flag is what
 > makes the v6 mprotect W^X runtime safe: without it JIT-heavy code dies with
 > SIGBUS because V8 background threads race the process-wide mprotect toggle. The
 > **Node 18 variant is the documented alternative** (V8 10.2 memory model, sql.js
@@ -271,16 +276,21 @@ opencode run "summarise this repository"   # headless one-shot, needs auth+netwo
 opencode models          # offline model catalog
 ```
 
-**Interactive mode on iOS is a line-based REPL, not the full-screen TUI.** The
-full OpenTUI interface cannot run on the iPhoneOS Node 22.9 runtime (`@opentui/core`
-needs Node >= 26.4 + `node:ffi`/`--experimental-ffi`, which this runtime does not
-have). Instead, `opencode` started in a TTY (NewTerm 3 / SSH) enters a plain
-readline REPL: streamed assistant text and tool activity, `/help`, `/new`,
-`/exit`, Ctrl-C cancels the current turn, and the session continues between turns.
-`opencode mini` aliases the same REPL. When standard input is not a TTY
-(`opencode </dev/null`, scripts, cron) it prints usage guidance and exits 1 — use
-`opencode run "..."` for automation. A future Node 26+ iPhoneOS runtime could
-enable the real TUI. See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
+**Interactive mode on iOS is a line-based REPL (line REPL patch `0012`), not the
+full-screen TUI.** The full OpenTUI interface cannot run on the iPhoneOS Node
+22.9.0 runtime (`@opentui/core` needs Node >= 26.4 + `node:ffi`/`--experimental-ffi`,
+which this runtime does not have). In a TTY (NewTerm 3 / SSH) `opencode` enters a
+plain readline REPL (streamed assistant text and tool activity, `/help`, `/new`,
+`/exit`, Ctrl-C cancels the current turn, session continuity); `opencode mini`
+aliases it. When standard input is not a TTY (`opencode </dev/null`, scripts) it
+prints guidance and exits 1 — use `opencode run "..."` for automation. **Status:**
+the first packaged REPL candidate (`v2.2.5-ios.4`) failed device agent turns
+(fixed in CLI patch `0013`); the current released `v2.2.5-ios.3` prints guidance
+and exits 1 for bare `opencode`/`opencode mini`. `v2.2.5-ios.5` is the REPL
+release candidate under device acceptance — see
+[`VERIFICATION.md`](VERIFICATION.md) for exact artifact status before installing.
+A future Node 26+ iPhoneOS runtime could enable the real TUI. See
+[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 Git support: `git` is not installed by the rootless bootstrap by default; the
 package declares `Recommends: git`, not a hard dependency. Install it when you
