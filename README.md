@@ -6,7 +6,7 @@ Everything is built and validated in GitHub Actions; the delivered package is an
 `iphoneos-arm64` Debian package installing `/var/jb/usr/bin/opencode`.
 
 > This is an independent port. Upstream OpenCode is MIT-licensed; this repository keeps the
-> original attribution and applies upstream changes as patches 鈥?upstream repositories are never
+> original attribution and applies upstream changes as patches ?upstream repositories are never
 > modified.
 
 ## What this repository contains
@@ -58,31 +58,30 @@ opencode --help
 
 ## Verification status
 
-**Current status: CI-complete, device-installable, CLI execution on device BLOCKED by a V8
-JIT/W^X limitation of iOS 16.1.1.** Full evidence: [`docs/DEVICE_TEST_RESULTS.md`](docs/DEVICE_TEST_RESULTS.md).
+**Current status: DEVICE-VERIFIED WORKING PORT.** The released rootless `.deb` (SHA-256
+`2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`) was installed on the target
+iPhone SE 2 (iOS 16.1.1, Dopamine rootless) and passed the full packaged acceptance:
+**PASS=14 FAIL=0** - dpkg install/status, `opencode --version`, `--help`, `debug paths`,
+`debug config`, `models`, `auth list`, `session list`, a complete mock-provider agent turn
+(the shell tool executed on the device and wrote/verified a marker file), plus dpkg remove and
+reinstall. Full raw evidence: [`docs/DEVICE_TEST_RESULTS.md`](docs/DEVICE_TEST_RESULTS.md).
 
-Verified in CI (`build-runtime.yml`, `build-opencode.yml`, `package-rootless.yml`,
+Also verified in CI (`build-runtime.yml`, `build-opencode.yml`, `package-rootless.yml`,
 `test-port.yml`): Mach-O platform is iPhoneOS (`PLATFORM_IOS=2`), CPU is arm64, minimum iOS
-鈮?16.1.1, linked dylibs are iOS system libraries only, static entitlements are the device-verified
-minimal set, rootless paths/metadata/maintainer scripts are valid, the CLI bundle passes
-`--version`/`--help`/catalog command smoke tests on stock Node 22.9.0, and the assembled `.deb`
-passes the packaging audit and cross-contract verification.
+<= 16.1.1, linked dylibs are iOS system libraries only, static entitlements are the
+device-verified minimal 2-key set, rootless paths/metadata/maintainer scripts are valid, the CLI
+bundle passes the host Node 22.9.0 smoke matrix, and the assembled `.deb` passes the packaging
+audit and cross-contract verification.
 
-Verified on the real device (iPhone SE 2, iOS 16.1.1, Dopamine rootless, ElleKit 1.2):
-
-- the final `iphoneos-arm64` `.deb` installs, upgrades and removes cleanly with rootless `dpkg`;
-- the native iPhoneOS arm64 Node.js 22.9.0 runtime executes with the 2-key entitlement set
-  (`process.platform === "ios"`, fs/spawn/TLS/`node:sqlite`/ICU/Intl/Unicode property escapes);
-- rootless shell/`dpkg` behaviours required by the package are device-verified.
-
-**Not yet working on device:** the OpenCode CLI itself. The JavaScript bundle requires V8 JIT and
-WebAssembly (Node's built-in `fetch`/undici needs a wasm llhttp parser), and V8 12.4's code-page
-permission model is incompatible with iOS 16.1.1's W^X enforcement in all three configurations
-attempted (MAP_JIT without APRR 鈫?SIGBUS; MAP_JIT + mprotect RWX 鈫?SIGTRAP/OOM; plain mprotect
-RWX 鈫?code pages lose execute 鈫?SIGBUS). `opencode --version` therefore exits 138 (SIGBUS) on the
-device today. The proposed next fix (a small V8 patch implementing mprotect-based RW鈫擱X code page
-toggling, a primitive device-proven to work) is described in
-[`docs/DEVICE_TEST_RESULTS.md`](docs/DEVICE_TEST_RESULTS.md#proposed-next-fix-not-yet-implemented).
+Device-verified components: the native iPhoneOS arm64 Node.js 22.9.0 runtime executes with the
+2-key entitlement set (`process.platform === "ios"`, JIT + WebAssembly + full ICU/Intl/`\p{...}`,
+native `node:sqlite`, fetch/TLS, fs, shell spawn); the launcher runs it with
+`--single-threaded` (required: the V8 mprotect W^X toggling is process-wide, and V8 background
+threads would race it - see KNOWN_LIMITATIONS); `git` from Procursus apt is used by the agent shell
+tool. Known limits (documented in `docs/KNOWN_LIMITATIONS.md`): interactive TUI/PTY is not fully
+validated on device, native file watchers degrade to the node/fallback backend, the local
+mock-provider transport is intermittently flaky (retry succeeds), and 2 GB iPhones need the
+packaged `--max-old-space-size=1536` default / other apps closed.
 
 ## CI workflows
 
@@ -93,20 +92,21 @@ of both (or explicit `runtime_run_id` / `opencode_run_id` inputs).
 
 ## Licence and attribution
 
-OpenCode is MIT-licensed and 漏 its contributors. Node.js is MIT-licensed and 漏 Node.js
+OpenCode is MIT-licensed and  its contributors. Node.js is MIT-licensed and  Node.js
 contributors; the nodejs-mobile patch set is MIT-licensed. See the `LICENSE` and NOTICE section of
 the package (`/var/jb/usr/share/doc/opencode/copyright`).
 ## Latest validated artifacts (GitHub Actions)
 
 | Workflow | Run | Result |
 | --- | --- | --- |
-| Build iOS Node.js runtime (v5: ICU + WebAssembly + JIT, no-MAP_JIT W^X model) | `41219489179` | success |
-| Build OpenCode CLI iOS bundle (6-patch series, iOS prelude/asset set) | `41192939688` | success |
-| Package rootless iOS .deb (pins the two runs above + optional iPhoneOS ripgrep) | `41264333018` | success |
-| Port verification (static package + host-runtime smoke) | `41264491693` | success |
+| Build iOS Node.js runtime (v6: ICU + WebAssembly + JIT, V8 mprotect RW<->RX W^X model) | `41273024931` | success |
+| Build OpenCode CLI iOS bundle (10-patch series incl. patch 0010 child flag forwarding) | `41273112229` | success |
+| Package rootless iOS .deb (node22 variant, pins the two runs above + optional iPhoneOS ripgrep) | `41274221353` | success |
+| Port verification on the final package | `41274690207` / `41274713331` | success |
 
-Final artifact: `OpenCode-iOS-rootless.deb`, 52,917,652 bytes, SHA-256
-`0b87bb8783f20f2040ebe60bd408cb8bcecab5c58cd9d08ded623e7e74401bb8`
-(Architecture `iphoneos-arm64`, rootless `/var/jb`, includes optional `/var/jb/usr/bin/rg`).
-It is CI-validated and device-installable, but **device CLI execution is currently blocked** as
-described above — do not treat it as a finished port.
+Final released artifact: `OpenCode-iOS-rootless.deb`, 52,968,920 bytes, SHA-256
+`2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
+(Architecture `iphoneos-arm64`, rootless `/var/jb`, installs `/var/jb/usr/bin/opencode`; ships the
+device-verified `v6` Node 22.9.0 runtime, the patch-0010 CLI bundle and the optional
+`/var/jb/usr/bin/rg`). The Node 18 fallback runtime/bundle remains available as a documented
+alternative, but node22+v6 is the device-verified primary deliverable.
