@@ -318,6 +318,27 @@ account identifiers or keys are recorded anywhere in this repository):
 | `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`; the packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` |
 | Free space | 96 GiB |
 
+### Post-release QA round on the same released artifact (2026-11-01)
+
+A second real-device QA round on the **same released `.deb` `b23ed1fc…`** (installed
+runtime `cf707ebe…`, CLI `e99ac8d1…`, launcher `86f68f21…`) passed end-to-end:
+runtime `node v22.9.0`, platform `ios`/`arm64`, ICU 75.1, `Intl` object, `\p{L}`
+true, WebAssembly object, JIT loop OK, `fetch https` 200 (all with
+`--single-threaded`); CLI matrix (`--version`, `--help`, `debug paths`,
+`debug config`, `models`, `auth list`, `session list`) rc=0; packaged PTY REPL
+turn 1 hit a transport error then recovered on retry → `E2E_OK` (shell tool wrote
+the marker), `/new`, turn 2 `E2E_OK` first attempt, `/exit` rc=0; marker
+`opencode-ios-e2e-ok` / `mobile` / `git version 2.39.1` / `qa-repl-work`; non-TTY
+`opencode < /dev/null` rc=1 clean guidance; headless `opencode run --standalone`
+E2E PASS.
+
+Observed nuance (documented in `KNOWN_LIMITATIONS` items 28/29): transport
+failures were aggravated by **stale leftover Node processes** — an earlier
+headless E2E failed 3/3 while an old CLI instance and a long-running mock server
+were alive; after killing leftover `serve --service`/mock/`runtime/node`
+processes and restarting the mock, the same test passed first try. No artifact
+change needed; the released `.deb` remains the device-verified artifact.
+
 ### Completed device run — 2026-11-01 (UTC) — iPhone SE 2 / iOS 16.1.1 — v2.2.5-ios.5 (current release)
 
 | Field | Value |

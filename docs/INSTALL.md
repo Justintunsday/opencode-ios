@@ -407,6 +407,7 @@ test.
 | `opencode: native runtime not found` | Incomplete extraction. Reinstall the `.deb`; the launcher prints the expected path. |
 | `opencode: CLI bundle not found` | Incomplete extraction. Reinstall the `.deb`. |
 | Out-of-memory / jetsam kill during a large session | Lower the heap: `OPENCODE_IOS_MAX_OLD_SPACE_MB=1024 opencode`, or set it in `~/.profile`. |
+| Provider requests keep failing with `Transport: terminated` / `Transport: fetch failed` | Retry first (the REPL retries up to 3 attempts with a fresh connection). If it persists, **stale leftover Node processes are aggravating the flaky iOS transport** — kill them and retry: `pkill -f 'serve --service'`; `pkill -f ocdev-mock-ai.cjs`; check `ps -ax \| grep runtime/node` and kill stragglers; restart the mock/provider, then retry. |
 | Bare `opencode` in a **non-TTY** exits with guidance (rc=1) | Expected: interactive iOS mode needs a TTY for the line-based REPL. Use NewTerm 3 / SSH for interactive sessions, or `opencode run "..."` for scripts/automation. |
 | Full-screen TUI unavailable | Expected: OpenTUI needs Node >= 26.4 + `node:ffi`, which the iPhoneOS Node 22.9 runtime lacks. Interactive `opencode` in a TTY uses the line-based REPL instead; `opencode mini` aliases it. |
 | File changes are not picked up live | Expected watcher fallback (polling/none). Re-run the command or use a watch-free workflow. |
