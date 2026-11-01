@@ -75,17 +75,19 @@ the device-test artifact):
 
 | Item | Value |
 | --- | --- |
-| Package workflow run (node22 v6) | **PENDING** — dispatched pinned to runtime run `41265520491`; fill run URL/id when green |
-| Package artifact | `OpenCode-iOS-rootless` (artifact id recorded from the run) |
-| `.deb` SHA-256 | recorded in the artifact's `SHA256SUMS`; copy the exact value here when the run is green |
-| Version / arch | `2.2.5-1` / `iphoneos-arm64` |
+| Package workflow run (node22 v6) | <https://github.com/Justintunsday/opencode-ios/actions/runs/41272951356> (dispatch, commit `eb6812a`; pinned runtime `41265520491`) |
+| Package artifact | `OpenCode-iOS-rootless`, artifact id `13069769061` |
+| `.deb` | `OpenCode-iOS-rootless.deb`, 53,004,972 bytes |
+| `.deb` SHA-256 | `c39b9b2b7f032dc350518546126078c4096f37c2c6a5cc6fde7919467ad021a0` |
+| Version / arch | `2.2.5-1` / `iphoneos-arm64`, Installed-Size 164,040 KiB |
+| Variant / runtime kind | `node22` / `node22`; runtime node_version `22.9.0` |
 | Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491> (v6 mprotect W^X; node sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`, 106,842,800 bytes, 2-key signed; `runtime_policy.jit_memory` = mprotect RW⇄RX, no MAP_JIT/no RWX) |
-| Launcher contract | node22 launcher passes `--single-threaded` (mandatory), `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size` |
-| Optional bundled `rg` | `ios-ripgrep` from the same runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
-| CLI artifact | pinned `opencode-cli-node-ios` run (record run URL/id + `opencode.mjs` sha256 when green; patch series includes `0010` once released) |
-| Package validation | to be filled from the run (`ci_status`, PASS/FAIL/SKIP counts) |
-| Verification workflow | to be filled: `test-port.yml` on the pinned package run |
-| Device status | **UNVERIFIED ON DEVICE for the packaged artifact** — the maintainer's raw v6 device evidence above used the runtime artifact directly; the packaged acceptance run is pending |
+| Launcher contract | node22 launcher passes `--single-threaded` (mandatory), `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size`; gate PASS |
+| CLI artifact | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41271384704> (pre-patch-0010); `opencode.mjs` sha256 `e3746a991f21741d23eebc68226419fd5fc46e88b8af8db904fd2cf29bbc4d84`, 21,391,077 bytes; 22 assets, 32,881,480 bytes |
+| Optional bundled `rg` | `ios-ripgrep` from runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
+| Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim` not shipped); package-report confirms variant fields and launcher `--single-threaded` |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41273207844> (artifact `port-verification`, id `13069264535`): 48 PASS / 0 FAIL / 1 SKIP, `ci_status=PASS`, `device_status=UNVERIFIED ON DEVICE` |
+| Device status | **UNVERIFIED ON DEVICE for this packaged artifact** — maintainer v6 raw evidence above used the runtime/CLI artifacts directly; packaged acceptance run in progress. Note: rebuild with CLI patch `0010` (child-spawn `--single-threaded`) is expected before release; the final release table will be pinned to that build. |
 
 ### Node 22 pipeline history (superseded, not shippable)
 

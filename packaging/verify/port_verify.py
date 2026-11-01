@@ -1375,8 +1375,8 @@ def _check_docs(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     if has_18 and has_22:
         check(checks, "pkg.docs-runtimes", "package",
               "Packaged docs describe both Node 18 and Node 22 variants", "PASS",
-              "INSTALL/VERIFICATION/KNOWN_LIMITATIONS mention the Node 18 primary and "
-              "Node 22 experimental runtimes")
+              "INSTALL/VERIFICATION/KNOWN_LIMITATIONS mention the Node 22 primary/v6 "
+              "and Node 18 fallback runtimes")
     else:
         check(checks, "pkg.docs-runtimes", "package",
               "Packaged docs describe both Node 18 and Node 22 variants", "SKIP",
