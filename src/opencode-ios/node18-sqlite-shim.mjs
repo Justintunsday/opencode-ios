@@ -69,6 +69,7 @@ export class DatabaseSync {
     this.readOnly = options.readOnly === true
     this.closed = false
     this.dirty = false
+    this.retryTimer = undefined
     this.lastFlush = Date.now()
     const persisted = this.readOnly || filename === ":memory:" || !filename ? undefined : tryRead(filename)
     this.impl = persisted ? new SQL.Database(persisted) : new SQL.Database()
@@ -92,7 +93,21 @@ export class DatabaseSync {
   flush(force = false) {
     if (this.readOnly || !this.dirty || !this.filename || this.filename === ":memory:") return
     if (!force && Date.now() - this.lastFlush < FLUSH_INTERVAL_MS) return
-    const bytes = this.impl.export()
+    let bytes
+    try {
+      bytes = this.impl.export()
+    } catch {
+      // sql.js refuses to export while a statement or write transaction is still active; keep the
+      // data dirty and retry after the current operation settles instead of failing the query.
+      if (!force && this.retryTimer === undefined) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = undefined
+          this.flush(true)
+        }, FLUSH_INTERVAL_MS)
+        if (this.retryTimer.unref) this.retryTimer.unref()
+      }
+      return
+    }
     const target = this.filename
     const temporary = `${target}.${process.pid}.tmp`
     mkdirSync(path.dirname(target), { recursive: true })

@@ -1,0 +1,376 @@
+# OpenCode iOS port patch -- 0012
+# Title: iPhoneOS pure-JS line REPL for `opencode` / `opencode mini` (no OpenTUI/FFI)
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0011 applied first.
+# Files: packages/cli/src/ios-repl.ts (new), packages/cli/src/util/ios.ts,
+#        packages/cli/src/commands/handlers/default.ts, packages/cli/src/commands/handlers/mini.ts,
+#        packages/cli/src/run/run.ts
+# Why: the real TUI cannot run on iPhoneOS. @opentui/core 0.8.0 loads its Zig native core through
+#      node:ffi, which needs Node.js >= 26.4 with --experimental-ffi; the device-verified iPhoneOS
+#      runtime is Node 22.9 (no node:ffi, `bad option: --experimental-ffi`). An iPhoneOS OpenTUI
+#      build could never be loaded, so patch 0011 only made the failure clean. This patch gives
+#      iPhone users a usable interactive experience in pure JS:
+#      - In a terminal, `opencode` (no args) and `opencode mini` start a node:readline line REPL
+#        instead of the TUI. It never imports @opencode/tui/OpenTUI.
+#      - Each line goes through the existing non-interactive run pipeline (same as `opencode run`),
+#        so streamed assistant text, tool activity lines, auto-handled permission/questions and
+#        Ctrl-C interruption behave identically; session continuity across turns is like run -c.
+#      - /help, /new, /exit and Ctrl-D; unknown /commands print help; errors return to the prompt
+#        instead of ending the process; stdin is no longer consumed by the run pipeline (REPL owns
+#        it via OPENCODE_RUN_SKIP_STDIN).
+#      - Non-TTY invocations keep the guidance + exit 1 (message now explains the Node >= 26.4 +
+#        node:ffi requirement, the TTY requirement and the line-REPL/headless alternatives).
+#      - OPENCODE_IOS_REPL_ASSUME_TTY=1 is a host-test hook to exercise the REPL with piped stdio.
+# Test: OPENCODE_IOS_REPL_ASSUME_TTY=1 node opencode.mjs with piped /help /new /exit lines on host
+#       Node 18.20.4 (verified locally); device PTY run with a mock provider does the real E2E.
+# Status: iOS-only path; non-iOS behavior is unchanged.
+
+diff --git a/packages/cli/src/commands/handlers/default.ts b/packages/cli/src/commands/handlers/default.ts
+index c741562..61d5b5f 100644
+--- a/packages/cli/src/commands/handlers/default.ts
++++ b/packages/cli/src/commands/handlers/default.ts
+@@ -15,20 +15,46 @@ import { Service } from "@opencode/client/effect/service"
+ import { OpenCode } from "@opencode/client/promise"
+ import { findSession } from "../../session-target"
+ import { errorMessage } from "../../util/error"
+-import { isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
++import { isInteractiveTTY, isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands, (input) =>
+   Effect.gen(function* () {
+-    // iPhoneOS has no OpenTUI native renderer: there is no TUI to start. Explain the
+-    // supported headless interface instead of starting the background server and crashing
+-    // inside the renderer with a native stack trace.
+-    if (isIOS()) {
+-      yield* Effect.sync(reportTUIUnavailable)
+-      return
+-    }
+     const requestedDirectory = Option.getOrUndefined(input.directory)
+     const requestedServer = Option.getOrUndefined(input.server)
+     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
++    // iPhoneOS has no OpenTUI native renderer (it needs Node >= 26.4 + node:ffi), so the full TUI
++    // cannot start. With a terminal, fall back to the pure-JS line REPL; without one, explain the
++    // supported headless interface instead of crashing inside the renderer with a stack trace.
++    if (isIOS()) {
++      if (!isInteractiveTTY()) {
++        yield* Effect.sync(reportTUIUnavailable)
++        return
++      }
++      const replServer = yield* ServerConnection.resolve({
++        server: requestedServer,
++        standalone: input.standalone,
++        mismatch: "replace",
++        onStart: (reason) =>
++          process.stderr.write(
++            reason === "version-mismatch"
++              ? "Restarting background server (version mismatch)...\n"
++              : "Starting background server...\n",
++          ),
++      })
++      const { runIOSRepl } = yield* Effect.promise(() => import("../../ios-repl"))
++      yield* Effect.promise(() =>
++        runIOSRepl({
++          server: replServer,
++          input: {
++            continue: input.continue,
++            session: Option.getOrUndefined(input.session),
++            auto: input.auto || input.yolo || input.dangerouslySkipPermissions,
++            prompt: Option.getOrUndefined(input.prompt),
++          },
++        }),
++      )
++      return
++    }
+     const preflight = UpdatePreflight.make()
+     yield* Effect.addFinalizer(() => Effect.promise(() => preflight.close()))
+     const serviceStarts = yield* Queue.unbounded<{
+diff --git a/packages/cli/src/commands/handlers/mini.ts b/packages/cli/src/commands/handlers/mini.ts
+index 15eab55..a787bed 100644
+--- a/packages/cli/src/commands/handlers/mini.ts
++++ b/packages/cli/src/commands/handlers/mini.ts
+@@ -3,15 +3,32 @@ import { Commands } from "../commands"
+ import { Runtime } from "../../framework/runtime"
+ import { ServerConnection } from "../../services/server-connection"
+ import { Config } from "../../config"
+-import { resolve } from "@opencode/tui/config"
+ import { Global } from "@opencode/util/global"
+-import { isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
++import { isInteractiveTTY, isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands.commands.mini, (input) =>
+   Effect.gen(function* () {
+-    // `opencode mini` is an OpenTUI frontend too; on iPhoneOS there is no native renderer.
++    // `opencode mini` is an OpenTUI frontend too; on iPhoneOS there is no native renderer. With a
++    // terminal fall back to the pure-JS line REPL, otherwise explain the supported interface.
+     if (isIOS()) {
+-      yield* Effect.sync(reportTUIUnavailable)
++      if (!isInteractiveTTY()) {
++        yield* Effect.sync(reportTUIUnavailable)
++        return
++      }
++      const replServer = yield* ServerConnection.resolve({ mismatch: "replace" })
++      const { runIOSRepl } = yield* Effect.promise(() => import("../../ios-repl"))
++      yield* Effect.promise(() =>
++        runIOSRepl({
++          server: replServer,
++          input: {
++            model: Option.getOrUndefined(input.model),
++            agent: Option.getOrUndefined(input.agent),
++            continue: input.continue,
++            session: Option.getOrUndefined(input.session),
++            prompt: Option.getOrUndefined(input.prompt),
++          },
++        }),
++      )
+       return
+     }
+     const { runMini, validateMiniTerminal } = yield* Effect.promise(() => import("../../mini"))
+@@ -21,6 +38,7 @@ export default Runtime.handler(Commands.commands.mini, (input) =>
+     })
+     const config = yield* Config.Service
+     const global = yield* Global.Service
++    const { resolve } = yield* Effect.promise(() => import("@opencode/tui/config"))
+     const resolved = resolve(yield* config.get(), { terminalSuspend: process.platform !== "win32" })
+     const fileSystem = yield* FileSystem.FileSystem
+     const runServicePromise = Effect.runPromiseWith(Context.make(FileSystem.FileSystem, fileSystem))
+diff --git a/packages/cli/src/ios-repl.ts b/packages/cli/src/ios-repl.ts
+new file mode 100644
+index 0000000..1a74724
+--- /dev/null
++++ b/packages/cli/src/ios-repl.ts
+@@ -0,0 +1,183 @@
++// Pure-JS line REPL used on iPhoneOS, where the OpenTUI renderer cannot load (see util/ios.ts).
++// It deliberately avoids @opencode/tui and any native rendering code: a node:readline loop feeds
++// each line through the same non-interactive run pipeline that headless `opencode run` uses, so
++// streaming text, tool activity, permission/question auto-handling and Ctrl-C interruption behave
++// exactly like `opencode run` (that pipeline installs its own SIGINT handler while a turn runs).
++import { createInterface } from "node:readline"
++import { runNonInteractiveWithOptions } from "./run/run"
++import type { ServerConnection } from "./services/server-connection"
++
++export type ReplInput = {
++  readonly model?: string
++  readonly agent?: string
++  readonly continue?: boolean
++  readonly session?: string
++  readonly thinking?: boolean
++  readonly auto?: boolean
++  readonly prompt?: string
++}
++
++export type ReplOptions = {
++  readonly server: ServerConnection.Resolved
++  readonly input: ReplInput
++}
++
++const HELP = `commands:
++  /help   show this help
++  /new    start a new session on the next prompt
++  /exit   quit (Ctrl-D also quits)
++  Ctrl-C  cancel the running turn (does not quit)`
++
++export async function runIOSRepl(options: ReplOptions) {
++  const { server, input } = options
++  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)
++  const rl = createInterface({
++    input: process.stdin,
++    output: process.stdout,
++    prompt: interactive ? "> " : "",
++    terminal: interactive,
++    historySize: 200,
++  })
++
++  let continueSession = input.continue ?? false
++  let session = input.session
++  let finished = false
++  let busy = false
++  let eof = false
++  let resolveDone: (() => void) | undefined
++  const pending: string[] = []
++  // The run pipeline must not consume stdin: the REPL owns it.
++  process.env.OPENCODE_RUN_SKIP_STDIN = "1"
++
++  const write = (text: string) => process.stdout.write(text.endsWith("\n") ? text : text + "\n")
++  // With piped stdio readline does not render the prompt itself; write one so scripts can see it.
++  const showPrompt = () => {
++    if (!interactive) process.stdout.write("> ")
++    rl.prompt()
++  }
++  const settle = () => {
++    if (finished) return
++    finished = true
++    process.exitCode = 0
++    resolveDone?.()
++  }
++  // Piped input reaches EOF immediately; keep the loop alive until queued lines and the running
++  // turn are done, then exit cleanly (an interactive terminal keeps reading until Ctrl-D//exit).
++  const maybeFinish = () => {
++    if (!eof || busy || pending.length > 0) return
++    settle()
++  }
++  const finish = () => {
++    rl.close()
++    settle()
++  }
++  // After handling a line: keep prompting interactively, or settle once piped input is exhausted.
++  // Queued lines are drained even after EOF so scripted `/cmd` sequences all execute.
++  const respond = () => {
++    if (!eof) return showPrompt()
++    if (pending.length > 0) return drain()
++    maybeFinish()
++  }
++
++  const runTurn = async (line: string) => {
++    busy = true
++    rl.pause()
++    try {
++      // The run pipeline reports failures itself and only sets process.exitCode; reset it so one
++      // failed turn (provider/network) cannot change the REPL's eventual exit status.
++      process.exitCode = 0
++      await runNonInteractiveWithOptions(
++        {
++          server,
++          message: line.split(/\s+/).filter(Boolean),
++          continue: continueSession,
++          session: continueSession ? undefined : (session ?? input.session),
++          fork: false,
++          model: input.model,
++          agent: input.agent,
++          format: "default",
++          file: [],
++          thinking: input.thinking ?? false,
++          auto: input.auto ?? false,
++        },
++        {},
++      )
++      continueSession = true
++      session = undefined
++    } catch (error) {
++      process.exitCode = 0
++      write(`Error: ${error instanceof Error ? error.message : String(error)}`)
++    }
++    process.exitCode = 0
++    busy = false
++    rl.resume()
++    if (eof && pending.length === 0) return maybeFinish()
++    drain()
++  }
++
++  const processLine = (line: string) => {
++    if (finished) return
++    if (line === "/exit" || line === "/quit") return finish()
++    if (line === "/help") {
++      write(HELP)
++      return respond()
++    }
++    if (line === "/new") {
++      continueSession = false
++      session = undefined
++      write("Starting a new session on the next prompt.")
++      return respond()
++    }
++    if (line.startsWith("/")) {
++      write(`Unknown command: ${line}`)
++      write(HELP)
++      return respond()
++    }
++    void runTurn(line)
++  }
++
++  // Lines typed while a turn runs (or piped input arriving ahead of the loop) are queued, not lost.
++  const drain = () => {
++    if (finished) return
++    const next = pending.shift()
++    if (next !== undefined) return processLine(next)
++    respond()
++  }
++
++  write(`opencode iOS line REPL (full TUI/OpenTUI unavailable on iPhoneOS).`)
++  write(`Type a prompt and press Enter. /help for commands, /exit or Ctrl-D to quit.`)
++  showPrompt()
++
++  rl.on("line", (raw) => {
++    if (finished) return
++    const line = raw.trim()
++    if (!line) {
++      if (!busy) respond()
++      return
++    }
++    if (busy) {
++      pending.push(line)
++      return
++    }
++    processLine(line)
++  })
++
++  // Idle Ctrl-C: keep the loop alive (during a turn the run pipeline owns SIGINT and cancels it).
++  rl.on("SIGINT", () => {
++    if (finished) return
++    process.stdout.write("\n")
++    write("(Ctrl-C cancels a running turn; /exit or Ctrl-D quits)")
++    respond()
++  })
++
++  const initial = input.prompt?.trim()
++  if (initial) processLine(initial)
++
++  await new Promise<void>((resolve) => {
++    resolveDone = resolve
++    rl.on("close", () => {
++      eof = true
++      maybeFinish()
++    })
++  })
++}
+diff --git a/packages/cli/src/run/run.ts b/packages/cli/src/run/run.ts
+index d15cdfe..2c47bf3 100644
+--- a/packages/cli/src/run/run.ts
++++ b/packages/cli/src/run/run.ts
+@@ -77,7 +77,9 @@ async function run(input: RunCommandInput, options: ExecutionOptions) {
+   const root = options.root ?? process.env.PWD ?? process.cwd()
+   const local = localDirectory(root)
+   const directory = options.useServerDirectory ? undefined : (options.directory ?? local)
+-  const message = mergeInput(formatMessage(input.message), process.stdin.isTTY ? undefined : await readStdin())
++  // The iOS line REPL reuses this pipeline with a TTY-less test harness; it owns stdin itself.
++  const piped = process.stdin.isTTY || process.env.OPENCODE_RUN_SKIP_STDIN === "1" ? undefined : await readStdin()
++  const message = mergeInput(formatMessage(input.message), piped)
+   if (!message?.trim()) fail("You must provide a message")
+   const files = await Promise.all(input.file.map((file) => prepareFile(file, root, options)))
+   const prepared = { directory, message, files }
+diff --git a/packages/cli/src/util/ios.ts b/packages/cli/src/util/ios.ts
+index 7188f16..44c2ea4 100644
+--- a/packages/cli/src/util/ios.ts
++++ b/packages/cli/src/util/ios.ts
+@@ -1,8 +1,13 @@
+-// iPhoneOS has no OpenTUI native renderer (ios-arm64 asset): the interactive TUI and
+-// `opencode mini` cannot start on the port. The headless CLI is the supported interface.
++// iPhoneOS has no OpenTUI native renderer: OpenTUI's Node binding needs Node.js >= 26.4 with
++// `--experimental-ffi` / `node:ffi` to load its native core, and the shipped iPhoneOS runtime
++// is Node 22.9 (no node:ffi). The full TUI and `opencode mini` therefore cannot start here.
++// In a terminal the CLI falls back to a pure-JS line REPL (see ios-repl.ts); scripts and pipes
++// use the normal headless commands.
+ export const TUI_UNAVAILABLE_MESSAGE = `Interactive TUI is not available on this iOS build.
+-The OpenTUI native renderer has no iPhoneOS (ios-arm64) build, so the full TUI
+-and \`opencode mini\` cannot start on this device. Use the headless CLI instead:
++OpenTUI needs Node.js >= 26.4 with node:ffi (--experimental-ffi), which this iPhoneOS
++runtime (Node ${process.versions.node}) cannot provide, so the full TUI and \`opencode mini\`
++cannot start here. In a terminal, run \`opencode\` (or \`opencode mini\`) for the line REPL.
++Interactive mode requires a TTY (stdin and stdout). For scripts and pipes use the headless CLI:
+   opencode run "your prompt"        # one-shot agent turn
+   opencode run -c "your prompt"     # continue the last session
+   opencode run --standalone "..."   # private server (recommended)
+@@ -13,6 +18,14 @@ export function isIOS() {
+   return (process.platform as string) === "ios" || process.env.OPENCODE_IOS === "1"
+ }
+ 
++// The line REPL needs an interactive terminal. OPENCODE_IOS_REPL_ASSUME_TTY is a host-test hook
++// (CI exercises the REPL with piped stdio on non-iOS hosts).
++export function isInteractiveTTY() {
++  return Boolean(
++    (process.stdin.isTTY && process.stdout.isTTY) || process.env.OPENCODE_IOS_REPL_ASSUME_TTY === "1",
++  )
++}
++
+ // Defensive fallback for renderer initialization failures on iOS builds.
+ export function isTUIRendererUnavailable(error: unknown) {
+   const text = String(error instanceof Error ? error.message : error)
