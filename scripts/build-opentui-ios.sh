@@ -198,15 +198,20 @@ cmd_build() {
 
 # --- package / validate ------------------------------------------------------
 find_dylib() {
-  local candidate
-  candidate="$(find "$SRC/packages/native/zig-out" -name "$DYLIB_NAME" -type f 2>/dev/null | head -n 1 || true)"
-  if [ -n "$candidate" ]; then
-    echo "$candidate"
-    return 0
-  fi
-  log "zig-out tree (for diagnosis):"
-  find "$SRC/packages/native/zig-out" -maxdepth 4 -type f 2>/dev/null | sed -n '1,40p' >&2 || true
-  die "built $DYLIB_NAME not found under $SRC/packages/native/zig-out"
+  local candidate base
+  # The build installs libraries to <package>/lib/<output_name> (install_path is "../lib/..." in
+  # build.zig), older/other targets may end up under zig-out; search both, then the package root.
+  for base in "$SRC/packages/native/lib" "$SRC/packages/native/zig-out" "$SRC/packages/native"; do
+    [ -d "$base" ] || continue
+    candidate="$(find "$base" -name "$DYLIB_NAME" -type f 2>/dev/null | head -n 1 || true)"
+    if [ -n "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  log "native package tree (for diagnosis):"
+  find "$SRC/packages/native" -maxdepth 4 \( -name '*.dylib' -o -name 'zig-out' -o -name 'lib' \) -type f 2>/dev/null | sed -n '1,40p' >&2 || true
+  die "built $DYLIB_NAME not found under $SRC/packages/native"
 }
 
 validate_macho() {
