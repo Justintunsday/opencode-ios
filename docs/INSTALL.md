@@ -99,30 +99,33 @@ prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manife
 declares the capability profile.
 
 > **Shipping status (2026-11-01): the Node 22 v6 variant is DEVICE-VERIFIED and
-> released.** Current release: **`v2.2.5-ios.3`** — `OpenCode-iOS-rootless.deb`,
-> SHA-256 `8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`
-> (52,964,804 bytes), from package run
-> <https://github.com/Justintunsday/opencode-ios/actions/runs/41279438605>
-> (runtime `41273024931`, CLI `41278475579` with patch `0011`). Installed and
+> released.** Current release: **`v2.2.5-ios.5`** —
+> <https://github.com/Justintunsday/opencode-ios/releases/tag/v2.2.5-ios.5>,
+> `OpenCode-iOS-rootless.deb`, SHA-256
+> `b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073`
+> (52,926,812 bytes), from package run
+> <https://github.com/Justintunsday/opencode-ios/actions/runs/41292412240>
+> (runtime `41273024931`, CLI `41291337297` with patch `0014`). Installed and
 > exercised on the target iPhone SE 2 / iOS 16.1.1 / Dopamine rootless: packaged
 > acceptance **PASS=14 / FAIL=0** — `--version`, `--help`, `debug paths`,
 > `debug config`, `models`, `auth list`, `session list` (native `node:sqlite` with
 > WAL), remove/reinstall cycle, and a mock-provider agent turn whose shell tool
-> executed on the device — plus packaged **PTY tests** proving that bare
-> `opencode` and `opencode mini` print clean TUI-unavailable guidance and exit 1
-> (no stack trace, no background server left running). Raw logs:
-> [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The previous release
-> `v2.2.5-ios.2` (`2f96fc18…`, same PASS=14/0) is kept for traceability but is
-> superseded by `.3`. **Candidate `v2.2.5-ios.4`** (line-based REPL, patch `0012`)
-> is **NOT released/device-verified**: its REPL started on device but agent turns
-> failed (`Transport: terminated`/`fetch failed`, connection-reuse bug); fix is in
-> CLI patch `0013` and **`v2.2.5-ios.5` is under device acceptance** — check
-> [`VERIFICATION.md`](VERIFICATION.md) for the exact released artifact before
-> installing. The launcher's mandatory `--single-threaded` flag is what
-> makes the v6 mprotect W^X runtime safe: without it JIT-heavy code dies with
-> SIGBUS because V8 background threads race the process-wide mprotect toggle. The
-> **Node 18 variant is the documented alternative** (V8 10.2 memory model, sql.js
-> sqlite persistence caveats) and is packaged/CI-validated separately. Superseded
+> executed on the device — plus packaged **REPL PTY acceptance** (interactive
+> `opencode`: turn 1 first attempt, a following turn recovered through the
+> documented 3-attempt retry, `/new` + another turn, clean `/exit` rc=0, shell-tool
+> marker written) and packaged **non-TTY guidance** checks (`opencode` /
+> `opencode mini` with stdin redirected: rc=1, clean guidance, no stack trace).
+> Raw logs: [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). Previous releases
+> `v2.2.5-ios.3` (`8a625f75…`, PASS=14/0 + TUI-guidance PTY tests) and
+> `v2.2.5-ios.2` (`2f96fc18…`, PASS=14/0) are kept for traceability and are
+> superseded by `.5`. **Candidate `v2.2.5-ios.4`** (first line REPL, patch `0012`)
+> is **NOT released/device-verified** (packaged REPL agent-turn failure); its fixes
+> are in CLI patches `0013`/`0014`, now verified in `.5`. The launcher's mandatory
+> `--single-threaded` flag is what makes the v6 mprotect W^X runtime safe: without
+> it JIT-heavy code dies with SIGBUS because V8 background threads race the
+> process-wide mprotect toggle. The **Node 18 variant is the documented
+> alternative** (V8 10.2 memory model, sql.js sqlite persistence caveats) and is
+> packaged/CI-validated separately (not device-verified). Superseded
 > builds are not shippable: v3-runtime package (run `41202900005`; SIGBUS on
 > generated code), the v4-runtime package (run `41218342323`;
 > SIGTRAP/FatalOOM at V8 code-range reservation because iOS denies `mprotect`
@@ -289,11 +292,13 @@ with 1 s spacing (patch `0014`) and a short first-turn warm-up; a persistent
 failure prints `Retrying turn…` lines and returns cleanly to the prompt instead of
 crashing. When standard input is not a TTY (`opencode </dev/null`, scripts) it
 prints guidance and exits 1 — use `opencode run "..."` for automation. **Status:**
-the first packaged REPL candidate (`v2.2.5-ios.4`) failed device agent turns
-(connection reuse; fixed in CLI patches `0013`/`0014`); the current released
-`v2.2.5-ios.3` prints guidance and exits 1 for bare `opencode`/`opencode mini`.
-`v2.2.5-ios.5` is the REPL release candidate under device acceptance — see
-[`VERIFICATION.md`](VERIFICATION.md) for exact artifact status before installing.
+the current released **`v2.2.5-ios.5`** includes the line REPL and passed the
+packaged REPL PTY acceptance on device (turn 1 first attempt, a retried turn
+recovering on attempt 3, `/new`, clean `/exit` rc=0, shell-tool marker), plus
+non-TTY guidance checks (rc=1, no stack trace). The earlier candidate
+`v2.2.5-ios.4` failed packaged REPL agent turns (connection reuse; fixed in CLI
+patches `0013`/`0014`) and is superseded/NOT device-verified. See
+[`VERIFICATION.md`](VERIFICATION.md) for exact artifact status.
 A future Node 26+ iPhoneOS runtime could enable the real TUI. See
 [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 

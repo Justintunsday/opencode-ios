@@ -3,20 +3,19 @@
 This list is deliberately honest. Every item is either a **documented fallback**
 implemented in the port or a **known limitation observed on real hardware**.
 "CI-green" does not override any of it. Target device: iPhone SE 2, iOS 16.1.1,
-Dopamine rootless. **Current release `v2.2.5-ios.3` (SHA-256
-`8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`) is
-DEVICE-VERIFIED — packaged acceptance PASS=14 / FAIL=0 (2026-11-01) plus packaged
-PTY TUI-guidance tests; the previous release `v2.2.5-ios.2` (SHA-256 `2f96fc18…`,
-same PASS=14/0) is kept for traceability. Candidate `v2.2.5-ios.4` (line REPL)
-is superseded/NOT device-verified; the REPL fix is in patch `0013`, retry hardening
-in patch `0014`, and the `v2.2.5-ios.5` candidate (`.deb` SHA-256 `b23ed1fc…`,
-patch `0014`) is under device acceptance.** Raw evidence:
+Dopamine rootless. **Current release `v2.2.5-ios.5` (SHA-256
+`b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073`) is
+DEVICE-VERIFIED — packaged acceptance PASS=14 / FAIL=0 plus packaged REPL PTY
+acceptance and non-TTY guidance checks (2026-11-01). Previous releases
+`v2.2.5-ios.3` (`8a625f75…`, PASS=14/0 + TUI-guidance PTY tests) and
+`v2.2.5-ios.2` (`2f96fc18…`, PASS=14/0) are kept for traceability. Candidate
+`v2.2.5-ios.4` is superseded/NOT device-verified.** Raw evidence:
 [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md).
 
 | # | Limitation | Impact | Status |
 | --- | --- | --- | --- |
 | 1 | **No native PTY for interactive terminal panes.** Upstream `@opencode/pty`/`node-pty` has no iPhoneOS build; shell tool calls use pipe-based `child_process` fallback and spawn the rootless dash (`/var/jb/bin/sh`) through the launcher's `PATH` prepend. | No interactive TTY allocation for tool-invoked shells; TUI terminal panes degrade or are unavailable. Headless `opencode run` is the reliable mode (device-verified via the packaged launcher). | documented fallback |
-| 2 | **Full-screen TUI is unavailable on iOS; a line-based REPL is provided instead (patch `0012`, REPL turn-lifecycle fix in `0013`, retry hardening in `0014`; release candidate `v2.2.5-ios.5`).** The full OpenTUI interface cannot run on the iPhoneOS Node 22.9 runtime: `@opentui/core` 0.8.0's Node binding requires **Node.js >= 26.4.0 with `--experimental-ffi` (`node:ffi`)** to load its native Zig core, and Node 22.9 has no `--experimental-ffi` (device-verified: `bad option: --experimental-ffi`). Patch `0012` adds a **line-based REPL** (plain readline loop, streamed assistant text + tool activity, `/new`, `/exit`, `/help`, Ctrl-C cancels the current turn, session continuity); `opencode mini` aliases the same REPL. Patch `0013` recreates/re-resolves the server connection per turn (the first packaged candidate `v2.2.5-ios.4` failed agent turns by reusing a dead connection); patch `0014` gives each turn a 3-attempt budget with a fresh connection, 1 s spacing and a 300 ms first-turn warm-up, and a persistent failure returns cleanly to the prompt. **Occasional transport errors on the first attempt are expected** (intermittent iPhoneOS network/runtime flake — the same flake appears with headless `opencode run`): the REPL retries and the turn usually succeeds on retry. Non-TTY invocations (`opencode </dev/null`, scripts) print clean guidance and exit 1. The full-screen TUI would need a future Node 26+ iPhoneOS runtime. | Use the REPL interactively (NewTerm 3 / SSH TTY) in `v2.2.5-ios.5`+ or the headless `opencode run ...` interface; expect an occasional first-attempt transport error and retry. `--help`, `models`, `auth`, `session`, `debug` are also available. | full TUI: unavailable (Node >= 26.4 + `node:ffi` required); REPL: device-functional with patch `0013` (4-turn PTY run + marker PASS); `v2.2.5-ios.5` packaged acceptance pending |
+| 2 | **Full-screen TUI is unavailable on iOS; a line-based REPL is provided instead (patch `0012`, turn-lifecycle fix `0013`, retry budget `0014`; DEVICE-VERIFIED in released `v2.2.5-ios.5`).** The full OpenTUI interface cannot run on the iPhoneOS Node 22.9 runtime: `@opentui/core` 0.8.0's Node binding requires **Node.js >= 26.4.0 with `--experimental-ffi` (`node:ffi`)** to load its native Zig core, and Node 22.9 has no `--experimental-ffi` (device-verified: `bad option: --experimental-ffi`). The **line-based REPL** (plain readline loop, streamed assistant text + tool activity, `/new`, `/exit`, `/help`, Ctrl-C cancels the current turn, session continuity) is what `opencode` starts in a TTY; `opencode mini` aliases it. Patch `0013` recreates/re-resolves the server connection per turn (the first packaged candidate `v2.2.5-ios.4` failed agent turns by reusing a dead connection); patch `0014` gives each turn a 3-attempt budget with a fresh connection, 1 s spacing and a 300 ms first-turn warm-up, and a persistent failure returns cleanly to the prompt. **Occasional transport errors on the first attempt are expected** (intermittent iPhoneOS network/runtime flake — the same flake appears with headless `opencode run`): the REPL retries and the turn usually succeeds on retry. Non-TTY invocations (`opencode </dev/null`, scripts) print clean guidance and exit 1. The full-screen TUI would need a future Node 26+ iPhoneOS runtime. | Use the REPL interactively (NewTerm 3 / SSH TTY) or the headless `opencode run ...` interface; expect an occasional first-attempt transport error and retry. `--help`, `models`, `auth`, `session`, `debug` are also available. | full TUI: unavailable (Node >= 26.4 + `node:ffi` required); REPL: **DEVICE-VERIFIED** in packaged `v2.2.5-ios.5` (turn-1 first attempt, retried turn recovered on attempt 3, `/new`, `/exit` rc=0, shell-tool marker, non-TTY guidance rc=1) |
 | 3 | **No native file watcher.** `@parcel/watcher` has no iPhoneOS build; watch-based features fall back to polling/backend fallbacks (device log: "watcher backend not supported", non-fatal; polling/other watchers still deliver file-change events). | Live reload/incremental watching may lag or not happen; re-run commands to observe changes. Large repositories are affected more. | documented fallback (device-observed) |
 | 4 | **No `fff`/`ffi-rs` native modules.** Upstream ships an unavailable-proxy fallback for ffi; it is selected on iOS. Desktop native binaries are removed from the packaged assets (CI rejects stock bundles that still contain them). | Features requiring native FFI (and fff-backed search/UI helpers) are unavailable. Pure-JS and WASM paths can work because the final runtime enables WebAssembly, but wasm-backed optional components are not individually validated on device. | documented fallback |
 | 5 | **Two runtime variants: Node 22.9.0 v6 (primary, device-verified) and Node 18.20.4 (fallback).** The `.deb` ships exactly one. The **node22 v6 runtime is DEVICE-VERIFIED for the released package** with the mandatory `--single-threaded` launcher flag (JIT/WASM/fetch/ICU/CLI matrix and mock-provider agent turn PASS); node18 remains the documented alternative (V8 10.2 memory model, sql.js sqlite shim, acceptance pending). Upstream OpenCode's Node build path normally targets an even newer Node version, so APIs added after the chosen line are missing (e.g. `module.registerHooks` on Node 18/22.9); the iOS prelude avoids them and the Vite bundle is patched. Both runtimes are built with WASM+JIT+full-ICU. | Variant-specific behaviour must be taken into account when triaging; `package-report.json` records `variant`/`runtime_kind`. | node22 v6: DEVICE-VERIFIED (packaged PASS=14/0); node18: fallback, acceptance pending |
@@ -67,19 +66,20 @@ patch `0014`) is under device acceptance.** Raw evidence:
   The node18 variant intentionally does not require the Node-22-only W^X patches
   (V8 10.2 uses its own device-proven memory model).
 - Package history: **node22 v6 is the released, DEVICE-VERIFIED primary path.**
-  Current release `v2.2.5-ios.3` — `.deb` SHA-256
-  `8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`
-  (package run `41279438605`; runtime `41273024931`; CLI `41278475579`;
-  packaged acceptance PASS=14/0 + PTY TUI-guidance tests). Previous release
-  `v2.2.5-ios.2` (`.deb` SHA-256
-  `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`,
-  package run `41274221353`; PASS=14/0) is kept for traceability. Do **not**
+  Current release `v2.2.5-ios.5` — `.deb` SHA-256
+  `b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073`
+  (package run `41292412240`; runtime `41273024931`; CLI `41291337297`, patch
+  `0014`; packaged acceptance PASS=14/0 + REPL PTY acceptance + non-TTY guidance).
+  Previous releases `v2.2.5-ios.3` (`.deb` SHA-256 `8a625f75…`, PASS=14/0 +
+  PTY TUI-guidance tests) and `v2.2.5-ios.2` (`2f96fc18…`, PASS=14/0) are kept
+  for traceability. Candidate `v2.2.5-ios.4` (`299ee574…`) is superseded / NOT
+  device-verified (REPL agent turns failed) — do not publish. Do **not**
   rebuild/replace a released artifact without re-running device acceptance.
   Superseded node22 builds are not shippable: v1 intermediate (run `41185611403`;
   WASM-disabled), v3 (run `41202900005`; SIGBUS), v4 (run `41218342323`; SIGTRAP/
   `FatalOOM` at V8 code-range reservation), v5. **node18** remains a documented
-  alternative fallback (repo-built runtime CI-green; no primary acceptance
-  requirement).
+  alternative fallback (CI-validated package `41291038144`, `.deb` `0be49c37…`;
+  UNVERIFIED ON DEVICE, no primary acceptance requirement).
 - Optional bundled `rg` (stretch `ios-ripgrep` artifact) is only used if the
   artifact was published; its absence is reported as `SKIP`, not as a failure of
   the package. The optional `libjitshim.dylib` (`ios-jit-shim` artifact) is
