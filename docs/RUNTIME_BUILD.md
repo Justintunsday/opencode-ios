@@ -702,6 +702,32 @@ Conclusion: the runtime is device-functional; the launcher MUST pass
 `--single-threaded` (§6.5). No entitlement changes were required (2-key set
 accepted for JIT+wasm+fetch).
 
+### Related fallback runtime: Node 18 (build-runtime-node18.yml)
+
+A separate `build-runtime-node18.yml` / `scripts/build-ios-runtime-node18.sh`
+builds a Node 18.20.4 / V8 10.2 fallback runtime (`ios-node18-runtime`,
+documented as the alternative, **UNVERIFIED ON DEVICE**; node22+v6 is primary).
+Latest green run: [41285669688](https://github.com/Justintunsday/opencode-ios/actions/runs/41285669688)
+- node 81,511,888 bytes sha256 `74e1c5c3ca1e8d5c1430552706cf21151941dfd6fa97a759345aea98aa247bea`,
+2-key signed, iPhoneOS arm64 minOS 13.0, manifest now packager-gate-correct
+(vtool-derived `min_ios_from_vtool`, no otool header in `linked_dylibs`,
+`v8_jit`/`webassembly` "enabled:" text without forbidden words, runtime-manifest
+uploaded). Node 18 builds are not bit-reproducible (same inputs produced
+`467511b5…`, `1f29f7fb…`, `74e1c5c3…`), so always package the SHA256SUMS of the
+chosen run.
+
+### Cache incident (2026-11-01, node22 build cache)
+
+A docs-only rerun (41285699804) failed because the 16.14 GiB `out/Release`
+action cache had become corrupt in the cache store: gtar reported "Illegal byte
+sequence" and extracted only partially (runner disk was fine), after which the
+normalize step ran against a corrupted checkout. The workflow now deletes any
+partially extracted `nodejs-mobile/out/Release` when `cache-hit != "true"` and
+falls back to a clean cold build; the corrupt 16.14 GiB cache entry (and a stale
+22 MB leftover) were deleted, returning the repository to ~7.5 GiB of the 10 GiB
+action-cache budget. This does not affect the device-verified artifact/package:
+run 41273024931 and the published `.deb` are unchanged.
+
 ## 9.1 Downstream consumption (packaging integration)
 
 The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
@@ -726,11 +752,12 @@ The **v6** runtime (device-verified with `--single-threaded`) was then packaged:
 | verification/toolchain | port-verification 41274218225 success; toolchain smoke 41274218101 success |
 
 Earlier iterations (v3/v4/v5) were all rejected on device (SIGBUS / SIGTRAP / RWX
-requests, §6.4). The packaged `.deb` from 41274221353 is the candidate for the
-final device acceptance (install + `--single-threaded` launcher + CLI matrix +
-agent E2E) before it is called shippable. The runtime manifest now declares the
-launcher flags and the device-verified binary sha (`device_verification` block)
-so packagers can gate on it.
+requests, §6.4). The packaged `.deb` from 41274221353 then passed packaged device
+acceptance: installation, `--single-threaded` launcher path, full CLI matrix and
+an E2E agent turn (release v2.2.5-ios.2 device-verified; subsequent releases
+v2.2.5-ios.3+ are built from the same device-verified v6 runtime). The runtime
+manifest declares the launcher flags and the device-verified binary sha
+(`device_verification` block) so packagers can gate on it.
 
 ## 10. Limitations / unresolved issues
 
