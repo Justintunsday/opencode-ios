@@ -86,7 +86,7 @@ the device-test artifact):
 | CLI artifact | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41273112229> (patch `0010`: children inherit `--single-threaded`); `opencode.mjs` sha256 `2e916ffad16fb7ae2b71d4446a527d1fa11ec82e94d7cd12932373d734cbd410` |
 | Optional bundled `rg` | `ios-ripgrep` from the runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
 | Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim` not shipped); package-report carries variant fields, manifest device-verification markers and launcher-flag cross-check |
-| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41274690207> (test-port; fill artifact id/counts when green) |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41274690207> (artifact `port-verification`, id `13070776185`): 48 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim`), `ci_status=PASS`, `device_status=UNVERIFIED ON DEVICE` (CI runner) |
 | Device status | **Packaged artifact UNVERIFIED ON DEVICE (CI runner)**; the runtime manifest itself is DEVICE-VERIFIED (2-key, single-threaded launch) and the maintainer has device-verified the same CLI artifact on the same runtime. The maintainer's packaged-acceptance run (installed `.deb`) is in progress; on receipt these results are recorded under *Device verification results* and the final release `.deb` may be rebuilt from the same runtime/CLI to carry the packaged PASS. |
 
 ### Node 22 pipeline history (superseded, not shippable)
