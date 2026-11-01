@@ -191,9 +191,35 @@ cmd_configure() {
   log "configure ${CONFIGURE_FLAGS[*]}"
   ./configure "${CONFIGURE_FLAGS[@]}" 2>&1 | tee "$LOG_DIR/configure.log"
   [[ -f out/Makefile ]] || die "configure succeeded but out/Makefile was not generated"
-  grep -q "'OS': 'ios'" config.gypi || die "config.gypi does not select OS=ios"
-  grep -q "'v8_enable_webassembly': 1" config.gypi || die "config.gypi does not enable V8 WebAssembly"
-  grep -q "'v8_enable_i18n_support': 1" config.gypi || die "config.gypi does not enable V8 i18n (full-icu)"
+  # Node 26 writes config.gypi as JSON (json.dumps), so validate the variables
+  # as JSON instead of grepping the Node 22 pprint-style single-quote layout.
+  python3 - out/Makefile config.gypi <<'PY'
+import json
+import sys
+
+makefile, gypi = sys.argv[1], sys.argv[2]
+with open(gypi, encoding="utf-8") as fh:
+    variables = json.load(fh)["variables"]
+
+errors = []
+if variables.get("OS") != "ios":
+    errors.append(f"OS={variables.get('OS')!r} (want 'ios')")
+if int(variables.get("v8_enable_webassembly", 0)) != 1:
+    errors.append(f"v8_enable_webassembly={variables.get('v8_enable_webassembly')!r}")
+if int(variables.get("v8_enable_i18n_support", 0)) != 1:
+    errors.append(f"v8_enable_i18n_support={variables.get('v8_enable_i18n_support')!r}")
+if variables.get("target_arch") != "arm64":
+    errors.append(f"target_arch={variables.get('target_arch')!r} (want 'arm64')")
+if errors:
+    sys.exit("config.gypi validation failed: " + "; ".join(errors))
+print(
+    "config.gypi OK: OS=ios target_arch=arm64 "
+    f"v8_enable_webassembly={variables.get('v8_enable_webassembly')} "
+    f"v8_enable_i18n_support={variables.get('v8_enable_i18n_support')} "
+    f"v8_lite_mode={variables.get('v8_lite_mode')} "
+    f"icu_small={variables.get('icu_small')}"
+)
+PY
   if ! grep -q '^NODE_TARGET_TYPE=executable$' config.mk; then
     warn "config.mk has no NODE_TARGET_TYPE=executable; node may be built as a library"
   fi
@@ -287,11 +313,11 @@ PY
   nm -a "$bin" 2>/dev/null | grep -i ' _u_' > "$nm_file" || true
   if grep -qE ' (_u_strToUpper|_u_strToLower|_u_strlen|_icu_74|_icu_75|_icu_76|_icu_77|_icu_78)$' "$nm_file" 2>/dev/null; then icu_signals=$((icu_signals + 1)); fi
   if strings -a "$bin" 2>/dev/null | grep -qiE 'icudt[0-9]+[lb]?\.dat|International Components for Unicode|ICU [0-9]+\.[0-9]+'; then icu_signals=$((icu_signals + 1)); fi
-  if grep -q "'v8_enable_i18n_support': 1" "$NODE_SRC/config.gypi"; then icu_signals=$((icu_signals + 1)); fi
-  if grep -q "'icu_small': 'false'" "$NODE_SRC/config.gypi" 2>/dev/null; then icu_signals=$((icu_signals + 1)); fi
+  if python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["variables"]; sys.exit(0 if int(v.get("v8_enable_i18n_support",0))==1 else 1)' "$NODE_SRC/config.gypi"; then icu_signals=$((icu_signals + 1)); fi
+  if python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["variables"]; sys.exit(0 if str(v.get("icu_small","")).lower()=="false" else 1)' "$NODE_SRC/config.gypi"; then icu_signals=$((icu_signals + 1)); fi
   {
     echo "== ICU signals ($icu_signals/4) =="
-    echo "config.gypi: $(grep -E "'(v8_enable_i18n_support|icu_small|icu_path)':" "$NODE_SRC/config.gypi" | tr -d ' ' | tr '\n' ' ' || true)"
+    echo "config.gypi: $(python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["variables"]; print(" ".join(f"{k}={v.get(k)}" for k in ("v8_enable_i18n_support","icu_small","icu_path","icu_version")))' "$NODE_SRC/config.gypi")"
     echo "nm u_* symbol matches: $(wc -l < "$nm_file" | tr -d ' ')"
     grep -m3 -iE 'icudt|International Components' "$DIST/nm-symbols-$stage.txt" 2>/dev/null || true
   } | tee "$icu_evidence"
@@ -301,13 +327,13 @@ PY
   log "[$stage] WebAssembly audit"
   local wasm_evidence="$DIST/wasm-evidence-$stage.txt"
   local wasm_signals=0
-  if grep -q "'v8_enable_webassembly': 1" "$NODE_SRC/config.gypi"; then wasm_signals=$((wasm_signals + 1)); fi
-  if grep -q "'v8_lite_mode': 0" "$NODE_SRC/config.gypi" 2>/dev/null; then wasm_signals=$((wasm_signals + 1)); fi
+  if python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["variables"]; sys.exit(0 if int(v.get("v8_enable_webassembly",0))==1 else 1)' "$NODE_SRC/config.gypi"; then wasm_signals=$((wasm_signals + 1)); fi
+  if python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["variables"]; sys.exit(0 if int(v.get("v8_lite_mode",1))==0 else 1)' "$NODE_SRC/config.gypi"; then wasm_signals=$((wasm_signals + 1)); fi
   if nm -a "$bin" 2>/dev/null | grep -q 'wasm'; then wasm_signals=$((wasm_signals + 1)); fi
   if strings -a "$bin" 2>/dev/null | grep -qiE 'WebAssembly\.(Module|Instance|Memory)|wasm_compile'; then wasm_signals=$((wasm_signals + 1)); fi
   {
     echo "== WebAssembly signals ($wasm_signals/4) =="
-    echo "config.gypi: $(grep -E "'(v8_enable_webassembly|v8_lite_mode|v8_enable_wasm_code_gc)':" "$NODE_SRC/config.gypi" | tr -d ' ' | tr '\n' ' ' || true)"
+    echo "config.gypi: $(python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["variables"]; print(" ".join(f"{k}={v.get(k)}" for k in ("v8_enable_webassembly","v8_lite_mode","v8_enable_wasm_code_gc")))' "$NODE_SRC/config.gypi")"
     echo "Phase A note: V8 14.6 iOS executable-memory model is NOT adapted to iOS 16.1.1 in this build (Phase B);"
     echo "              wasm/JIT execution on the device is expected to require the Phase B W^X work."
   } | tee "$wasm_evidence"
