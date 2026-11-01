@@ -108,6 +108,10 @@ Static validation (hard gates in the script, so a green run means all of these p
 | Build time | ~2.5 min (Zig build step; full job ~3 min warm) |
 | Patch | `0001-ios-target-and-sdk.patch` (sha256 `cdf73ce4…` at run time; see patch header) |
 
+The `dylib` sha256 is **not reproducible across runs** because the `ldid` signature blob is not
+deterministic; the compiled renderer payload itself is reproducible, and each artifact ZIPs own
+`SHA256SUMS` is authoritative for that run. The CLI bundle artifacts have the same property.
+
 ## Known limitations / remaining Phase D work
 
 - **Not device-verified.** The library has never been loaded on the iPhone; CI only proves it is a
