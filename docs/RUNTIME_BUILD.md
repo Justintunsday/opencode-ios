@@ -691,15 +691,22 @@ The v3 runtime artifact was consumed end-to-end by `package-rootless.yml`:
 | packager capability gate | `Runtime build/capability profile is usable by the CLI` - **PASS** (this is the gate that rejects no-ICU / no-wasm / jitless runtimes) |
 | package artifact | `OpenCode-iOS-rootless` 52,953,183 bytes (.deb + SHA256SUMS + package-report.json) |
 
-That package run consumed the **v3** runtime, which device testing then rejected
-(and v4/v5 also failed on-device: SIGBUS / SIGTRAP / RWX requests, §6.4). The
-package must be rebuilt from the **v6** runtime (run 41265520491, device-verified
-with `--single-threaded`), and the packaged `.deb` must be re-verified on device
-(install + launcher flag + CLI matrix) before it is called shippable. CI-side the
-chain (build -> static validation -> signing -> artifact -> packaging -> static
-package verification) has been proven repeatedly; the runtime manifest now
-declares the launcher flags and the device-verified binary sha
-(`device_verification` block) so packagers can gate on it.
+The **v6** runtime (device-verified with `--single-threaded`) was then packaged:
+
+| Fact | Value |
+| --- | --- |
+| package run | [41274221353](https://github.com/Justintunsday/opencode-ios/actions/runs/41274221353) - **success** |
+| resolved runtime run | 41273024931 (head `c33a079`), node sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce` (the device-verified sha) |
+| resolved CLI run | 41273112229, artifact `opencode-cli-node-ios` |
+| CI package validation | 47 PASS / 0 FAIL / 1 SKIP; `runtime.build-profile` PASS; `runtime.entitlements-policy` PASS; launcher checks PASS (version/help/args-forwarded); `ios-jit-shim` not shipped (normal launch) |
+| verification/toolchain | port-verification 41274218225 success; toolchain smoke 41274218101 success |
+
+Earlier iterations (v3/v4/v5) were all rejected on device (SIGBUS / SIGTRAP / RWX
+requests, §6.4). The packaged `.deb` from 41274221353 is the candidate for the
+final device acceptance (install + `--single-threaded` launcher + CLI matrix +
+agent E2E) before it is called shippable. The runtime manifest now declares the
+launcher flags and the device-verified binary sha (`device_verification` block)
+so packagers can gate on it.
 
 ## 10. Limitations / unresolved issues
 
