@@ -55,7 +55,7 @@ exactly one and `package-report.json` records which (`variant` / `runtime_kind`)
 | Variant | Runtime | Status |
 | --- | --- | --- |
 | **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **DEVICE-VERIFIED for the released `.deb`s** (`v2.2.5-ios.3` current, `v2.2.5-ios.2` previous; packaged acceptance PASS=14/0 on both + packaged PTY TUI-guidance tests on `.3`) with the mandatory `--single-threaded` launcher flag. Runtime run `41273024931` (node sha256 `cf707ebe…`, 2-key signed): JIT loop, WebAssembly, HTTPS `fetch` 200, ICU 75/`\p{L}`, `Intl.Segmenter` PASS; CLI matrix and mock-provider agent turn PASS through the packaged launcher. |
-| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64 (V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim) | **Documented alternative, CI-validated only (UNVERIFIED ON DEVICE).** Interim package `41285467457` (`.deb` sha256 `ed745667…`, runtime `41280461231`) was CI-green but its runtime manifest still carried the otool header line; it is **superseded** by the corrected-manifest runtime rebuild `41285669688` (final node sha from that artifact's `SHA256SUMS`). The Node 18 CLI bundle earlier ran on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created). |
+| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64 (V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim) | **Documented alternative, CI-validated only (UNVERIFIED ON DEVICE).** Final corrected-manifest build: package run `41291038144`, `.deb` 49,498,348 B sha256 `0be49c37…`, node sha256 `74e1c5c3…` (runtime run `41285669688`, minOS 13.0 derived from vtool, clean dylib list), CLI `41288234583` node18 bundle; CI 47/0/1 PASS. The Node 18 CLI bundle earlier ran on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created). |
 
 Node 22 v6 device evidence (maintainer, real iPhone SE 2 / iOS 16.1.1 /
 Dopamine rootless; raw outputs will be recorded below once the packaged
@@ -149,11 +149,16 @@ alternative fallback with sql.js sqlite persistence.
 
 | Item | Value |
 | --- | --- |
-| Status | **CI-validated only; UNVERIFIED ON DEVICE** (the Node 18 CLI bundle itself ran earlier on a community Node 18 runtime — see *Interim device evidence*) |
-| Runtime workflow | `build-runtime-node18.yml`; final corrected-manifest run **`41285669688`** (vtool-derived minOS, clean `linked_dylibs`, no `--jitless` literal, full-ICU/JIT/WASM, 2-key entitlements; final node sha256 taken from that run's `SHA256SUMS`) |
-| CLI artifact | `opencode-cli-node18-ios` from the patch-0012+ CLI build (`41284206666` or newer) |
-| Interim package (superseded) | run `41285467457`, artifact `13074039935`, `.deb` 49,480,056 B sha256 `ed745667a7568d81a33f4362eb612af34d4fe20c50d843b1907235022b63a9bf`, CI 47/0/1; built from runtime run `41280461231` whose manifest still listed the otool header line. Rebuilt from `41285669688` with a final package run (id/sha recorded when green) |
-| Device status | not device-accepted; no primary acceptance requirement (documented alternative) |
+| Status | **CI-VALIDATED only; UNVERIFIED ON DEVICE.** Documented alternative — the node22 v6 package is the primary/device-verified line. The Node 18 CLI bundle itself earlier ran on a community Node 18 runtime (see *Interim device evidence*). |
+| Package workflow run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41291038144> (pinned runtime `41285669688`, CLI `41288234583`) |
+| Package artifact | `OpenCode-iOS-rootless`, artifact id `13076788227` |
+| `.deb` | `OpenCode-iOS-rootless.deb`, 49,498,348 bytes |
+| `.deb` SHA-256 | `0be49c3740544fb69d946a842c69d0d1c1526fcff87bad970474e603dd7b9440` |
+| Variant / runtime | `node18` / Node.js 18.20.4; runtime node sha256 `74e1c5c3ca1e8d5c1430552706cf21151941dfd6fa97a759345aea98aa247bea` (81,511,888 B; manifest minOS 13.0 derived from vtool, clean `linked_dylibs`, full-ICU/JIT/WASM, 2-key entitlements) |
+| CLI artifact | run `41288234583`, `opencode-cli-node18-ios`; `opencode.mjs` sha256 `0bfdf8f5c8699d828e10c1fc23bbcc8ed0b29c0309f99624a014bfb1fa729df7`; sql.js assets present |
+| Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional jit-shim) |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41291595265> (test-port `variant=node18`; artifact/counts filled when green) |
+| Device status | not device-accepted; no primary acceptance requirement (documented alternative). Earlier interim node18 package run `41285467457` (`.deb` `ed745667…`) is superseded by this corrected-manifest build. |
 
 | Build | Outcome |
 | --- | --- |
