@@ -1226,74 +1226,74 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
               "var/jb/usr/bin/opencode missing")
         return
     text = read_text(launcher)
+    # Flag checks look at executable lines only: comments legitimately mention
+    # invalid flags (e.g. "Node 18 rejects --experimental-sqlite").
+    code_text = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
     problems = []
     if not text.startswith("#!/var/jb/bin/sh\n"):
         problems.append(
             "launcher must start with '#!/var/jb/bin/sh' — rootless iOS has no "
             "/bin/sh and the kernel execs the launcher directly"
         )
-    if "PATH=" not in text or "/bin" not in text:
+    if "PATH=" not in code_text or "/bin" not in code_text:
         problems.append(
             "launcher must prepend /var/jb/bin:/var/jb/usr/bin to PATH before exec"
         )
-    if re.search(r"(?m)^\s*exec\s", text) is None:
+    if re.search(r"(?m)^\s*exec\s", code_text) is None:
         problems.append("launcher must exec the runtime (no fork)")
-    if '"$@"' not in text:
+    if '"$@"' not in code_text:
         problems.append('launcher must forward arguments with "$@"')
-    if "--no-warnings" not in text:
+    if "--no-warnings" not in code_text:
         problems.append("--no-warnings missing")
-    if "OPENCODE_NODE_ASSETS_DIR" not in text:
+    if "OPENCODE_NODE_ASSETS_DIR" not in code_text:
         problems.append("OPENCODE_NODE_ASSETS_DIR not exported")
-    if "OPENCODE_IOS=1" not in text:
+    if "OPENCODE_IOS=1" not in code_text:
         problems.append("OPENCODE_IOS=1 not exported")
-    if "TMPDIR" not in text:
+    if "TMPDIR" not in code_text:
         problems.append(
             "launcher must provide the TMPDIR fallback required by the CLI/Node "
             "tooling in sessions that do not export TMPDIR"
         )
-    if "OPENCODE_IOS_NODE_FLAGS" not in text:
+    if "OPENCODE_IOS_NODE_FLAGS" not in code_text:
         problems.append("OPENCODE_IOS_NODE_FLAGS escape hatch missing")
-    if "OPENCODE_IOS_MAX_OLD_SPACE_MB" not in text:
+    if "OPENCODE_IOS_MAX_OLD_SPACE_MB" not in code_text:
         problems.append("OPENCODE_IOS_MAX_OLD_SPACE_MB escape hatch missing")
     if variant == VARIANT_NODE22:
-        if "--experimental-sqlite" not in text:
+        if "--experimental-sqlite" not in code_text:
             problems.append(
                 "--experimental-sqlite missing (required for node:sqlite on Node 22)"
             )
-        if "--disable-warning=ExperimentalWarning" not in text:
+        if "--disable-warning=ExperimentalWarning" not in code_text:
             problems.append("--disable-warning=ExperimentalWarning missing")
-        if "OPENCODE_IOS_JITLESS" not in text:
+        if "OPENCODE_IOS_JITLESS" not in code_text:
             problems.append("OPENCODE_IOS_JITLESS escape hatch not documented")
-        if "DYLD_INSERT_LIBRARIES" not in text or "libjitshim.dylib" not in text:
+        if "DYLD_INSERT_LIBRARIES" not in code_text or "libjitshim.dylib" not in code_text:
             problems.append(
                 "launcher must conditionally inject the optional libjitshim.dylib via "
                 "DYLD_INSERT_LIBRARIES when it is shipped"
             )
-        if re.search(r"(?m)^\s*if\s+\[\s+-f\s+\"\$JITSHIM\"\s+\]", text) is None:
+        if re.search(r"(?m)^\s*if\s+\[\s+-f\s+\"\$JITSHIM\"\s+\]", code_text) is None:
             problems.append(
                 "launcher's JIT shim injection must be presence-based "
                 "(if [ -f \"$JITSHIM\" ]) so packages without the shim launch normally"
             )
-        if "OPENCODE_IOS_JITLESS" not in text:
-            pass
     else:
         # Node 18 (18.20.4) rejects flags that only exist on newer Node lines.
         for banned, why in (
             ("--experimental-sqlite", "not a valid Node 18 option"),
             ("--disable-warning", "not a valid Node 18 option"),
         ):
-            if banned in text:
+            if banned in code_text:
                 problems.append(f"{banned} must not be passed on the Node 18 variant ({why})")
-        if "node18-sqlite" not in text and "sql.js" not in text:
-            # Informational only: the sqlite shim is provided by the CLI asset tree.
-            pass
     for banned, why in (
         ("--use-system-ca", "invalid option on Node 18/22.9"),
         ("--experimental-ffi", "invalid option on Node 18/22.9"),
     ):
-        if banned in text:
+        if banned in code_text:
             problems.append(f"{banned} must not be passed ({why})")
-    if "uname" in text:
+    if "uname" in code_text:
         problems.append("launcher must not depend on uname (iOS identifies as ios)")
     secret = next((p for p in _SECRET_PATTERNS if p.search(text)), None)
     if secret:
