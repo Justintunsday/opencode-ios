@@ -1,0 +1,51 @@
+# =============================================================================
+# nodejs-mobile (Node 18.20.4): iOS cross-build host-toolset fixes
+# =============================================================================
+# Base:   nodejs-mobile/nodejs-mobile tag v18.20.4 (Node.js 18.20.4 + mobile patches)
+# Reason: with target_os=ios, common.gypi's OS=="ios" target_defaults apply the
+#         iPhoneOS SDK, -miphoneos-version-min and -fembed-bitcode to *host*
+#         toolset targets too (e.g. obj.host/v8_zlib and V8 generator tools).
+#         Those tools are executed during make, so they must be macOS binaries.
+#         Symptom without this patch: host compile of deps/v8/third_party/zlib
+#         fails with fdopen()/NULL macro errors from mixing macOS headers with
+#         iOS TARGET_OS macros, and even if it compiled the tool could not run.
+# This mirrors the host-toolset treatment already used for the Node 22.9
+# runtime build (see patches/nodejs-mobile/0001,0002) and PR nodejs-mobile#150.
+# =============================================================================
+diff --git a/common.gypi b/common.gypi
+index 386ad7e..7bceb4b 100644
+--- a/common.gypi
++++ b/common.gypi
+@@ -615,6 +615,32 @@
+           ],
+         },
+         'target_conditions': [
++          # nodejs-mobile-build-fixes: for iOS cross builds every host-toolset
++          # target (zlib/torque/... generators) must be a macOS binary, so it can
++          # run during the build. Without this the OS=="ios" target_defaults hand
++          # the iPhoneOS SDK/arch to host tools and make cannot execute them.
++          ['_toolset=="host"', {
++            'xcode_settings': {
++              'SDKROOT': 'macosx',
++              'MACOSX_DEPLOYMENT_TARGET': '10.15',
++              'IPHONEOS_DEPLOYMENT_TARGET': '',
++              'ENABLE_BITCODE': 'NO',
++            },
++            'cflags!': [
++              '-miphoneos-version-min=13.0',
++              '-fembed-bitcode',
++            ],
++            'cflags': [
++              '-mmacosx-version-min=10.15',
++            ],
++            'ldflags!': [
++              '-miphoneos-version-min=13.0',
++              '-fembed-bitcode',
++            ],
++            'ldflags': [
++              '-mmacosx-version-min=10.15',
++            ],
++          }],
+           ['_type!="static_library"', {
+             'xcode_settings': {
+               'OTHER_LDFLAGS': [

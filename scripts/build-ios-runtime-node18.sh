@@ -35,6 +35,15 @@ git checkout -q FETCH_HEAD
 COMMIT="$(git rev-parse HEAD)"
 echo "nodejs-mobile18 commit: $COMMIT"
 
+stage "Applying nodejs-mobile18 build patches"
+for p in "$ROOT"/patches/nodejs-mobile18/*.patch; do
+  [[ -f "$p" ]] || continue
+  echo "applying $(basename "$p")"
+  git apply --check "$p" || { tail -40 "$p"; fail "patch does not apply: $p"; }
+  git apply "$p"
+done
+git status --short
+
 stage "Configuring Node 18.20.4 for iPhoneOS arm64 (ICU + JIT + WebAssembly)"
 export GYP_DEFINES="target_arch=arm64 host_os=mac target_os=ios"
 # NOTE: no --enable-static (we want the executable), no --with-intl=none
