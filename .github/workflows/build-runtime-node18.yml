@@ -73,6 +73,7 @@ jobs:
             dist/ios-node18-runtime/node
             dist/ios-node18-runtime/entitlements.plist
             dist/ios-node18-runtime/entitlements-signed.xml
+            dist/ios-node18-runtime/runtime-manifest.json
             dist/ios-node18-runtime/runtime18-manifest.txt
             dist/ios-node18-runtime/file.txt
             dist/ios-node18-runtime/otool-L.txt
