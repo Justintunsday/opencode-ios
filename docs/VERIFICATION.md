@@ -17,9 +17,11 @@ the turn lifecycle (fresh connection per turn); device testing of that CLI shows
 the REPL working (4 consecutive turns, shell-tool marker written, pty exit 0) with
 **occasional first-attempt transport errors that succeed on retry** — the same
 intermittent iPhoneOS network/runtime flake as headless `opencode run`. Patch
-`0014` raises transport retries for robustness; **`v2.2.5-ios.5` packaging/acceptance
-is pending that CLI**. No CI run claims device execution: hosted runners cannot
-execute iOS binaries.
+`0014` raises transport retries for robustness (2 retries / 3 attempts with a
+fresh connection + 300 ms first-turn warm-up; persistent failure returns cleanly
+to the prompt). **`v2.2.5-ios.5`** (patch-`0014` CLI, same v6 runtime) is
+CI-green and awaits the maintainer's packaged REPL acceptance. No CI run claims
+device execution: hosted runners cannot execute iOS binaries.
 
 ## Status summary
 
@@ -33,7 +35,7 @@ execute iOS binaries.
 | Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **DEVICE-VERIFIED with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
 | Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device. **Interactive REPL: first packaged attempt (v2.2.5-ios.4) FAILED device agent turns** (transport connection reuse bug; `/help`/`/exit` OK); fix in patch `0013`, `v2.2.5-ios.5` acceptance pending. Full-screen TUI remains unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). |
 | Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the repo-built runtime) | **CLI commands device-verified (preliminary)** for the Node 18 bundle; the repo-built runtime/package remains the documented **alternative** and is **UNVERIFIED ON DEVICE** (no full-TUI expectation: node18 also gets the line REPL when packaged with patch 0012+) |
-| Interactive line-based REPL (patches `0012`–`0014`) | Real target iPhone, maintainer PTY tests | **Device-functional (patch `0013` CLI):** REPL intro/prompt, `/new`, `/help`, `/exit` all work; 4 consecutive prompts each reached the mock provider (transport errors on some first attempts are retried with a fresh connection, then E2E_OK); shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt`; mock saw 13 chat requests (4 with `toolResult=true`); pty exit 0. **Superseded packaged candidate `v2.2.5-ios.4`** (patch `0012`) had failed agent turns (connection reuse) — not device-verified. Patch `0014` (retry hardening) packaging/acceptance for `v2.2.5-ios.5` pending. Full-screen TUI unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). |
+| Interactive line-based REPL (patches `0012`–`0014`) | Real target iPhone, maintainer PTY tests | **Device-functional (patch `0013` CLI):** REPL intro/prompt, `/new`, `/help`, `/exit` all work; 4 consecutive prompts each reached the mock provider (transport errors on some first attempts are retried with a fresh connection, then E2E_OK); shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt`; mock saw 13 chat requests (4 with `toolResult=true`); pty exit 0. **Superseded packaged candidate `v2.2.5-ios.4`** (patch `0012`) had failed agent turns (connection reuse) — not device-verified. Patch `0014` (2 retries/3 attempts + 300 ms warm-up; persistent failure returns to prompt) is packaged in `v2.2.5-ios.5`, device acceptance pending. Full-screen TUI unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `8a625f75…` (v2.2.5-ios.3) and `2f96fc18…` (v2.2.5-ios.2) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on both releases (2026-11-01)**; `v2.2.5-ios.3` additionally passed the packaged PTY/TUI-guidance tests; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
 > **Device status:** the current release **`v2.2.5-ios.3`** (`.deb` SHA-256
@@ -93,14 +95,27 @@ not depend on this):
 
 The node22-v6 package is the shipped artifact. Current release **`v2.2.5-ios.3`**
 (pins runtime `41273024931`, patch-0011 CLI `41278475579`) supersedes
-`v2.2.5-ios.2` (kept for traceability). The **candidate `v2.2.5-ios.4`** (runtime
-`41273024931`, patch-0012 CLI `41284206666`) is **superseded / NOT
-device-verified**: its packaged REPL started but agent turns failed on device, so
-it must not be published. `v2.2.5-ios.5` (patch-0013 CLI, same runtime) awaits
-device acceptance. The pinned runs below identify the exact device-tested
-artifacts.
+`v2.2.5-ios.2` (kept for traceability). **`v2.2.5-ios.5`** (runtime
+`41273024931`, patch-0014 CLI `41291337297`) is CI-green and **awaiting packaged
+device acceptance**. The candidate `v2.2.5-ios.4` (patch-0012 CLI) is
+**superseded / NOT device-verified** (REPL agent-turn failure) and must not be
+published. The pinned runs below identify the exact device-tested artifacts.
 
-**Superseded candidate — v2.2.5-ios.4 (CI-green; NOT device-verified; do not publish)**
+**Candidate — v2.2.5-ios.5 (CI-green; packaged device acceptance pending)**
+
+| Item | Value |
+| --- | --- |
+| Package workflow run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41292412240> (pinned runtime `41273024931`, CLI `41291337297`) |
+| Package artifact | `OpenCode-iOS-rootless`, artifact id `13077629042` |
+| `.deb` | `OpenCode-iOS-rootless.deb`, 52,926,812 bytes |
+| `.deb` SHA-256 | `b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073` |
+| Variant / runtime | `node22` / v6 mprotect W^X; runtime node sha256 `cf707ebe…` (unchanged device-verified binary) |
+| CLI artifact | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41291337297> (patch `0014`: REPL turn lifecycle + retry/warm-up); `opencode.mjs` 21,397,681 bytes, sha256 `e99ac8d12f083539289fbeeb6ddc07a40348e8eec0db3a76c3d628409a826950` |
+| Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP |
+| Verification workflow | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41293124128> (test-port; artifact id/counts filled when green) |
+| Device status | **PENDING** — maintainer packaged REPL acceptance in progress; until recorded, CI-validated only |
+
+**Superseded candidate — v2.2.5-ios.4 (CI-green; device REPL acceptance FAILED; do not publish)**
 
 | Item | Value |
 | --- | --- |
@@ -157,7 +172,7 @@ alternative fallback with sql.js sqlite persistence.
 | Variant / runtime | `node18` / Node.js 18.20.4; runtime node sha256 `74e1c5c3ca1e8d5c1430552706cf21151941dfd6fa97a759345aea98aa247bea` (81,511,888 B; manifest minOS 13.0 derived from vtool, clean `linked_dylibs`, full-ICU/JIT/WASM, 2-key entitlements) |
 | CLI artifact | run `41288234583`, `opencode-cli-node18-ios`; `opencode.mjs` sha256 `0bfdf8f5c8699d828e10c1fc23bbcc8ed0b29c0309f99624a014bfb1fa729df7`; sql.js assets present |
 | Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional jit-shim) |
-| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41291595265> (test-port `variant=node18`; artifact/counts filled when green) |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41291595265> (test-port `variant=node18`; artifact `port-verification` id `13077258415`): 48 PASS / 0 FAIL / 1 SKIP, `ci_status=PASS` |
 | Device status | not device-accepted; no primary acceptance requirement (documented alternative). Earlier interim node18 package run `41285467457` (`.deb` `ed745667…`) is superseded by this corrected-manifest build. |
 
 | Build | Outcome |
@@ -174,11 +189,12 @@ different `.deb` SHA-256. The released artifacts
 `v2.2.5-ios.3` (`8a625f75…`) and `v2.2.5-ios.2` (`2f96fc18…`) must **not** be
 rebuilt or replaced without re-running device acceptance on the new SHA-256.
 `v2.2.5-ios.4` (`299ee574…`) was **not released** (device REPL acceptance
-failed) and must **not** be published or described as device-verified. Their
-packaged docs reflect the repository state at their build commits; **this
-repository document** is the authoritative post-release record. Later green
-package runs are pipeline evidence only. The next release candidate is
-`v2.2.5-ios.5` (patch-`0013` CLI), which awaits packaged device acceptance.
+failed) and must **not** be published or described as device-verified.
+`v2.2.5-ios.5` (`b23ed1fc…`) is the current release candidate and is **not yet
+released/device-verified** until the maintainer's packaged REPL acceptance is
+recorded. Their packaged docs reflect the repository state at their build
+commits; **this repository document** is the authoritative post-release record.
+Later green package runs are pipeline evidence only.
 
 **Honesty note.** Device evidence for the releases is recorded in
 [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) and condensed in *Device
