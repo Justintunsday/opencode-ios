@@ -160,7 +160,7 @@ the Node 26 runtime (Phase A/B).
   will report `unsupported` through the existing result codes.
 - **Ghostty VT is disabled** for iOS (upstream availability check only enables it for
   linux/macos/windows); the embedded-terminal feature is therefore unavailable in v1.
-- **Audio**: miniaudio is compiled with its CoreAudio backend (CoreAudio/AudioToolbox/AudioUnit
+- **Audio**: miniaudio is compiled with its CoreAudio backend (CoreAudio/AudioToolbox/Foundation/AVFoundation
   linked); iOS AVAudioSession behaviour is untested on device.
 - Phase D (CLI side, to be tracked separately): accept `ios-arm64` in the OpenTUI asset resolver,
   ship `libopentui.dylib` in the CLI assets bundle under the `/var/jb` deb root prefix (see the
