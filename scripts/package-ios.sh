@@ -46,6 +46,7 @@ RUNTIME_DIR=""
 OPENCODE_DIR=""
 RIPGREP_DIR=""
 JITSHIM_DIR=""
+VARIANT="node22"
 OUT_DIR="$ROOT/dist"
 VERSION_ARG=""
 MAINTAINER="OpenCode iOS port maintainers <opencode-ios-port@users.noreply.github.com>"
@@ -66,6 +67,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --runtime-dir) RUNTIME_DIR="${2:-}"; shift 2 ;;
         --opencode-dir) OPENCODE_DIR="${2:-}"; shift 2 ;;
+        --variant) VARIANT="${2:-}"; shift 2 ;;
         --ripgrep-dir) RIPGREP_DIR="${2:-}"; shift 2 ;;
         --jitshim-dir) JITSHIM_DIR="${2:-}"; shift 2 ;;
         --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
@@ -88,8 +90,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$RUNTIME_DIR" ] || die "--runtime-dir is required (contents of the ios-node-runtime artifact)"
-[ -n "$OPENCODE_DIR" ] || die "--opencode-dir is required (contents of the opencode-cli-node-ios artifact)"
+[ -n "$RUNTIME_DIR" ] || die "--runtime-dir is required (contents of the ios-node-runtime / ios-node18-runtime artifact)"
+[ -n "$OPENCODE_DIR" ] || die "--opencode-dir is required (contents of the OpenCode CLI artifact)"
+case "$VARIANT" in
+    node22) LAUNCHER_SRC="$ROOT/packaging/rootless/usr/bin/opencode" ;;
+    node18) LAUNCHER_SRC="$ROOT/packaging/rootless/usr/bin/opencode-node18" ;;
+    *) die "--variant must be node22 or node18 (got '$VARIANT')" ;;
+esac
+[ -f "$LAUNCHER_SRC" ] || die "launcher for variant $VARIANT not found: $LAUNCHER_SRC"
 [ -d "$RUNTIME_DIR" ] || die "--runtime-dir not found: $RUNTIME_DIR"
 [ -d "$OPENCODE_DIR" ] || die "--opencode-dir not found: $OPENCODE_DIR"
 [ -n "$COMMIT" ] || COMMIT="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -174,7 +182,9 @@ if [ -z "$ENTITLEMENTS_SRC" ]; then
 fi
 [ -n "$ENTITLEMENTS_SRC" ] || die "ios-node-runtime artifact has no entitlements plist (expected entitlements.plist)"
 RUNTIME_MANIFEST_SRC="$(find_first_file "$RUNTIME_DIR" runtime-manifest.json)"
-[ -n "$RUNTIME_MANIFEST_SRC" ] || die "ios-node-runtime artifact has no runtime-manifest.json"
+if [ -z "$RUNTIME_MANIFEST_SRC" ]; then
+    die "runtime artifact ($VARIANT) has no runtime-manifest.json (expected the packager-contract JSON manifest; the producer must upload it). Refusing to fabricate capability declarations."
+fi
 
 info "opencode artifact: $OPENCODE_DIR"
 OPENCODE_MJS_SRC="$(find_first_file "$OPENCODE_DIR" opencode.mjs)"
@@ -267,8 +277,8 @@ mkdir -p "$STAGE/DEBIAN" \
          "$STAGE/var/jb/usr/lib/opencode/cli/assets" \
          "$STAGE/var/jb/usr/share/doc/opencode"
 
-info "staging rootless tree"
-cp "$ROOT/packaging/rootless/usr/bin/opencode" "$STAGE/var/jb/usr/bin/opencode"
+info "staging rootless tree (variant=$VARIANT)"
+cp "$LAUNCHER_SRC" "$STAGE/var/jb/usr/bin/opencode"
 chmod 0755 "$STAGE/var/jb/usr/bin/opencode"
 
 cp "$NODE_SRC" "$STAGE/var/jb/usr/lib/opencode/runtime/node"
@@ -342,15 +352,18 @@ DEBIAN_KB="$(du -sk "$STAGE/DEBIAN" | awk '{print $1}')"
 INSTALLED_SIZE=$((TOTAL_KB - DEBIAN_KB))
 [ "$INSTALLED_SIZE" -ge 1 ] || INSTALLED_SIZE=1
 
-sed -e "s|@VERSION@|$VERSION|g" \
-    -e "s|@MAINTAINER@|$MAINTAINER|g" \
-    -e "s|@INSTALLED_SIZE@|$INSTALLED_SIZE|g" \
-    "$ROOT/packaging/rootless/control.in" > "$STAGE/DEBIAN/control"
+"$PYTHON" "$ROOT/packaging/verify/port_verify.py" render-control \
+    --template "$ROOT/packaging/rootless/control.in" \
+    --out "$STAGE/DEBIAN/control" \
+    --version "$VERSION" \
+    --maintainer "$MAINTAINER" \
+    --installed-size "$INSTALLED_SIZE" \
+    --variant "$VARIANT"
 chmod 0644 "$STAGE/DEBIAN/control"
 if grep -q '@[A-Z_]*@' "$STAGE/DEBIAN/control"; then
     die "unsubstituted placeholder remains in DEBIAN/control"
 fi
-info "control: Package=opencode Version=$VERSION Architecture=iphoneos-arm64 Installed-Size=$INSTALLED_SIZE"
+info "control: Package=opencode Version=$VERSION Architecture=iphoneos-arm64 Installed-Size=$INSTALLED_SIZE variant=$VARIANT"
 
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR/SHA256SUMS" "$OUT_DIR/package-sources.json" \
@@ -402,7 +415,8 @@ set -- "$PYTHON" "$ROOT/packaging/verify/port_verify.py" sources \
     --runtime-run-url "$RUNTIME_RUN_URL" \
     --opencode-dir "$OPENCODE_DIR" \
     --opencode-run-id "$OPENCODE_RUN_ID" \
-    --opencode-run-url "$OPENCODE_RUN_URL"
+    --opencode-run-url "$OPENCODE_RUN_URL" \
+    --variant "$VARIANT"
 if [ -n "$RIPGREP_DIR" ]; then
     set -- "$@" --ripgrep-dir "$RIPGREP_DIR" \
         --ripgrep-run-id "$RIPGREP_RUN_ID" \

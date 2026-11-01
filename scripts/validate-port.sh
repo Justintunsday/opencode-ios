@@ -25,6 +25,7 @@
 # Usage:
 #   scripts/validate-port.sh --deb dist/OpenCode-iOS-rootless.deb [options]
 #     --mode package|verify|self-test      (default: verify)
+#     --variant auto|node22|node18         (default: auto, inferred)
 #     --out-dir DIR                        (default: verification)
 #     --artifact-dir DIR                   SHA256SUMS/package-report.json dir
 #     --contents-manifest FILE             (package mode)
@@ -47,6 +48,7 @@ usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; }
 
 DEB=""
 MODE="verify"
+VARIANT="auto"
 OUT_DIR="$ROOT/verification"
 ARTIFACT_DIR=""
 CONTENTS_MANIFEST=""
@@ -65,6 +67,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --deb) DEB="${2:-}"; shift 2 ;;
         --mode) MODE="${2:-}"; shift 2 ;;
+        --variant) VARIANT="${2:-}"; shift 2 ;;
         --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
         --artifact-dir) ARTIFACT_DIR="${2:-}"; shift 2 ;;
         --contents-manifest) CONTENTS_MANIFEST="${2:-}"; shift 2 ;;
@@ -88,6 +91,10 @@ DEB="$(cd "$(dirname "$DEB")" && pwd)/$(basename "$DEB")"
 case "$MODE" in
     package|verify|self-test) : ;;
     *) die "invalid --mode '$MODE' (expected package, verify or self-test)" ;;
+esac
+case "$VARIANT" in
+    auto|node22|node18) : ;;
+    *) die "invalid --variant '$VARIANT' (expected auto, node22 or node18)" ;;
 esac
 [ -n "$ARTIFACT_DIR" ] || ARTIFACT_DIR="$(dirname "$DEB")"
 [ -d "$ARTIFACT_DIR" ] || die "artifact dir not found: $ARTIFACT_DIR"
@@ -158,6 +165,46 @@ if [ "$EXTRACT_RC" -ne 0 ]; then
     warn "package extraction failed (rc=$EXTRACT_RC); the verification report will record this"
 fi
 
+# ------------------------------------------------------- variant inference ---
+# The package variant is inferred from provenance/package-report/runtime manifest
+# unless --variant was given explicitly.
+infer_variant() {
+    local candidate_file value
+    if [ "$VARIANT" != "auto" ]; then
+        printf '%s' "$VARIANT"
+        return 0
+    fi
+    for candidate_file in "$SOURCES" "$PACKAGE_REPORT" \
+            "$EXTRACT_PREFIX/usr/lib/opencode/runtime/runtime-manifest.json"; do
+        [ -n "$candidate_file" ] && [ -f "$candidate_file" ] || continue
+        value="$("$PYTHON" -c 'import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("")
+    raise SystemExit(0)
+print(data.get("variant") or data.get("runtime_kind") or data.get("node_version") or "")' \
+            "$candidate_file" 2>/dev/null || true)"
+        case "$value" in
+            *18*) printf 'node18'; return 0 ;;
+            *22*) printf 'node22'; return 0 ;;
+        esac
+    done
+    printf 'node22'
+}
+PKG_VARIANT="$(infer_variant)"
+case "$PKG_VARIANT" in
+    node18)
+        SMOKE_NODE_VERSION="18.20.4"
+        SMOKE_NODE_FLAGS="--no-warnings"
+        ;;
+    *)
+        SMOKE_NODE_VERSION="22.9.0"
+        SMOKE_NODE_FLAGS=""
+        ;;
+esac
+info "variant: $PKG_VARIANT (host smoke Node $SMOKE_NODE_VERSION)"
+
 # ------------------------------------------------------------ host smoke ---
 EXTRACT_PREFIX="$EXTRACT_DIR/var/jb"
 BUNDLE_DIR="$EXTRACT_PREFIX/usr/lib/opencode/cli"
@@ -169,12 +216,16 @@ if [ "$EXTRACT_RC" -ne 0 ]; then
 elif [ "$SKIP_SMOKE" = "1" ]; then
     warn "host Node.js smoke test skipped (--skip-smoke; local dry-run only)"
 else
-    info "host-runtime CLI smoke test (pinned Node.js 22.9.0)"
+    info "host-runtime CLI smoke test (pinned Node.js $SMOKE_NODE_VERSION, variant $PKG_VARIANT)"
     set -- bash "$ROOT/scripts/smoke-bundle-host.sh" \
         --bundle-dir "$BUNDLE_DIR" \
         --work-dir "$WORK_DIR/host-node" \
-        --node-version "22.9.0" \
+        --node-version "$SMOKE_NODE_VERSION" \
+        --variant "$PKG_VARIANT" \
         --output "$SMOKE_OUT"
+    if [ -n "$SMOKE_NODE_FLAGS" ]; then
+        set -- "$@" --node-flags "$SMOKE_NODE_FLAGS"
+    fi
     if [ -f "$LAUNCHER" ]; then
         set -- "$@" --launcher "$LAUNCHER" --prefix "$EXTRACT_PREFIX"
     fi
@@ -194,7 +245,8 @@ set -- "$PYTHON" "$ROOT/packaging/verify/port_verify.py" verify \
     --mode "$MODE" \
     --out-dir "$OUT_DIR" \
     --repo-root "$ROOT" \
-    --artifact-dir "$ARTIFACT_DIR"
+    --artifact-dir "$ARTIFACT_DIR" \
+    --variant "$PKG_VARIANT"
 if [ "$EXTRACT_RC" -eq 0 ] && [ -d "$EXTRACT_DIR" ]; then
     set -- "$@" --extract-dir "$EXTRACT_DIR"
 fi

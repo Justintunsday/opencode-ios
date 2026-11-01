@@ -16,10 +16,11 @@
 # Usage:
 #   scripts/smoke-bundle-host.sh --bundle-dir DIR [--output FILE] \
 #       [--launcher PATH] [--prefix DIR] [--work-dir DIR] \
-#       [--node-bin PATH] [--node-version 22.9.0] [--expected-version 2.2.5]
+#       [--node-bin PATH] [--node-version 22.9.0] [--expected-version 2.2.5] \
+#       [--node-flags "..."] [--variant node22|node18]
 #
-# Exit code 0 iff every check passed. Always writes the JSON result when
-# --output is supplied (also on failure).
+# Exit code 0 iff every required check passed. Always writes the JSON result
+# when --output is supplied (also on failure).
 set -u
 
 BUNDLE_DIR=""
@@ -28,6 +29,8 @@ PREFIX=""
 WORK_DIR=""
 NODE_BIN=""
 NODE_VERSION="22.9.0"
+NODE_FLAGS_ARG=""
+VARIANT="node22"
 OUTPUT=""
 EXPECTED_VERSION=""
 TIMEOUT=120
@@ -44,16 +47,23 @@ while [ $# -gt 0 ]; do
         --work-dir) WORK_DIR="${2:-}"; shift 2 ;;
         --node-bin) NODE_BIN="${2:-}"; shift 2 ;;
         --node-version) NODE_VERSION="${2:-}"; shift 2 ;;
+        --node-flags) NODE_FLAGS_ARG="${2:-}"; shift 2 ;;
+        --variant) VARIANT="${2:-}"; shift 2 ;;
         --output) OUTPUT="${2:-}"; shift 2 ;;
         --expected-version) EXPECTED_VERSION="${2:-}"; shift 2 ;;
         --timeout) TIMEOUT="${2:-}"; shift 2 ;;
         --keep-work) KEEP_WORK=1; shift ;;
         -h|--help)
-            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
+
+case "$VARIANT" in
+    node22|node18) : ;;
+    *) die "--variant must be node22 or node18 (got '$VARIANT')" ;;
+esac
 
 [ -n "$BUNDLE_DIR" ] || die "--bundle-dir is required"
 [ -d "$BUNDLE_DIR" ] || die "bundle directory not found: $BUNDLE_DIR"
@@ -192,7 +202,14 @@ record() {
     echo "[$2] $1 (exit $3)"
 }
 
-NODE_FLAGS="--experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings"
+if [ -n "$NODE_FLAGS_ARG" ]; then
+    NODE_FLAGS="$NODE_FLAGS_ARG"
+elif [ "$VARIANT" = "node18" ]; then
+    # Node 18.20.4 rejects --experimental-sqlite/--disable-warning (newer flags).
+    NODE_FLAGS="--no-warnings"
+else
+    NODE_FLAGS="--experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings"
+fi
 ASSETS_DIR="$BUNDLE_DIR/assets"
 [ -d "$ASSETS_DIR" ] || ASSETS_DIR=""
 CLI_ENV="HOME=$HOME_DIR OPENCODE_IOS=1"
@@ -329,6 +346,25 @@ else
     record launcher-version SKIP 0 "no --launcher/--prefix supplied" /dev/null /dev/null
 fi
 
+# 7. informational CLI commands: the device runbook exercises these on the
+#    real iPhone (Node 18 sql.js/sqlite). On a host they may depend on
+#    device-only state, so a non-zero exit is recorded as SKIP, not FAIL.
+for info_cmd in "models" "debug paths" "session list"; do
+    info_slug="$(printf '%s' "$info_cmd" | tr ' ' '-')"
+    # Intentional word splitting of $CLI_ENV / $NODE_FLAGS / $info_cmd.
+    # shellcheck disable=SC2086
+    if run_limited "$TIMEOUT" "$WORK_DIR/results/info-$info_slug.out" \
+            "$WORK_DIR/results/info-$info_slug.err" \
+            env $CLI_ENV "$NODE" $NODE_FLAGS "$DIRECT_MJS" $info_cmd; then
+        record "cli-$info_slug" PASS 0 "$NODE $NODE_FLAGS opencode.mjs $info_cmd" \
+            "$WORK_DIR/results/info-$info_slug.out" "$WORK_DIR/results/info-$info_slug.err"
+    else
+        rc=$?
+        record "cli-$info_slug" SKIP "$rc" "$NODE $NODE_FLAGS opencode.mjs $info_cmd" \
+            "$WORK_DIR/results/info-$info_slug.out" "$WORK_DIR/results/info-$info_slug.err"
+    fi
+done
+
 # ---------------------------------------------------------------- results ---
 FAILED_COUNT="$(awk -F'\t' '$2 == "FAIL" { c++ } END { print c + 0 }' "$RESULTS_TSV")"
 TOTAL_COUNT="$(wc -l < "$RESULTS_TSV" | tr -d ' ')"
@@ -349,6 +385,8 @@ SMOKE_NODE_CHECKSUM_VERIFIED="$NODE_CHECKSUM_VERIFIED" \
 SMOKE_NODE_URL="$NODE_URL" \
 SMOKE_SHASUMS_URL="$SHASUMS_URL" \
 SMOKE_EXPECTED_VERSION="$EXPECTED_VERSION" \
+SMOKE_VARIANT="$VARIANT" \
+SMOKE_NODE_FLAGS="$NODE_FLAGS" \
 SMOKE_RESULTS_TSV="$RESULTS_TSV" \
 SMOKE_WORK_DIR="$WORK_DIR" \
 "$PYTHON_BIN" - <<'PY'
@@ -390,6 +428,8 @@ payload = {
     "status": os.environ["SMOKE_STATUS"],
     "bundle_dir": os.environ["SMOKE_BUNDLE_DIR"],
     "launcher": os.environ["SMOKE_LAUNCHER"],
+    "variant": os.environ["SMOKE_VARIANT"],
+    "node_flags": os.environ["SMOKE_NODE_FLAGS"],
     "expected_upstream_version": os.environ["SMOKE_EXPECTED_VERSION"],
     "node": {
         "path": os.environ["SMOKE_NODE"],

@@ -16,6 +16,15 @@ on:
         description: "Pin the package-rootless.yml run id (default: latest successful run with OpenCode-iOS-rootless)"
         required: false
         type: string
+      variant:
+        description: "Expected runtime variant (default: auto-detect from package-report/sources)"
+        required: false
+        type: choice
+        options:
+          - auto
+          - node22
+          - node18
+        default: auto
   push:
     branches: [main]
     paths:
@@ -78,11 +87,14 @@ jobs:
 
       - name: Run CI-runnable verification suite
         id: verify
+        env:
+          VARIANT_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.variant || 'auto' }}
         run: |
           set -euo pipefail
           bash scripts/validate-port.sh \
             --deb .artifacts/package/OpenCode-iOS-rootless.deb \
             --mode verify \
+            --variant "$VARIANT_INPUT" \
             --out-dir verification \
             --artifact-dir .artifacts/package \
             --package-report .artifacts/package/package-report.json \

@@ -10,10 +10,12 @@ Recommends: git
 Homepage: https://github.com/Justintunsday/opencode-ios
 Description: OpenCode v2 CLI for jailbroken iOS (rootless, /var/jb)
  OpenCode is an open-source AI coding agent for the terminal. This package
- ships the upstream OpenCode v2 CLI through its official Node.js build path
- running on a native iPhoneOS arm64 Node.js 22.9.0 runtime. Everything is
- installed rootless beneath /var/jb, so it does not modify the iOS system
- partition.
+ ships the upstream OpenCode v2 CLI through its official Node.js build path,
+ running on a native iPhoneOS arm64 Node.js @NODE_VERSION@ runtime.
+ Everything is installed rootless beneath /var/jb, so it does not modify the
+ iOS system partition.
+ .
+ @VARIANT_DESCRIPTION@
  .
  Target device for this build: iPhone SE (2nd generation), arm64, iOS 16.1.1
  with the Dopamine rootless jailbreak; the launcher is /var/jb/usr/bin/opencode.

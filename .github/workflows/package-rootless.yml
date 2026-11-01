@@ -10,12 +10,24 @@ name: Package rootless iOS .deb
 on:
   workflow_dispatch:
     inputs:
+      variant:
+        description: "Runtime variant: node22 (experimental W^X) or node18 (device-proven fallback; primary)"
+        required: true
+        type: choice
+        options:
+          - node22
+          - node18
+        default: node22
       runtime_run_id:
-        description: "Pin the build-runtime.yml run id (default: latest successful run with ios-node-runtime)"
+        description: "Pin the runtime build run id (default: latest successful run with the variant's runtime artifact)"
+        required: false
+        type: string
+      cli_run_id:
+        description: "Pin the CLI build run id (default: latest successful run with the variant's CLI artifact)"
         required: false
         type: string
       opencode_run_id:
-        description: "Pin the build-opencode.yml run id (default: latest successful run with opencode-cli-node-ios)"
+        description: "Deprecated alias for cli_run_id"
         required: false
         type: string
       self_test:
@@ -145,52 +157,94 @@ jobs:
           python3 --version
           echo "commit: $(git rev-parse HEAD)"
 
-      - name: Resolve ios-node-runtime build run
+      - name: Select runtime variant
+        id: variant
+        env:
+          VARIANT_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.variant || 'node22' }}
+          RUNTIME_RUN_PIN: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_run_id || '' }}
+          CLI_RUN_PIN: ${{ github.event_name == 'workflow_dispatch' && (inputs.cli_run_id || inputs.opencode_run_id) || '' }}
+        run: |
+          set -euo pipefail
+          case "$VARIANT_INPUT" in
+            node22)
+              RUNTIME_WORKFLOW="build-runtime.yml"; RUNTIME_ARTIFACT="ios-node-runtime"
+              CLI_WORKFLOW="build-opencode.yml"; CLI_ARTIFACT="opencode-cli-node-ios"
+              JITSHIM_ENABLED="true"
+              ;;
+            node18)
+              RUNTIME_WORKFLOW="build-runtime-node18.yml"; RUNTIME_ARTIFACT="ios-node18-runtime"
+              CLI_WORKFLOW="build-opencode.yml"; CLI_ARTIFACT="opencode-cli-node18-ios"
+              JITSHIM_ENABLED="false"
+              ;;
+            *) echo "::error::invalid variant '$VARIANT_INPUT'"; exit 1 ;;
+          esac
+          {
+            echo "variant=$VARIANT_INPUT"
+            echo "runtime_workflow=$RUNTIME_WORKFLOW"
+            echo "runtime_artifact=$RUNTIME_ARTIFACT"
+            echo "cli_workflow=$CLI_WORKFLOW"
+            echo "cli_artifact=$CLI_ARTIFACT"
+            echo "runtime_run_pin=$RUNTIME_RUN_PIN"
+            echo "cli_run_pin=$CLI_RUN_PIN"
+            echo "jitshim_enabled=$JITSHIM_ENABLED"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve runtime build run
         id: resolve-runtime
         env:
-          RUNTIME_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_run_id || '' }}
+          RUNTIME_WORKFLOW: ${{ steps.variant.outputs.runtime_workflow }}
+          RUNTIME_ARTIFACT: ${{ steps.variant.outputs.runtime_artifact }}
+          RUNTIME_RUN_ID_INPUT: ${{ steps.variant.outputs.runtime_run_pin }}
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
-            build-runtime.yml ios-node-runtime runtime "$RUNTIME_RUN_ID_INPUT"
+            "$RUNTIME_WORKFLOW" "$RUNTIME_ARTIFACT" runtime "$RUNTIME_RUN_ID_INPUT"
 
-      - name: Resolve opencode-cli-node-ios build run
+      - name: Resolve CLI build run
         id: resolve-opencode
         env:
-          OPENCODE_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.opencode_run_id || '' }}
+          CLI_WORKFLOW: ${{ steps.variant.outputs.cli_workflow }}
+          CLI_ARTIFACT: ${{ steps.variant.outputs.cli_artifact }}
+          CLI_RUN_ID_INPUT: ${{ steps.variant.outputs.cli_run_pin }}
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
-            build-opencode.yml opencode-cli-node-ios opencode "$OPENCODE_RUN_ID_INPUT"
+            "$CLI_WORKFLOW" "$CLI_ARTIFACT" opencode "$CLI_RUN_ID_INPUT"
 
       - name: Resolve optional ios-ripgrep artifact (skipped gracefully if absent)
         id: resolve-ripgrep
         env:
           RIPGREP_RUN_ID_INPUT: ""
         run: |
+          # ios-ripgrep is runtime/node-version independent and built by build-runtime.yml.
           bash packaging/verify/resolve-artifact-run.sh \
             build-runtime.yml ios-ripgrep ripgrep "$RIPGREP_RUN_ID_INPUT" --optional
 
-      - name: Resolve optional ios-jit-shim artifact (skipped gracefully if absent)
+      - name: Resolve optional ios-jit-shim artifact (node22 only; skipped gracefully if absent)
         id: resolve-jitshim
+        if: ${{ steps.variant.outputs.jitshim_enabled == 'true' }}
         env:
           JITSHIM_RUN_ID_INPUT: ""
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
             build-runtime.yml,jit-probe.yml ios-jit-shim jitshim "$JITSHIM_RUN_ID_INPUT" --optional
 
-      - name: Download ios-node-runtime artifact
+      - name: Download runtime artifact
+        env:
+          RUNTIME_ARTIFACT: ${{ steps.variant.outputs.runtime_artifact }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/runtime
           gh run download "${{ steps.resolve-runtime.outputs.runtime_run_id }}" \
-            --repo "$GITHUB_REPOSITORY" -n ios-node-runtime -D .artifacts/runtime
+            --repo "$GITHUB_REPOSITORY" -n "$RUNTIME_ARTIFACT" -D .artifacts/runtime
           find .artifacts/runtime -maxdepth 3 -type f | sort | head -n 40
 
-      - name: Download opencode-cli-node-ios artifact
+      - name: Download CLI artifact
+        env:
+          CLI_ARTIFACT: ${{ steps.variant.outputs.cli_artifact }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/opencode
           gh run download "${{ steps.resolve-opencode.outputs.opencode_run_id }}" \
-            --repo "$GITHUB_REPOSITORY" -n opencode-cli-node-ios -D .artifacts/opencode
+            --repo "$GITHUB_REPOSITORY" -n "$CLI_ARTIFACT" -D .artifacts/opencode
           find .artifacts/opencode -maxdepth 3 -type f | sort | head -n 40
 
       - name: Download optional ios-ripgrep artifact
@@ -220,6 +274,7 @@ jobs:
 
       - name: Assemble rootless .deb
         env:
+          VARIANT: ${{ steps.variant.outputs.variant }}
           RUNTIME_RUN_ID: ${{ steps.resolve-runtime.outputs.runtime_run_id }}
           RUNTIME_RUN_URL: ${{ steps.resolve-runtime.outputs.runtime_run_url }}
           OPENCODE_RUN_ID: ${{ steps.resolve-opencode.outputs.opencode_run_id }}
@@ -234,6 +289,7 @@ jobs:
           set -- bash scripts/package-ios.sh \
             --runtime-dir .artifacts/runtime \
             --opencode-dir .artifacts/opencode \
+            --variant "$VARIANT" \
             --out-dir dist \
             --runtime-run-id "$RUNTIME_RUN_ID" \
             --runtime-run-url "$RUNTIME_RUN_URL" \
@@ -258,6 +314,7 @@ jobs:
           bash scripts/validate-port.sh \
             --deb dist/OpenCode-iOS-rootless.deb \
             --mode package \
+            --variant "${{ steps.variant.outputs.variant }}" \
             --out-dir dist \
             --artifact-dir dist \
             --contents-manifest dist/contents-manifest.json \
@@ -271,6 +328,7 @@ jobs:
           {
             echo "## OpenCode-iOS-rootless package build"
             echo ""
+            echo "Variant:     \`${{ steps.variant.outputs.variant }}\`"
             echo "Runtime run: ${{ steps.resolve-runtime.outputs.runtime_run_url }}"
             echo "CLI run:     ${{ steps.resolve-opencode.outputs.opencode_run_url }}"
             if [ -n "${{ steps.resolve-ripgrep.outputs.ripgrep_run_url }}" ]; then

@@ -66,6 +66,36 @@ EXPECTED_SECTION = "Development"
 EXPECTED_PRIORITY = "optional"
 EXPECTED_HOMEPAGE_PREFIX = "https://github.com/"
 
+# Runtime variants: the Node 18 fallback is the device-proven primary runtime;
+# the Node 22.9 build is the experimental mprotect/W^X path.
+VARIANT_NODE22 = "node22"
+VARIANT_NODE18 = "node18"
+VARIANT_LABELS = {
+    VARIANT_NODE22: "node22",
+    VARIANT_NODE18: "node18",
+}
+EXPECTED_RUNTIME_NODE_VERSION = {
+    VARIANT_NODE22: "22.9.0",
+    VARIANT_NODE18: "18.20.4",
+}
+RUNTIME_KIND = {
+    VARIANT_NODE22: "node22",
+    VARIANT_NODE18: "node18",
+}
+VARIANT_CONTROL_DESCRIPTION = {
+    VARIANT_NODE22: (
+        "This build ships the experimental Node.js 22.9.0 runtime variant\n"
+        " (V8 12.4 mprotect-based W^X; device verification pending; the Node 18\n"
+        " fallback variant is the primary deliverable)."
+    ),
+    VARIANT_NODE18: (
+        "This build ships the Node.js 18.20.4 fallback runtime (V8 10.2\n"
+        " memory model, device-proven JIT/WebAssembly/full-ICU on the target\n"
+        " iPhone) with the bundled sql.js WebAssembly sqlite shim; the Node 22\n"
+        " variant remains experimental."
+    ),
+}
+
 REAL_NODE_MIN_BYTES = 1_000_000
 REAL_MJS_MIN_BYTES = 50_000
 MAX_FILE_BYTES = 300 * 1024 * 1024
@@ -197,8 +227,25 @@ DEVICE_TESTS = [
     {
         "id": "device.no-network",
         "title": "Offline CLI commands run without a provider",
-        "commands": ["cd /var/mobile/Documents && opencode --version && opencode --help"],
-        "expected": "Offline commands exit 0 with the JITless runtime (no SIGKILL).",
+        "commands": [
+            "opencode --version",
+            "opencode models",
+            "opencode debug paths",
+        ],
+        "expected": "Offline commands exit 0 (Node 18 sql.js shim: `opencode session "
+                    "list` also works and persists the database file; no SIGKILL/"
+                    "SIGBUS).",
+    },
+    {
+        "id": "device.sqlite",
+        "title": "sqlite persistence works (Node 18 sql.js shim or Node 22 node:sqlite)",
+        "commands": [
+            "opencode session list",
+            "ls -l \"$HOME/.local/share/opencode\"/*.db 2>/dev/null || true",
+        ],
+        "expected": "`session list` exits 0 and creates/persists the sqlite database "
+                    "file. Node 18 uses the bundled sql.js WebAssembly shim (whole-file "
+                    "persistence, no WAL; see KNOWN_LIMITATIONS.md).",
     },
     {
         "id": "device.jitless",
@@ -520,11 +567,14 @@ def cmd_sources(args):
             run_url=getattr(args, "jitshim_run_url", "") or "",
         )
     lock = _parse_lock_file(args.lock)
+    variant = normalize_variant(getattr(args, "variant", "")) or VARIANT_NODE22
     sources = {
         "schema": 1,
         "kind": "package-sources",
         "generated_at": utc_now(),
         "self_test": bool(args.self_test),
+        "variant": VARIANT_LABELS[variant],
+        "runtime_kind": RUNTIME_KIND[variant],
         "repository": args.repository or os.environ.get("GITHUB_REPOSITORY", ""),
         "commit": args.commit or "",
         "workflow": {
@@ -711,6 +761,7 @@ def _check_repo_checks(checks, repo_root, mode, out_dir):
             repo_root / "packaging/rootless/prerm",
             repo_root / "packaging/rootless/postrm",
             repo_root / "packaging/rootless/usr/bin/opencode",
+            repo_root / "packaging/rootless/usr/bin/opencode-node18",
             repo_root / "packaging/rootless/usr/share/doc/opencode/device-smoke.sh",
         ) if path.is_file()
     )
@@ -761,6 +812,7 @@ def _check_repo_checks(checks, repo_root, mode, out_dir):
         "packaging/rootless/prerm",
         "packaging/rootless/postrm",
         "packaging/rootless/usr/bin/opencode",
+        "packaging/rootless/usr/bin/opencode-node18",
         "packaging/rootless/usr/share/doc/opencode/copyright",
         "packaging/rootless/usr/share/doc/opencode/device-smoke.sh",
         "packaging/verify/deb_reader.py",
@@ -885,10 +937,11 @@ def _parse_control_continuation_count(control_text):
     return count
 
 
-def _check_control(checks, ctx, expected_version):
+def _check_control(checks, ctx, expected_version, variant=VARIANT_NODE22):
     control = ctx["control"]
     control_text = ctx["control_text"]
     problems = []
+    description = control.get("Description", "")
     for field in CONTROL_REQUIRED_FIELDS:
         if not control.get(field, "").strip():
             problems.append(f"missing/empty field {field}")
@@ -918,6 +971,15 @@ def _check_control(checks, ctx, expected_version):
         problems.append(f"Homepage={control.get('Homepage')!r} is not a GitHub URL")
     if _parse_control_continuation_count(control_text) < 2:
         problems.append("Description must be multi-line (at least 2 continuation lines)")
+    # The package description must state which runtime variant the build ships.
+    if variant == VARIANT_NODE18:
+        if not re.search(r"Node(?:\.js)?\s*18", description):
+            problems.append("Description must state that this build ships the Node 18 runtime")
+        if "sql.js" not in description and "sqlite shim" not in description.lower():
+            problems.append("Description must mention the bundled sql.js sqlite shim")
+    else:
+        if not re.search(r"Node(?:\.js)?\s*22", description):
+            problems.append("Description must state that this build ships the Node 22 runtime")
 
     installed = control.get("Installed-Size", "").strip()
     if not installed.isdigit() or int(installed) <= 0:
@@ -1157,7 +1219,7 @@ def _check_maintainer_scripts(checks, ctx, extract_dir):
                   "postinst x2, prerm, postrm remove/purge all exit 0 against rewritten root")
 
 
-def _check_launcher(checks, ctx, extract_dir):
+def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     launcher = Path(extract_dir) / "var/jb/usr/bin/opencode"
     if not launcher.is_file():
         check(checks, "pkg.launcher", "package", "Launcher script contract", "FAIL",
@@ -1178,29 +1240,59 @@ def _check_launcher(checks, ctx, extract_dir):
         problems.append("launcher must exec the runtime (no fork)")
     if '"$@"' not in text:
         problems.append('launcher must forward arguments with "$@"')
-    if "--experimental-sqlite" not in text:
-        problems.append("--experimental-sqlite missing (required for node:sqlite on Node 22.9)")
     if "--no-warnings" not in text:
         problems.append("--no-warnings missing")
     if "OPENCODE_NODE_ASSETS_DIR" not in text:
         problems.append("OPENCODE_NODE_ASSETS_DIR not exported")
     if "OPENCODE_IOS=1" not in text:
         problems.append("OPENCODE_IOS=1 not exported")
-    if "OPENCODE_IOS_JITLESS" not in text:
-        problems.append("OPENCODE_IOS_JITLESS escape hatch not documented")
-    if "DYLD_INSERT_LIBRARIES" not in text or "libjitshim.dylib" not in text:
+    if "TMPDIR" not in text:
         problems.append(
-            "launcher must conditionally inject the optional libjitshim.dylib via "
-            "DYLD_INSERT_LIBRARIES when it is shipped"
+            "launcher must provide the TMPDIR fallback required by the CLI/Node "
+            "tooling in sessions that do not export TMPDIR"
         )
-    if re.search(r"(?m)^\s*if\s+\[\s+-f\s+\"\$JITSHIM\"\s+\]", text) is None:
-        problems.append(
-            "launcher's JIT shim injection must be presence-based "
-            "(if [ -f \"$JITSHIM\" ]) so packages without the shim launch normally"
-        )
-    for banned in ("--use-system-ca", "--experimental-ffi"):
+    if "OPENCODE_IOS_NODE_FLAGS" not in text:
+        problems.append("OPENCODE_IOS_NODE_FLAGS escape hatch missing")
+    if "OPENCODE_IOS_MAX_OLD_SPACE_MB" not in text:
+        problems.append("OPENCODE_IOS_MAX_OLD_SPACE_MB escape hatch missing")
+    if variant == VARIANT_NODE22:
+        if "--experimental-sqlite" not in text:
+            problems.append(
+                "--experimental-sqlite missing (required for node:sqlite on Node 22)"
+            )
+        if "--disable-warning=ExperimentalWarning" not in text:
+            problems.append("--disable-warning=ExperimentalWarning missing")
+        if "OPENCODE_IOS_JITLESS" not in text:
+            problems.append("OPENCODE_IOS_JITLESS escape hatch not documented")
+        if "DYLD_INSERT_LIBRARIES" not in text or "libjitshim.dylib" not in text:
+            problems.append(
+                "launcher must conditionally inject the optional libjitshim.dylib via "
+                "DYLD_INSERT_LIBRARIES when it is shipped"
+            )
+        if re.search(r"(?m)^\s*if\s+\[\s+-f\s+\"\$JITSHIM\"\s+\]", text) is None:
+            problems.append(
+                "launcher's JIT shim injection must be presence-based "
+                "(if [ -f \"$JITSHIM\" ]) so packages without the shim launch normally"
+            )
+        if "OPENCODE_IOS_JITLESS" not in text:
+            pass
+    else:
+        # Node 18 (18.20.4) rejects flags that only exist on newer Node lines.
+        for banned, why in (
+            ("--experimental-sqlite", "not a valid Node 18 option"),
+            ("--disable-warning", "not a valid Node 18 option"),
+        ):
+            if banned in text:
+                problems.append(f"{banned} must not be passed on the Node 18 variant ({why})")
+        if "node18-sqlite" not in text and "sql.js" not in text:
+            # Informational only: the sqlite shim is provided by the CLI asset tree.
+            pass
+    for banned, why in (
+        ("--use-system-ca", "invalid option on Node 18/22.9"),
+        ("--experimental-ffi", "invalid option on Node 18/22.9"),
+    ):
         if banned in text:
-            problems.append(f"{banned} must not be passed to Node 22.9 (invalid option)")
+            problems.append(f"{banned} must not be passed ({why})")
     if "uname" in text:
         problems.append("launcher must not depend on uname (iOS identifies as ios)")
     secret = next((p for p in _SECRET_PATTERNS if p.search(text)), None)
@@ -1210,14 +1302,27 @@ def _check_launcher(checks, ctx, extract_dir):
         check(checks, "pkg.launcher", "package", "Launcher script contract", "FAIL",
               truncate("; ".join(problems), 1200))
     else:
+        if variant == VARIANT_NODE22:
+            evidence = (
+                "#!/var/jb/bin/sh, PATH prepend, TMPDIR fallback, exec, \"$@\" "
+                "forwarding, --experimental-sqlite, --no-warnings, assets/iOS env "
+                "exports, presence-based DYLD_INSERT_LIBRARIES for the optional JIT "
+                "shim, JITless/NODE_FLAGS/MAX_OLD_SPACE escape hatches; no invalid "
+                "flags, no uname, no credentials"
+            )
+        else:
+            evidence = (
+                "#!/var/jb/bin/sh (Node 18 variant), PATH prepend, TMPDIR fallback, "
+                "exec, \"$@\" forwarding, --no-warnings, assets/iOS env exports, "
+                "NODE_FLAGS/MAX_OLD_SPACE escape hatches; no Node-22-only flags "
+                "(--experimental-sqlite/--disable-warning/--use-system-ca/"
+                "--experimental-ffi), no uname, no credentials"
+            )
         check(checks, "pkg.launcher", "package", "Launcher script contract", "PASS",
-              "#!/var/jb/bin/sh, PATH prepend, exec, \"$@\" forwarding, "
-              "--experimental-sqlite, --no-warnings, assets/iOS env exports, "
-              "presence-based DYLD_INSERT_LIBRARIES for the optional JIT shim, "
-              "JITless escape hatch; no invalid 22.9 flags, no uname, no credentials")
+              evidence)
 
 
-def _check_docs(checks, ctx, extract_dir):
+def _check_docs(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     base = Path(extract_dir) / "var/jb/usr/share/doc/opencode"
     problems = []
     texts = {}
@@ -1239,9 +1344,11 @@ def _check_docs(checks, ctx, extract_dir):
         problems.append("copyright does not name OpenCode")
     if "Node.js" not in texts["copyright"]:
         problems.append("copyright does not attribute Node.js")
-    if "UNVERIFIED ON DEVICE" not in texts.get("VERIFICATION.md", ""):
+    verification_text = texts.get("VERIFICATION.md", "")
+    install_text = texts.get("INSTALL.md", "")
+    if "UNVERIFIED ON DEVICE" not in verification_text:
         problems.append("VERIFICATION.md does not state the UNVERIFIED ON DEVICE status")
-    if "dpkg -i" not in texts.get("INSTALL.md", ""):
+    if "dpkg -i" not in install_text:
         problems.append("INSTALL.md lacks the dpkg install procedure")
     if problems:
         check(checks, "pkg.docs", "package", "Packaged documentation is complete", "FAIL",
@@ -1250,6 +1357,23 @@ def _check_docs(checks, ctx, extract_dir):
         check(checks, "pkg.docs", "package", "Packaged documentation is complete", "PASS",
               "README/LICENSE/copyright/INSTALL/VERIFICATION present; MIT + attribution + "
               "UNVERIFIED ON DEVICE stated; install procedure documented")
+
+    # Both runtime variants must be described honestly in the packaged docs.
+    combined_docs = "\n".join(
+        texts.get(name, "") for name in
+        ("INSTALL.md", "VERIFICATION.md", "KNOWN_LIMITATIONS.md")
+    )
+    has_18 = bool(re.search(r"Node(?:\.js)?\s*18", combined_docs))
+    has_22 = bool(re.search(r"Node(?:\.js)?\s*22", combined_docs))
+    if has_18 and has_22:
+        check(checks, "pkg.docs-runtimes", "package",
+              "Packaged docs describe both Node 18 and Node 22 variants", "PASS",
+              "INSTALL/VERIFICATION/KNOWN_LIMITATIONS mention the Node 18 primary and "
+              "Node 22 experimental runtimes")
+    else:
+        check(checks, "pkg.docs-runtimes", "package",
+              "Packaged docs describe both Node 18 and Node 22 variants", "SKIP",
+              f"Node 18 mentioned={has_18}, Node 22 mentioned={has_22}; docs update pending")
     smoke = base / "device-smoke.sh"
     if smoke.is_file():
         smoke_text = read_text(smoke)
@@ -2001,7 +2125,85 @@ def _capability_enabled(value):
     return head in ("enabled", "true", "yes", "on")
 
 
-def _check_runtime_profile(checks, ctx, extract_dir):
+def normalize_variant(value):
+    """Map free-form variant labels to VARIANT_NODE22 / VARIANT_NODE18."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if "18" in text or "node18" in text:
+        return VARIANT_NODE18
+    if "22" in text or "node22" in text:
+        return VARIANT_NODE22
+    return ""
+
+
+def _runtime_manifest(extract_dir):
+    path = Path(extract_dir) / "var/jb/usr/lib/opencode/runtime/runtime-manifest.json"
+    if not path.is_file():
+        return None, path
+    try:
+        return read_json(path), path
+    except (OSError, ValueError):
+        return None, path
+
+
+def infer_variant(ctx, sources=None, package_report=None, requested=""):
+    """Resolve the package variant from explicit input, provenance, or runtime manifest."""
+    explicit = normalize_variant(requested)
+    if explicit:
+        return explicit
+    explicit = normalize_variant(ctx.get("variant"))
+    if explicit:
+        return explicit
+    for candidate in (
+        (sources or {}).get("variant"),
+        (sources or {}).get("runtime_kind"),
+        (package_report or {}).get("variant"),
+        (package_report or {}).get("runtime_kind"),
+        (package_report or {}).get("sources", {}).get("variant")
+        if isinstance(package_report or {}, dict) else "",
+    ):
+        detected = normalize_variant(candidate)
+        if detected:
+            return detected
+    extract_dir = ctx.get("extract_dir")
+    if extract_dir:
+        manifest, _ = _runtime_manifest(extract_dir)
+        if isinstance(manifest, dict):
+            detected = normalize_variant(manifest.get("node_version"))
+            if not detected:
+                detected = normalize_variant(manifest.get("variant"))
+            if detected:
+                return detected
+    return VARIANT_NODE22
+
+
+def cmd_render_control(args):
+    """Render DEBIAN/control from the template for a specific runtime variant."""
+    variant = normalize_variant(args.variant) or VARIANT_NODE22
+    node_version = args.node_version or EXPECTED_RUNTIME_NODE_VERSION[variant]
+    template = read_text(args.template)
+    replacements = {
+        "@VERSION@": args.version,
+        "@MAINTAINER@": args.maintainer,
+        "@INSTALLED_SIZE@": str(args.installed_size),
+        "@NODE_VERSION@": node_version,
+        "@VARIANT_DESCRIPTION@": VARIANT_CONTROL_DESCRIPTION[variant],
+    }
+    text = template
+    for key, value in replacements.items():
+        text = text.replace(key, value)
+    if re.search(r"@[A-Z_]+@", text):
+        raise SystemExit(
+            "render-control: unsubstituted placeholder remains in rendered control"
+        )
+    with open(args.out, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(text)
+    print(f"render-control: variant={variant} node={node_version} -> {args.out}")
+    return 0
+
+
+def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     """Reject runtime artifacts whose build/capabilities cannot run the CLI.
 
     Device-verified requirements (iPhone SE 2, iOS 16.1.1, Dopamine rootless):
@@ -2009,11 +2211,13 @@ def _check_runtime_profile(checks, ctx, extract_dir):
       Intl.Segmenter), so `--with-intl=none` fails at parse time, and full-icu is
       the intended build (small-icu trims Intl data and Intl.Segmenter is known
       to misbehave);
-    * Node 22.9's built-in fetch/undici needs WebAssembly (wasm llhttp), and the
-      v1 jitless/no-wasm runtime made every CLI command fail on device with
-      `ReferenceError: WebAssembly is not defined`. The runtime must therefore be
-      built with WebAssembly and JIT enabled (and only the 2-key entitlements,
-      which the device proved are sufficient for JIT+WASM).
+    * Node's built-in fetch/undici needs WebAssembly (wasm llhttp), and the
+      jitless/no-wasm runtimes made every CLI command fail on device with
+      `ReferenceError: WebAssembly is not defined`. WebAssembly and JIT must be
+      enabled with the device-verified 2-key entitlements;
+    * for the Node 22 variant an iOS V8 W^X patch (0004/0005) is required; the
+      Node 18 variant (V8 10.2 memory model) is device-proven and does not need
+      those Node-22-only patches.
     """
     runtime_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/runtime"
     manifest_path = runtime_dir / "runtime-manifest.json"
@@ -2035,32 +2239,49 @@ def _check_runtime_profile(checks, ctx, extract_dir):
     policy = manifest.get("runtime_policy") if isinstance(manifest, dict) else None
     if not isinstance(policy, dict):
         policy = {}
-    if not isinstance(flags, list) or not flags:
-        check(checks, "runtime.build-profile", "runtime",
-              "Runtime build/capability profile is usable by the CLI", "SKIP",
-              "runtime-manifest.json does not declare build.configure_flags")
-        return
-    flags = [str(flag) for flag in flags]
+    flags_declared = isinstance(flags, list) and bool(flags)
+    flags = [str(flag) for flag in flags] if flags_declared else []
     metrics["runtime_configure_flags"] = flags
+    metrics["runtime_node_version"] = (
+        manifest.get("node_version") if isinstance(manifest, dict) else ""
+    ) or ""
+    metrics["runtime_variant"] = variant
     problems = []
+    notes = []
+
+    if not flags_declared:
+        if variant == VARIANT_NODE22:
+            problems.append(
+                "runtime-manifest.json does not declare build.configure_flags "
+                "(required for the Node 22 variant)"
+            )
+        else:
+            notes.append("build.configure_flags not declared (Node 18 runtime)")
 
     # ---- ICU / Intl ------------------------------------------------------
     full_icu = any("--with-intl=full-icu" in flag for flag in flags)
     other_icu = any("--with-intl=small-icu" in flag for flag in flags)
-    if any("--with-intl=none" in flag for flag in flags):
-        problems.append(
-            "runtime was configured with --with-intl=none: Intl is unavailable and "
-            "V8 rejects the Unicode property escapes used by the OpenCode CLI bundle "
-            "(device-verified parse failure). Rebuild with --with-intl=full-icu "
-            "(preferred; small-icu only if it demonstrably supports Intl.Segmenter)."
-        )
-    elif not (full_icu or other_icu):
-        problems.append(
-            "runtime does not declare an ICU build (--with-intl=full-icu); the CLI "
-            "requires Intl support, including Intl.Segmenter."
-        )
+    if flags_declared:
+        if any("--with-intl=none" in flag for flag in flags):
+            problems.append(
+                "runtime was configured with --with-intl=none: Intl is unavailable "
+                "and V8 rejects the Unicode property escapes used by the OpenCode CLI "
+                "bundle (device-verified parse failure). Rebuild with "
+                "--with-intl=full-icu (preferred; small-icu only if it demonstrably "
+                "supports Intl.Segmenter)."
+            )
+        elif not (full_icu or other_icu):
+            problems.append(
+                "runtime does not declare an ICU build (--with-intl=full-icu); the CLI "
+                "requires Intl support, including Intl.Segmenter."
+            )
     intl_policy = policy.get("intl") if isinstance(policy.get("intl"), dict) else None
-    if intl_policy is not None:
+    if intl_policy is None:
+        problems.append(
+            "runtime-manifest.json does not declare runtime_policy.intl; an ICU "
+            "build is required (Intl + Intl.Segmenter are used by the CLI)."
+        )
+    else:
         intl_mode = str(intl_policy.get("mode", ""))
         icu_version = str(intl_policy.get("icu_version", ""))
         if "none" in intl_mode.lower() or intl_mode.lower() in ("", "unknown"):
@@ -2068,9 +2289,12 @@ def _check_runtime_profile(checks, ctx, extract_dir):
                 f"runtime_policy.intl.mode={intl_mode!r}: an ICU build is required"
             )
         if not icu_version:
-            problems.append("runtime_policy.intl.icu_version is not declared")
+            if variant == VARIANT_NODE22:
+                problems.append("runtime_policy.intl.icu_version is not declared")
+            else:
+                notes.append("ICU version not declared (full-icu mode declared)")
 
-    # ---- WebAssembly (required by Node fetch/undici on 22.9) ------------
+    # ---- WebAssembly (required by Node fetch/undici) ---------------------
     wasm_policy = policy.get("webassembly")
     if wasm_policy is None:
         problems.append(
@@ -2087,7 +2311,7 @@ def _check_runtime_profile(checks, ctx, extract_dir):
 
     # ---- JIT (required for Wasm code generation; 2-key entitlements suffice)
     jit_policy = policy.get("v8_jit")
-    if any("--v8-options=--jitless" in flag for flag in flags):
+    if flags_declared and any("--v8-options=--jitless" in flag for flag in flags):
         problems.append(
             "--v8-options=--jitless is set: the shipped runtime must have JIT enabled "
             "(device verified the 2-key entitlement set permits JIT; WebAssembly needs "
@@ -2104,15 +2328,17 @@ def _check_runtime_profile(checks, ctx, extract_dir):
         )
 
     # ---- iOS target flags ------------------------------------------------
-    if not any("--dest-os=ios" in flag for flag in flags):
-        problems.append("--dest-os=ios missing from configure flags")
-    if not any("--dest-cpu=arm64" in flag for flag in flags):
-        problems.append("--dest-cpu=arm64 missing from configure flags")
+    if flags_declared:
+        if not any("--dest-os=ios" in flag for flag in flags):
+            problems.append("--dest-os=ios missing from configure flags")
+        if not any("--dest-cpu=arm64" in flag for flag in flags):
+            problems.append("--dest-cpu=arm64 missing from configure flags")
 
-    # ---- iOS V8 W^X patch (required when JIT is enabled) -----------------
-    # v3 (JIT+WASM, no V8 iOS W^X path) trapped with SIGBUS when executing
-    # V8-generated code on device with every entitlement set. patch 0004 adds
-    # MAP_JIT + pthread_jit_write_protect for iOS; do not ship JIT builds without it.
+    # ---- iOS V8 W^X patch (Node 22 variant only) -------------------------
+    # v3/v4 Node 22 builds without a working iOS W^X memory model trapped on
+    # device (SIGBUS / SIGTRAP at code-range reservation). The Node 18 variant
+    # uses the V8 10.2 memory model that is device-proven by the community build
+    # and does not need the Node-22-only patches.
     source = manifest.get("source") if isinstance(manifest, dict) else None
     patches = source.get("patches") if isinstance(source, dict) else None
     patch_files = ([str(item.get("file", "")) for item in patches
@@ -2126,35 +2352,43 @@ def _check_runtime_profile(checks, ctx, extract_dir):
     )
     if patch_files is not None:
         metrics["runtime_patches"] = patch_files
-        if jit_enabled and not wx_patch_declared:
+    if variant == VARIANT_NODE22:
+        if patch_files is not None and jit_enabled and not wx_patch_declared:
             problems.append(
-                "JIT-enabled runtime manifest does not list an iOS V8 W^X patch "
-                "(patches/nodejs-mobile/0004-ios-jit-write-protect.patch or "
-                "0005-no-map-jit-on-ios.patch); pre-W^X builds trapped with SIGBUS "
-                "on V8-generated code on the device."
+                "JIT-enabled Node 22 runtime manifest does not list an iOS V8 W^X "
+                "patch (patches/nodejs-mobile/0004-ios-jit-write-protect.patch or "
+                "0005-no-map-jit-on-ios.patch); pre-W^X builds trapped on generated "
+                "code on the device."
             )
+        elif patch_files is None:
+            notes.append("W^X patch presence not declared (unverified)")
+    else:
+        notes.append(
+            "Node 18 V8 10.2 memory model (device-proven); Node 22 W^X patch not required"
+        )
 
     if problems:
         check(checks, "runtime.build-profile", "runtime",
               "Runtime build/capability profile is usable by the CLI", "FAIL",
               truncate("; ".join(problems), 1500))
     else:
-        detail = "configure flags: " + truncate(", ".join(flags), 600)
+        detail = f"variant={variant}"
+        if flags:
+            detail += "; configure flags: " + truncate(", ".join(flags), 500)
         if full_icu:
             detail += "; full-icu (preferred for Intl.Segmenter)"
-        else:
-            detail += (
-                "; small-icu accepted, but full-icu is the device requirement for "
-                "Intl.Segmenter — confirm on device"
-            )
+        elif other_icu:
+            detail += "; small-icu accepted (confirm Intl.Segmenter on device)"
         if intl_policy is not None:
-            detail += f"; ICU {intl_policy.get('icu_version', '?')}"
+            detail += f"; ICU {intl_policy.get('icu_version', 'declared')}"
         detail += "; WebAssembly enabled; JIT enabled"
         if wx_patch_declared:
-            detail += "; iOS V8 W^X patch (0004) declared"
-        elif patch_files is None:
-            detail += "; W^X patch presence not declared (unverified)"
+            detail += "; iOS V8 W^X patch declared"
+        for note in notes:
+            detail += f"; {note}"
         metrics["runtime_capabilities"] = {
+            "variant": variant,
+            "node_version": metrics["runtime_node_version"],
             "intl_mode": (intl_policy or {}).get("mode"),
             "icu_version": (intl_policy or {}).get("icu_version"),
             "webassembly": wasm_policy,
@@ -2296,7 +2530,7 @@ def _check_optional_jitshim(checks, ctx, extract_dir, skip_native):
 # --------------------------------------------------------------------------
 # CLI checks
 # --------------------------------------------------------------------------
-def _check_cli(checks, ctx, extract_dir, mode):
+def _check_cli(checks, ctx, extract_dir, mode, variant=VARIANT_NODE22):
     cli_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
     mjs = cli_dir / "opencode.mjs"
     assets = cli_dir / "assets"
@@ -2311,6 +2545,7 @@ def _check_cli(checks, ctx, extract_dir, mode):
     ] if assets.is_dir() else []
     asset_bytes = sum(path.stat().st_size for path in asset_files)
     metrics["cli"] = {
+        "variant": variant,
         "opencode_mjs_sha256": sha256_file(mjs),
         "opencode_mjs_size": mjs_size,
         "assets_file_count": len(asset_files),
@@ -2327,13 +2562,27 @@ def _check_cli(checks, ctx, extract_dir, mode):
     bundle_text = read_text(mjs, limit=32 * 1024 * 1024)
     if mode != "self-test" and "opencode" not in bundle_text.lower():
         problems.append("bundle does not look like OpenCode (name not found)")
+    if mode != "self-test" and variant == VARIANT_NODE18:
+        sqlite_dir = assets / "node18-sqlite"
+        for name in ("sql-wasm.js", "sql-wasm.wasm"):
+            sqlite_asset = sqlite_dir / name
+            if not sqlite_asset.is_file() or sqlite_asset.stat().st_size == 0:
+                problems.append(
+                    f"Node 18 sql.js asset missing/empty: cli/assets/node18-sqlite/{name}"
+                )
+        metrics["cli"]["sqljs_assets"] = sorted(
+            path.name for path in sqlite_dir.rglob("*") if path.is_file()
+        ) if sqlite_dir.is_dir() else []
     if problems:
         check(checks, "cli.bundle", "cli", "OpenCode CLI bundle present", "FAIL",
               truncate("; ".join(problems), 1200))
     else:
+        extra = ""
+        if variant == VARIANT_NODE18:
+            extra = " with bundled sql.js sqlite shim (assets/node18-sqlite)"
         check(checks, "cli.bundle", "cli", "OpenCode CLI bundle present", "PASS",
               f"opencode.mjs {mjs_size} bytes sha256={metrics['cli']['opencode_mjs_sha256'][:16]}...; "
-              f"{len(asset_files)} asset file(s), {asset_bytes} bytes")
+              f"{len(asset_files)} asset file(s), {asset_bytes} bytes{extra}")
 
     # Non-SEA asset-loading contract: the launcher exports
     # OPENCODE_NODE_ASSETS_DIR (verified in pkg.launcher); the bundle either
@@ -2421,20 +2670,20 @@ def _macho_info(path):
             "minos": minos, "fat": False}
 
 
-def _check_artifact_policy(checks, ctx, cli_dir):
+def _check_artifact_policy(checks, ctx, cli_dir, variant=VARIANT_NODE22):
     """Gate the CLI artifact on the producer's iOS-patch/smoke policy metadata."""
+    expected_node = EXPECTED_RUNTIME_NODE_VERSION[variant]
+    title = (f"CLI artifact is an iOS candidate (patch series + Node {expected_node} smoke)")
     metrics = ctx["metrics"]
     manifest_path = cli_dir / "bundle-manifest.json"
     if not manifest_path.is_file():
-        check(checks, "cli.artifact-policy", "cli",
-              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
-              "SKIP", "opencode-cli-node-ios did not ship bundle-manifest.json")
+        check(checks, "cli.artifact-policy", "cli", title,
+              "SKIP", "opencode-cli artifact did not ship bundle-manifest.json")
         return
     try:
         manifest = read_json(manifest_path)
     except (OSError, ValueError) as exc:
-        check(checks, "cli.artifact-policy", "cli",
-              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+        check(checks, "cli.artifact-policy", "cli", title,
               "FAIL", f"cannot parse bundle-manifest.json: {exc}")
         return
     build = manifest.get("build", {}) if isinstance(manifest, dict) else {}
@@ -2443,11 +2692,15 @@ def _check_artifact_policy(checks, ctx, cli_dir):
     notes_text = " | ".join(str(note) for note in notes)
     required_node = status.get("host_smoke_required_node_version")
     required_passed = status.get("host_smoke_required_passed")
+    build_variant = str(build.get("variant", "")) if isinstance(build, dict) else ""
     metrics["cli_artifact_policy"] = {
+        "variant": variant,
+        "artifact_variant": build_variant,
         "ios_prelude": build.get("ios_prelude") if isinstance(build, dict) else None,
         "host_smoke_required_node_version": required_node,
         "host_smoke_required_passed": required_passed,
         "stock_build": "STOCK upstream build" in notes_text,
+        "sqlite": build.get("sqlite") if isinstance(build, dict) else None,
     }
     problems = []
     if "STOCK upstream build" in notes_text:
@@ -2457,25 +2710,38 @@ def _check_artifact_policy(checks, ctx, cli_dir):
         )
     if required_passed is False:
         problems.append("the producer's required host-Node smoke test did not pass")
-    if required_node and str(required_node) != "22.9.0":
+    if required_node and str(required_node) != expected_node:
         problems.append(
-            f"artifact was smoke-required on Node {required_node}, but the shipped "
-            "iPhoneOS runtime is Node 22.9.0 (patch series must make 22.9.0 the "
-            "required smoke version)"
+            f"artifact was smoke-required on Node {required_node}, but the selected "
+            f"variant ships the Node {expected_node} runtime"
+        )
+    if variant == VARIANT_NODE18:
+        if "18" not in build_variant:
+            problems.append(
+                f"bundle build.variant={build_variant!r} does not declare the Node 18 "
+                "fallback variant"
+            )
+        if not build.get("sqlite"):
+            problems.append(
+                "Node 18 bundle manifest does not declare the bundled sql.js sqlite shim"
+            )
+    elif "18" in build_variant.lower():
+        problems.append(
+            f"bundle build.variant={build_variant!r} is a Node 18 artifact but the "
+            "package variant is node22"
         )
     if problems:
-        check(checks, "cli.artifact-policy", "cli",
-              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+        check(checks, "cli.artifact-policy", "cli", title,
               "FAIL", truncate("; ".join(problems), 1200))
     elif required_node:
-        check(checks, "cli.artifact-policy", "cli",
-              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+        check(checks, "cli.artifact-policy", "cli", title,
               "PASS",
-              f"bundle-manifest: ios_prelude={build.get('ios_prelude') if isinstance(build, dict) else '?'}, "
-              f"required smoke Node {required_node} passed")
+              f"bundle-manifest: variant={build_variant or '?'}, "
+              f"ios_prelude={build.get('ios_prelude') if isinstance(build, dict) else '?'}, "
+              f"required smoke Node {required_node} passed"
+              + (", sql.js shim declared" if build.get("sqlite") else ""))
     else:
-        check(checks, "cli.artifact-policy", "cli",
-              "CLI artifact is an iOS candidate (patch series + Node 22.9 smoke)",
+        check(checks, "cli.artifact-policy", "cli", title,
               "SKIP", "bundle-manifest has no host-smoke version policy metadata")
 
 
@@ -2521,23 +2787,28 @@ def _check_assets_native(checks, ctx, cli_dir):
               "assets/ contains no Mach-O native binaries (JS/Wasm/data only)")
 
 
-def _check_host_smoke(checks, ctx, host_smoke_path):
+def _check_host_smoke(checks, ctx, host_smoke_path, variant=VARIANT_NODE22):
+    expected_node = "v" + EXPECTED_RUNTIME_NODE_VERSION[variant]
+    smoke_title = f"CLI bundle runs on the host Node.js {EXPECTED_RUNTIME_NODE_VERSION[variant]} runtime"
     metrics = ctx["metrics"]
     if not host_smoke_path or not Path(host_smoke_path).is_file():
         check(checks, "cli.host-node-smoke", "cli",
-              "CLI bundle runs on the host Node.js 22.9.0 runtime", "FAIL",
+              smoke_title, "FAIL",
               f"host smoke JSON not found: {host_smoke_path}")
         return
     try:
         smoke = read_json(host_smoke_path)
     except (OSError, ValueError) as exc:
         check(checks, "cli.host-node-smoke", "cli",
-              "CLI bundle runs on the host Node.js 22.9.0 runtime", "FAIL",
+              smoke_title, "FAIL",
               f"cannot parse host smoke JSON: {exc}")
         return
     metrics["host_smoke"] = smoke
     checks_to_report = smoke.get("checks", [])
-    failed = [c for c in checks_to_report if c.get("status") != "PASS"]
+    failed = [c for c in checks_to_report if c.get("status") == "FAIL"]
+    informational_skips = [
+        c.get("name") for c in checks_to_report if c.get("status") == "SKIP"
+    ]
     node_version = smoke.get("node", {}).get("version", "")
     if smoke.get("status") != "PASS" or failed:
         detail = "; ".join(
@@ -2545,16 +2816,18 @@ def _check_host_smoke(checks, ctx, host_smoke_path):
             for c in failed[:5]
         )
         check(checks, "cli.host-node-smoke", "cli",
-              "CLI bundle runs on the host Node.js 22.9.0 runtime", "FAIL",
+              smoke_title, "FAIL",
               truncate(f"node {node_version}: {detail or smoke.get('error', 'smoke failed')}", 1500))
     else:
         summary = ", ".join(
             f"{c.get('name')}=exit{c.get('exit')}" for c in checks_to_report
         )
         check(checks, "cli.host-node-smoke", "cli",
-              "CLI bundle runs on the host Node.js 22.9.0 runtime", "PASS",
-              f"host Node {node_version}; {len(checks_to_report)} command(s) OK: "
-              + truncate(summary, 900))
+              smoke_title, "PASS",
+              f"host Node {node_version}; {len(checks_to_report)} command(s) checked: "
+              + truncate(summary, 900)
+              + (f"; informational skipped on host: {', '.join(informational_skips)}"
+                 if informational_skips else ""))
 
     node = smoke.get("node", {})
     if node.get("pinned") is False:
@@ -2571,18 +2844,19 @@ def _check_host_smoke(checks, ctx, host_smoke_path):
               "Host Node.js comes from nodejs.org with a verified checksum", "FAIL",
               f"host node provenance not verified: {truncate(json.dumps(node), 500)}")
 
-    if node_version == "v22.9.0":
+    if node_version == expected_node:
         check(checks, "host.node-version", "host",
-              "Host smoke runs on the pinned Node.js 22.9.0", "PASS",
-              f"node --version = {node_version}")
+              f"Host smoke runs on the pinned Node.js {EXPECTED_RUNTIME_NODE_VERSION[variant]}",
+              "PASS", f"node --version = {node_version}")
     elif node.get("pinned") is False:
         check(checks, "host.node-version", "host",
-              "Host smoke runs on the pinned Node.js 22.9.0", "SKIP",
+              f"Host smoke runs on the pinned Node.js {EXPECTED_RUNTIME_NODE_VERSION[variant]}",
+              "SKIP",
               f"diagnostic run used a local node ({node_version}), not the pinned download")
     else:
         check(checks, "host.node-version", "host",
-              "Host smoke runs on the pinned Node.js 22.9.0", "FAIL",
-              f"expected v22.9.0, got {node_version}")
+              f"Host smoke runs on the pinned Node.js {EXPECTED_RUNTIME_NODE_VERSION[variant]}",
+              "FAIL", f"expected {expected_node}, got {node_version}")
 
 
 # --------------------------------------------------------------------------
@@ -2592,11 +2866,16 @@ def _build_package_report(ctx, checks, sources, manifest, args):
     data_entries = ctx["data_entries"]
     control = ctx["control"]
     metrics = ctx["metrics"]
+    variant = ctx.get("variant") or VARIANT_NODE22
+    runtime_kind = RUNTIME_KIND[variant]
+    runtime_capabilities = metrics.get("runtime_capabilities", {})
     report = {
         "schema": 1,
         "kind": "package-report",
         "generated_at": utc_now(),
         "self_test": bool(args.mode == "self-test"),
+        "variant": VARIANT_LABELS[variant],
+        "runtime_kind": runtime_kind,
         "package": {
             "name": control.get("Package"),
             "version": control.get("Version"),
@@ -2605,6 +2884,8 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             "size": metrics.get("deb_size"),
             "sha256": metrics.get("deb_sha256"),
             "installed_size_kib": control.get("Installed-Size"),
+            "variant": VARIANT_LABELS[variant],
+            "runtime_kind": runtime_kind,
             "control": control,
         },
         "sources": sources,
@@ -2618,9 +2899,12 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             "staged_manifest_sha256": metrics.get("manifest_sha256", ""),
         },
         "runtime": {
+            "variant": VARIANT_LABELS[variant],
+            "runtime_kind": runtime_kind,
             "node": {
                 "sha256": metrics.get("node_sha256"),
                 "size": metrics.get("node_size"),
+                "node_version": metrics.get("runtime_node_version", ""),
                 "macho": {
                     "platform": metrics.get("node_platform", ""),
                     "arch": metrics.get("node_arch", ""),
@@ -2630,6 +2914,9 @@ def _build_package_report(ctx, checks, sources, manifest, args):
                 "entitlements_sha256": metrics.get("entitlements_sha256", ""),
                 "runtime_manifest_sha256": metrics.get("runtime_manifest_sha256", ""),
             },
+            "capabilities": runtime_capabilities,
+            "configure_flags": metrics.get("runtime_configure_flags", []),
+            "patches": metrics.get("runtime_patches", []),
             "ripgrep": metrics.get("ripgrep", {"included": False}),
             "jitshim": metrics.get("jitshim", {"included": False}),
         },
@@ -2696,6 +2983,8 @@ def render_markdown(report, package_report=None):
         "",
         f"Generated: `{report['generated_at']}`  ",
         f"Mode: `{report['mode']}`  ",
+        f"Variant: `{report.get('variant', 'node22')}` "
+        f"(runtime `{report.get('runtime_kind', 'node22')}`)  ",
         f"CI status: **{summary['ci_status']}** "
         f"({summary['passed']} passed, {summary['failed']} failed, "
         f"{summary['skipped']} skipped)  ",
@@ -2887,6 +3176,7 @@ def cmd_verify(args):
         runs = sources.get("inputs", {})
         check(checks, "pkg.sources", "package",
               "Provenance metadata available", "PASS",
+              f"variant={sources.get('variant', 'n/a')}, "
               f"runtime run={runs.get('runtime', {}).get('run_id', 'n/a')}, "
               f"cli run={runs.get('opencode_cli', {}).get('run_id', 'n/a')}, "
               f"self_test={sources.get('self_test')}")
@@ -2895,17 +3185,27 @@ def cmd_verify(args):
               "Provenance metadata available", "SKIP",
               "no sources JSON / package-report.json supplied")
 
+    package_report_in = ctx.get("package_report_input")
+    requested_variant = "" if args.variant in ("", "auto") else args.variant
+    variant = infer_variant(ctx, sources, package_report_in, requested_variant)
+    ctx["variant"] = variant
+    check(checks, "pkg.variant", "package",
+          "Package runtime variant identified", "PASS",
+          f"variant={VARIANT_LABELS[variant]} "
+          f"(runtime_kind={RUNTIME_KIND[variant]}, expected Node "
+          f"{EXPECTED_RUNTIME_NODE_VERSION[variant]})")
+
     expected_version = args.expected_version or expected_deb_version(repo_root)
 
     # ---- repository checks ----------------------------------------------
     _check_repo_checks(checks, repo_root, mode, out_dir)
 
     # ---- package checks --------------------------------------------------
-    _check_control(checks, ctx, expected_version)
+    _check_control(checks, ctx, expected_version, variant)
     _check_paths(checks, ctx, mode)
     _check_maintainer_scripts(checks, ctx, extract_dir)
-    _check_launcher(checks, ctx, extract_dir)
-    _check_docs(checks, ctx, extract_dir)
+    _check_launcher(checks, ctx, extract_dir, variant)
+    _check_docs(checks, ctx, extract_dir, variant)
     _check_no_secrets_and_junk(checks, ctx, extract_dir)
     _check_sha256sums(checks, ctx, deb_path, args.artifact_dir or deb_path.parent)
     if args.contents_manifest:
@@ -2919,31 +3219,35 @@ def cmd_verify(args):
 
     # ---- runtime / CLI checks -------------------------------------------
     _check_runtime(checks, ctx, repo_root, extract_dir, mode, args.skip_native_audit)
-    _check_runtime_profile(checks, ctx, extract_dir)
+    _check_runtime_profile(checks, ctx, extract_dir, variant)
     _check_optional_jitshim(checks, ctx, extract_dir, args.skip_native_audit)
     _check_optional_ripgrep(checks, ctx, extract_dir, args.skip_native_audit, mode)
-    _check_cli(checks, ctx, extract_dir, mode)
+    _check_cli(checks, ctx, extract_dir, mode, variant)
     cli_dir_check = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
-    _check_artifact_policy(checks, ctx, cli_dir_check)
+    _check_artifact_policy(checks, ctx, cli_dir_check, variant)
     _check_assets_native(checks, ctx, cli_dir_check)
     if args.skip_smoke:
         check(checks, "cli.host-node-smoke", "cli",
-              "CLI bundle runs on the host Node.js 22.9.0 runtime", "SKIP",
+              f"CLI bundle runs on the host Node.js "
+              f"{EXPECTED_RUNTIME_NODE_VERSION[variant]} runtime", "SKIP",
               "skipped by --skip-smoke (local dry-run only)")
         check(checks, "host.node-provenance", "host",
               "Host Node.js comes from nodejs.org with a verified checksum", "SKIP",
               "skipped by --skip-smoke")
     else:
-        _check_host_smoke(checks, ctx, args.host_smoke_json)
+        _check_host_smoke(checks, ctx, args.host_smoke_json, variant)
 
     return _finish(args, ctx, checks, started)
 
 
 def _finish(args, ctx, checks, started):
     summary = summarize_checks(checks)
+    variant = ctx.get("variant") or VARIANT_NODE22
     environment = environment_info({
         "mode": args.mode,
         "elapsed_seconds": round(time.time() - started, 2),
+        "variant": VARIANT_LABELS[variant],
+        "runtime_kind": RUNTIME_KIND[variant],
     })
     package_block = {
         "file": Path(args.deb).name,
@@ -2952,6 +3256,9 @@ def _finish(args, ctx, checks, started):
         "version": ctx["control"].get("Version", ""),
         "architecture": ctx["control"].get("Architecture", ""),
         "installed_size_kib": ctx["control"].get("Installed-Size", ""),
+        "variant": VARIANT_LABELS[variant],
+        "runtime_kind": RUNTIME_KIND[variant],
+        "runtime_node_version": ctx["metrics"].get("runtime_node_version", ""),
         "run_url": args.run_url or "",
         "run_id": args.run_id or "",
     }
@@ -2960,6 +3267,8 @@ def _finish(args, ctx, checks, started):
         "kind": "verification-report",
         "generated_at": utc_now(),
         "mode": args.mode,
+        "variant": VARIANT_LABELS[variant],
+        "runtime_kind": RUNTIME_KIND[variant],
         "environment": environment,
         "package": package_block,
         "summary": summary,
@@ -3098,6 +3407,7 @@ def cmd_fixture(args):
     runtime_manifest = {
         "name": "self-test placeholder runtime (NOT Node.js)",
         "self_test": True,
+        "node_version": "22.9.0",
         "note": "synthetic fixture used by the packaging scripts self-test; never shipped",
         "build": {
             "configure_flags": [
@@ -3112,8 +3422,18 @@ def cmd_fixture(args):
                 "configure_flag": "--with-intl=full-icu",
                 "icu_version": "self-test-placeholder",
             },
-            "webassembly": "enabled (self-test placeholder)",
-            "v8_jit": "enabled (self-test placeholder)",
+            "webassembly": "enabled: self-test placeholder",
+            "v8_jit": "enabled: self-test placeholder",
+        },
+        "source": {
+            "patches": [
+                {"file": "patches/nodejs-mobile/0004-ios-jit-write-protect.patch"},
+            ],
+        },
+        "binary": {
+            "file": "node",
+            "size_bytes": (runtime / "node").stat().st_size,
+            "sha256": sha256_file(runtime / "node"),
         },
         "node": {"path": "node", "sha256": sha256_file(runtime / "node")},
         "entitlements": {"path": "entitlements.plist",
@@ -3183,6 +3503,7 @@ def build_parser():
     p.add_argument("--jitshim-dir", default="")
     p.add_argument("--jitshim-run-id", default="")
     p.add_argument("--jitshim-run-url", default="")
+    p.add_argument("--variant", default="", help="node22 (default) or node18")
     p.add_argument("--self-test", action="store_true")
     p.set_defaults(func=cmd_sources)
 
@@ -3213,9 +3534,22 @@ def build_parser():
     p.add_argument("--run-id", default="")
     p.add_argument("--run-url", default="")
     p.add_argument("--expected-version", default="")
+    p.add_argument("--variant", default="auto",
+                   help="auto|node22|node18 (auto infers from provenance/manifest)")
     p.add_argument("--skip-smoke", action="store_true")
     p.add_argument("--skip-native-audit", action="store_true")
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("render-control",
+                       help="render DEBIAN/control from the template for a variant")
+    p.add_argument("--template", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--version", required=True)
+    p.add_argument("--maintainer", required=True)
+    p.add_argument("--installed-size", required=True, type=int)
+    p.add_argument("--variant", default="node22")
+    p.add_argument("--node-version", default="")
+    p.set_defaults(func=cmd_render_control)
 
     p = sub.add_parser("fixture", help="create synthetic placeholder inputs (self-test)")
     p.add_argument("--out-dir", required=True)

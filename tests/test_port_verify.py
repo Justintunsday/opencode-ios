@@ -267,13 +267,15 @@ class RuntimeBuildProfileTest(unittest.TestCase):
     ]
 
     def _run_profile_check(self, configure_flags=None, runtime_policy="default",
-                           patches="default"):
+                           patches="default", variant=None):
         if configure_flags is None:
             configure_flags = list(self.GOOD_FLAGS)
         if runtime_policy == "default":
             runtime_policy = dict(self.GOOD_POLICY)
         if patches == "default":
             patches = list(self.GOOD_PATCHES)
+        if variant is None:
+            variant = port_verify.VARIANT_NODE22
         with tempfile.TemporaryDirectory() as td:
             runtime = Path(td) / "var/jb/usr/lib/opencode/runtime"
             runtime.mkdir(parents=True)
@@ -285,14 +287,14 @@ class RuntimeBuildProfileTest(unittest.TestCase):
             (runtime / "runtime-manifest.json").write_text(json.dumps(manifest))
             checks = []
             ctx = {"metrics": {}}
-            port_verify._check_runtime_profile(checks, ctx, td)
+            port_verify._check_runtime_profile(checks, ctx, td, variant)
             return checks
 
     def test_accepts_full_icu_wasm_jit_profile(self):
         checks = self._run_profile_check()
         self.assertEqual(checks[0]["status"], "PASS")
         self.assertIn("WebAssembly enabled", checks[0]["evidence"])
-        self.assertIn("W^X patch (0004) declared", checks[0]["evidence"])
+        self.assertIn("W^X patch declared", checks[0]["evidence"])
 
     def test_rejects_jit_runtime_without_wx_patch(self):
         checks = self._run_profile_check(
@@ -312,13 +314,60 @@ class RuntimeBuildProfileTest(unittest.TestCase):
             {"file": "patches/nodejs-mobile/0005-no-map-jit-on-ios.patch"},
         ])
         self.assertEqual(checks[0]["status"], "PASS")
-        self.assertIn("W^X patch (0004) declared", checks[0]["evidence"])
+        self.assertIn("W^X patch declared", checks[0]["evidence"])
 
     def test_accepts_no_map_jit_patch_alone(self):
         checks = self._run_profile_check(patches=[
             {"file": "patches/nodejs-mobile/0005-no-map-jit-on-ios.patch"},
         ])
         self.assertEqual(checks[0]["status"], "PASS")
+
+    def test_node22_requires_configure_flags(self):
+        checks = self._run_profile_check(configure_flags=[])
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("configure_flags", checks[0]["evidence"])
+
+    def test_node18_accepts_profile_without_configure_flags(self):
+        policy = {
+            "intl": {"mode": "full-icu"},
+            "webassembly": "enabled: V8 WebAssembly compiled in",
+            "v8_jit": "enabled: JIT compiled in (V8 10.2)",
+        }
+        checks = self._run_profile_check(
+            configure_flags=[],
+            runtime_policy=policy,
+            patches=[{"file": "patches/nodejs-mobile18/0001-x.patch"}],
+            variant=port_verify.VARIANT_NODE18,
+        )
+        self.assertEqual(checks[0]["status"], "PASS")
+        self.assertIn("Node 18 V8 10.2 memory model", checks[0]["evidence"])
+        self.assertIn("variant=node18", checks[0]["evidence"])
+
+    def test_node18_does_not_require_node22_wx_patch(self):
+        checks = self._run_profile_check(
+            patches=[{"file": "patches/nodejs-mobile18/0001-x.patch"}],
+            variant=port_verify.VARIANT_NODE18,
+        )
+        self.assertEqual(checks[0]["status"], "PASS")
+
+    def test_node18_rejects_jitless_configuration(self):
+        checks = self._run_profile_check(
+            configure_flags=self.GOOD_FLAGS + ["--v8-options=--jitless"],
+            variant=port_verify.VARIANT_NODE18,
+        )
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("jitless", checks[0]["evidence"])
+
+    def test_node18_rejects_missing_wasm_declaration(self):
+        policy = {
+            "intl": {"mode": "full-icu", "icu_version": "74.2"},
+            "v8_jit": "enabled: JIT",
+        }
+        checks = self._run_profile_check(
+            runtime_policy=policy, variant=port_verify.VARIANT_NODE18
+        )
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("does not declare runtime_policy.webassembly", checks[0]["evidence"])
 
     def test_rejects_with_intl_none(self):
         checks = self._run_profile_check([
@@ -348,9 +397,9 @@ class RuntimeBuildProfileTest(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "FAIL")
         self.assertIn("does not declare runtime_policy.webassembly", checks[0]["evidence"])
 
-    def test_skips_without_configure_flags(self):
+    def test_node22_without_configure_flags_fails(self):
         checks = self._run_profile_check(configure_flags=[])
-        self.assertEqual(checks[0]["status"], "SKIP")
+        self.assertEqual(checks[0]["status"], "FAIL")
 
 
 class JitShimTest(unittest.TestCase):
