@@ -17,10 +17,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${OPENTUI_BUILD_DIR:-$ROOT/dist/opentui-build}"
-SRC="${OPENTUI_SRC:-$BUILD_DIR/opentui}"
+absolute_path() {
+  case "$1" in
+    /*) echo "$1" ;;
+    *) echo "$ROOT/$1" ;;
+  esac
+}
+BUILD_DIR="$(absolute_path "${OPENTUI_BUILD_DIR:-$ROOT/dist/opentui-build}")"
+SRC="$(absolute_path "${OPENTUI_SRC:-$BUILD_DIR/opentui}")"
 PATCHES_DIR="$ROOT/patches/opentui-ios"
-DIST="${OPENTUI_DIST:-$ROOT/dist/opentui-ios-renderer}"
+DIST="$(absolute_path "${OPENTUI_DIST:-$ROOT/dist/opentui-ios-renderer}")"
 IOS_SDK="${IOS_SDK_PATH:-}"
 
 OPENTUI_REPO="${OPENTUI_REPO:-https://github.com/anomalyco/opentui.git}"
