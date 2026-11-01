@@ -124,6 +124,7 @@ change surface — upstream itself is never modified.
 | 0005 | `node22-sqlite-api-fallbacks` | `packages/core/src/database/sqlite.node.ts` | Node 22.9 `node:sqlite` lacks `StatementSync#setReturnArrays` and `DatabaseSync#loadExtension`: map object rows to column-ordered arrays when the API is missing, report extension loading as unavailable. Without this the embedded server answers 500 on `/api/info` and `/api/model`. |
 | 0006 | `device-robustness` | `packages/cli/vite.node.config.ts`, `packages/core/src/persistent-pty/binary.node.ts`, `packages/core/src/ripgrep/binary.ts` | Rootless-iOS robustness: home-rooted `TMPDIR` fallback in the prelude (do not depend on `/tmp`), persistent-PTY capability reports `false` on ios (the daemon binary is not shipped), and a missing `rg` produces an actionable install hint instead of `unsupported platform for ripgrep: arm64-ios`. |
 | 0007 | `node18-ios-compat` | `packages/cli/vite.node.config.ts`, `packages/cli/script/node-assets.ts`, `packages/core/src/provider.ts`, `packages/util/src/runtime/import.node.ts`, `packages/codemode/src/interpreter/objects.ts` | **Conditional Node 18 fallback variant** (`OPENCODE_IOS_NODE18=1`, separate artifact, §13). Node 18 prelude (`__filename`/`__dirname` from `import.meta.url`, global `crypto`, built-in polyfills for `toSorted`/`groupBy`/`withResolvers`/…, no `--experimental-sqlite`/`--disable-warning` flags, Vite target `node18`); maps `node:sqlite` to the sql.js-backed shim; `vm.constants` fallback for plugin imports; iterator-helper-free `mergeRecord`/codemode iterators (Node 18 predates `Iterator.prototype.map`). |
+| 0008 | `node18-inspector-optional` | `packages/cli/vite.node.config.ts` | **Node 18 fallback only.** Inspector-less Node 18.20.4 iOS builds make the static `node:inspector` import in `cli/src/cpu-profile.ts` throw `ERR_INSPECTOR_NOT_AVAILABLE` at bundle link time (device-reported). Maps `node:inspector` to a build-time stub so startup succeeds and `SIGPROF` CPU profiling fails cleanly (handler logs and continues). Node 22 bundle untouched. |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -501,6 +502,7 @@ handled by patch 0007 (the first two were startup-fatal):
 | 6 | `Array.prototype.toSorted/toReversed/toSpliced/with/findLast*`, `Object.groupBy`, `Map.groupBy`, `Promise.withResolvers`, `Array.fromAsync`, `String.isWellFormed/toWellFormed`, `AbortSignal.any` absent | would throw where used | prelude polyfills (guarded; newer runtimes keep native implementations) |
 | 7 | `--experimental-sqlite`, `--disable-warning=…`, `--use-system-ca`, `--experimental-ffi` flags absent | `bad option` at launch | variant prelude/launcher use `--no-warnings` only |
 | 8 | Vite output target | new syntax lowered by `build.target: node18` | — |
+| 9 | `node:inspector` disabled in the device runtime (device-reported: `ERR_INSPECTOR_NOT_AVAILABLE` at startup; only static import is `cli/src/cpu-profile.ts`) | bundle failed to link before any CLI code ran | patch 0008 maps it to a build-time stub; `SIGPROF` CPU profiling is unavailable on this variant (handler logs and continues) |
 
 `node:sea` (absent on Node 18) is already never imported by the iOS bundle (patch 0001).
 The sql.js shim implements only the `DatabaseSync`/`StatementSync` subset this tree uses
@@ -533,20 +535,27 @@ checks passed across Node 18.20.4 (required) and 22.9.0 (informational). The man
 
 ### Device risk / open questions for shipping the Node 18 variant
 
-- **Runtime provenance/licensing.** The device-proven Node 18.20.4 iPhoneOS binary available
-  today is a community build; it cannot be shipped in the `.deb` without a compatible
-  license/attribution. Node's own sources (or nodejs-mobile's Node 18 release, framework-only)
-  can be built to `out/Release/node`, but that is another ~1–2 h native build plus signing,
-  and is runtime-team work, not CLI work.
-- **Device execution still unverified for the CLI bundle.** Host smoke proves the JS bundle
-  runs on stock Node 18.20.4; the iOS runtime is a patched cross-build, so its wasm/JIT/ICU
-  behaviour must be confirmed by the device matrix (`--version`, `--help`, `debug paths`,
-  `models`, `session list`, shell tool, a mock-provider agent turn).
+- **Runtime provenance.** The Node 18 fallback runtime is now built natively in this repo
+  (`.github/workflows/build-runtime-node18.yml` + `scripts/build-ios-runtime-node18.sh` from
+  nodejs-mobile `v18.20.4`, `--with-intl=full-icu`, JIT+WebAssembly, 2-key entitlements), so
+  the licensing blocker of shipping a community binary no longer applies; the remaining work
+  is a green runtime build + device confirmation before packaging it.
+- **Device execution.** The CLI bundle reached actual startup on the device with an
+  inspector-less community Node 18 runtime; the first runtime gap was `node:inspector`
+  (`ERR_INSPECTOR_NOT_AVAILABLE` at bundle link), fixed by patch 0008/this artifact. The
+  subsequent device matrix (`--version`, `--help`, `debug paths`, `models`, `session list`,
+  shell tool, mock-provider agent turn) still has to pass and is **UNVERIFIED ON DEVICE**.
+- **Diagnostic degradation on the Node 18 variant:** `SIGPROF`-triggered CPU profiling is
+  unavailable (patch 0008 stubs the module; the handler logs `Failed to capture CPU profile`
+  and keeps running). Heap snapshots via `v8`/`util` are unaffected. This applies to every
+  Node 18 fallback build, including one compiled with the inspector enabled (the stub is
+  build-time for this variant); if CPU profiling is needed later the stub can be made
+  runtime-conditional.
 - **sql.js persistence semantics** differ from native SQLite (see above); acceptable for a
   fallback but should be called out in user-facing limitations if this variant ships.
 - Everything else (shell selection, rootless paths, PTY/watcher/ripgrep degradations) is
   identical to the Node 22 bundle because the same patch series is applied.
 
-Implementation effort for this variant: ≈1.5 h from the device finding (analysis + patch
-0007 + shim + build/smoke/manifest/workflow wiring), plus CI runtime. It is a hedge only;
-the primary path remains fixing the Node 22.9 runtime's V8 W^X/JIT issue.
+Implementation effort for this variant: ≈2 h from the device finding (analysis + patches
+0007/0008 + shim + build/smoke/manifest/workflow wiring), plus CI runtime. It is a hedge
+only; the primary path remains fixing the Node 22.9 runtime's V8 W^X/JIT issue.

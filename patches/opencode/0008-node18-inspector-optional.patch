@@ -1,0 +1,68 @@
+# OpenCode iOS port patch -- 0008
+# Title: Node 18 fallback: stub node:inspector (inspector-less iOS runtime)
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0007 applied first.
+# Files: packages/cli/vite.node.config.ts
+# Why: the iPhoneOS Node 18.20.4 fallback runtime used for the device test is built without
+#      the inspector. packages/cli/src/cpu-profile.ts statically imports { Session } from
+#      node:inspector and is in the CLI startup graph, so the bundle fails at module link time
+#      with ERR_INSPECTOR_NOT_AVAILABLE before any CLI code runs (device-reported). CPU profiling
+#      is a diagnostic side feature triggered by SIGPROF. The variant maps node:inspector to a
+#      stub whose methods fail with a clear message; the SIGPROF handler logs
+#      'Failed to capture CPU profile' and continues. Only active for OPENCODE_IOS_NODE18=1
+#      builds; the Node 22 bundle is untouched.
+# Test: OPENCODE_IOS_NODE18=1 bash scripts/build-opencode-bundle.sh build stage smoke manifest
+#       (host smoke required Node 18.20.4) plus the device startup retest.
+# Status: node18 fallback variant only; SIGPROF CPU profiling is unavailable on that runtime.
+
+diff --git a/packages/cli/vite.node.config.ts b/packages/cli/vite.node.config.ts
+index f0066f1..7839432 100644
+--- a/packages/cli/vite.node.config.ts
++++ b/packages/cli/vite.node.config.ts
+@@ -254,6 +254,38 @@ function iosNode18SqlitePlugin(): Plugin {
+   }
+ }
+ 
++// Node 18 fallback for `node:inspector`: some iPhoneOS Node 18.20.4 fallback builds (e.g. the
++// device-proven community binary) are compiled without the inspector, so a *static* import of
++// node:inspector throws ERR_INSPECTOR_NOT_AVAILABLE at module link time. `packages/cli/src/
++// cpu-profile.ts` statically imports `Session` from it and is part of the startup graph (SIGPROF
++// CPU profiling is a diagnostic side feature). Map the module to a stub that keeps startup
++// working and fails cleanly if profiling is ever triggered. Only active for
++// OPENCODE_IOS_NODE18=1 builds; the Node 22 bundle is untouched.
++function iosNode18InspectorPlugin(): Plugin {
++  return {
++    name: "opencode:ios-node18-inspector",
++    enforce: "pre",
++    resolveId(id) {
++      if (id === "node:inspector") return "\0virtual:opencode-node18-inspector"
++    },
++    load(id) {
++      if (id !== "\0virtual:opencode-node18-inspector") return
++      return `const unavailable = () => new Error("CPU profiling is unavailable on this iOS runtime (node:inspector disabled)")
++export class Session {
++  connect() {
++    throw unavailable()
++  }
++  disconnect() {}
++  post(method, callback) {
++    const error = unavailable()
++    if (typeof callback === "function") return callback(error)
++    throw error
++  }
++}`
++    },
++  }
++}
++
+ function nodePrelude(input: NodeBuildInput) {
+   if (input.target.ios)
+     return process.env.OPENCODE_IOS_NODE18 === "1" ? iosNode18Prelude() : iosNodePrelude()
+@@ -394,6 +426,7 @@ export function mainConfig(input: NodeBuildInput): UserConfig {
+       appAssetsPlugin(input.target.ios),
+       ...(input.target.ios ? [iosNodeHttpPlugin()] : []),
+       ...(input.target.ios && node18 ? [iosNode18SqlitePlugin()] : []),
++      ...(input.target.ios && node18 ? [iosNode18InspectorPlugin()] : []),
+       rawTextPlugin(input.modelsSnapshot),
+       runtimeRequirePlugin(),
+       fffNodePlugin(),
