@@ -99,27 +99,32 @@ prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manife
 declares the capability profile.
 
 > **Shipping status (2026-11-01): the Node 22 v6 variant is DEVICE-VERIFIED and
-> released.** Released artifact: `OpenCode-iOS-rootless.deb`, SHA-256
-> `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
-> (52,968,920 bytes), from package run
-> <https://github.com/Justintunsday/opencode-ios/actions/runs/41274221353>.
-> Installed and exercised on the target iPhone SE 2 / iOS 16.1.1 / Dopamine
-> rootless: packaged acceptance **PASS=14 / FAIL=0** — `--version`, `--help`,
-> `debug paths`, `debug config`, `models`, `auth list`, `session list`
-> (native `node:sqlite` with WAL), remove/reinstall cycle, and a mock-provider
-> agent turn whose shell tool executed on the device. Raw log:
-> [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The launcher's mandatory
-> `--single-threaded` flag is what makes the v6 mprotect W^X runtime safe: without
-> it JIT-heavy code dies with SIGBUS because V8 background threads race the
-> process-wide mprotect toggle. The **Node 18 variant is the documented fallback**
-> (alternative; V8 10.2 memory model, sql.js sqlite persistence caveats) and gets
-> its own acceptance run when packaged. Superseded builds are not shippable:
-> v3-runtime package (run `41202900005`; SIGBUS on generated code), the v4-runtime
-> package (run `41218342323`; SIGTRAP/FatalOOM at V8 code-range reservation
-> because iOS denies `mprotect` RWX), WASM-disabled packages (`.deb` sha
-> `13a0483d...`; `ReferenceError: WebAssembly is not defined`). Upgrade/install
-> only a released artifact whose `SHA256SUMS` matches the device-tested SHA above
-> (or a later device-tested release recorded in `docs/VERIFICATION.md`).
+> released.** Current release: **`v2.2.5-ios.3`** — `OpenCode-iOS-rootless.deb`,
+> SHA-256 `8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`
+> (52,964,804 bytes), from package run
+> <https://github.com/Justintunsday/opencode-ios/actions/runs/41279438605>
+> (runtime `41273024931`, CLI `41278475579` with patch `0011`). Installed and
+> exercised on the target iPhone SE 2 / iOS 16.1.1 / Dopamine rootless: packaged
+> acceptance **PASS=14 / FAIL=0** — `--version`, `--help`, `debug paths`,
+> `debug config`, `models`, `auth list`, `session list` (native `node:sqlite` with
+> WAL), remove/reinstall cycle, and a mock-provider agent turn whose shell tool
+> executed on the device — plus packaged **PTY tests** proving that bare
+> `opencode` and `opencode mini` print clean TUI-unavailable guidance and exit 1
+> (no stack trace, no background server left running). Raw logs:
+> [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The previous release
+> `v2.2.5-ios.2` (`2f96fc18…`, same PASS=14/0) is kept for traceability but is
+> superseded by `.3`. The launcher's mandatory `--single-threaded` flag is what
+> makes the v6 mprotect W^X runtime safe: without it JIT-heavy code dies with
+> SIGBUS because V8 background threads race the process-wide mprotect toggle. The
+> **Node 18 variant is the documented alternative** (V8 10.2 memory model, sql.js
+> sqlite persistence caveats) and is packaged/CI-validated separately. Superseded
+> builds are not shippable: v3-runtime package (run `41202900005`; SIGBUS on
+> generated code), the v4-runtime package (run `41218342323`;
+> SIGTRAP/FatalOOM at V8 code-range reservation because iOS denies `mprotect`
+> RWX), WASM-disabled packages (`.deb` sha `13a0483d...`;
+> `ReferenceError: WebAssembly is not defined`). Upgrade/install only a released
+> artifact whose `SHA256SUMS` matches a device-tested SHA recorded in
+> `docs/VERIFICATION.md`.
 
 ## 3. Transfer the package to the device
 
@@ -269,8 +274,9 @@ opencode models          # offline model catalog
 `opencode mini` cannot start: those frontends need the OpenTUI native renderer,
 which has no iPhoneOS build. On device you get
 `Error: Failed to initialize OpenTUI render library: Unsupported OpenTUI Node
-asset target: ios-arm64` with older builds; the current iOS CLI patch prints clean
-usage guidance and exits 1 instead of a stack trace. Use the headless interfaces
+asset target: ios-arm64` with older builds; the current iOS CLI (patch `0011`,
+shipped in `v2.2.5-ios.3`, device-verified via PTY) prints clean usage guidance and
+exits 1 instead of a stack trace. Use the headless interfaces
 (`opencode run ...`, `--help`, `models`, `debug ...`, `session ...`), which are the
 device-verified workflow. See [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 

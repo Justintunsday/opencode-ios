@@ -3,15 +3,17 @@
 This list is deliberately honest. Every item is either a **documented fallback**
 implemented in the port or a **known limitation observed on real hardware**.
 "CI-green" does not override any of it. Target device: iPhone SE 2, iOS 16.1.1,
-Dopamine rootless. **The released `.deb` (SHA-256
-`2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`) is
-DEVICE-VERIFIED — packaged acceptance PASS=14 / FAIL=0 (2026-11-01); raw evidence
-in [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md).**
+Dopamine rootless. **Current release `v2.2.5-ios.3` (SHA-256
+`8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`) is
+DEVICE-VERIFIED — packaged acceptance PASS=14 / FAIL=0 (2026-11-01) plus packaged
+PTY TUI-guidance tests; the previous release `v2.2.5-ios.2` (SHA-256 `2f96fc18…`,
+same PASS=14/0) is kept for traceability.** Raw evidence:
+[`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md).
 
 | # | Limitation | Impact | Status |
 | --- | --- | --- | --- |
 | 1 | **No native PTY for interactive terminal panes.** Upstream `@opencode/pty`/`node-pty` has no iPhoneOS build; shell tool calls use pipe-based `child_process` fallback and spawn the rootless dash (`/var/jb/bin/sh`) through the launcher's `PATH` prepend. | No interactive TTY allocation for tool-invoked shells; TUI terminal panes degrade or are unavailable. Headless `opencode run` is the reliable mode (device-verified via the packaged launcher). | documented fallback |
-| 2 | **Interactive TUI and `opencode mini` CANNOT start on iOS.** The TUI frontends require the OpenTUI native renderer, and OpenTUI has no iPhoneOS build; on the device `opencode` (no args) / `opencode mini` abort with `Error: Failed to initialize OpenTUI render library: Unsupported OpenTUI Node asset target: ios-arm64`. The iOS CLI patch `0011` replaces that stack trace with clean usage guidance and `exit 1`. | **Use the headless interface:** `opencode run ...`, `opencode --help`, `opencode models`, `opencode debug ...`, `opencode session ...`. There is no interactive TUI, no terminal-pane UI and no `mini` frontend on this port. | device-observed limitation; clean-exit guidance added in patch `0011` (v2.2.5-ios.3) |
+| 2 | **Interactive TUI and `opencode mini` CANNOT start on iOS.** The TUI frontends require the OpenTUI native renderer, and OpenTUI has no iPhoneOS build; on the device `opencode` (no args) / `opencode mini` abort with `Error: Failed to initialize OpenTUI render library: Unsupported OpenTUI Node asset target: ios-arm64`. The iOS CLI patch `0011` replaces that stack trace with clean usage guidance and `exit 1`. | **Use the headless interface:** `opencode run ...`, `opencode --help`, `opencode models`, `opencode debug ...`, `opencode session ...`. There is no interactive TUI, no terminal-pane UI and no `mini` frontend on this port. | device-observed limitation; clean guidance + exit 1 DEVICE-VERIFIED in v2.2.5-ios.3 (packaged PTY tests) |
 | 3 | **No native file watcher.** `@parcel/watcher` has no iPhoneOS build; watch-based features fall back to polling/backend fallbacks (device log: "watcher backend not supported", non-fatal; polling/other watchers still deliver file-change events). | Live reload/incremental watching may lag or not happen; re-run commands to observe changes. Large repositories are affected more. | documented fallback (device-observed) |
 | 4 | **No `fff`/`ffi-rs` native modules.** Upstream ships an unavailable-proxy fallback for ffi; it is selected on iOS. Desktop native binaries are removed from the packaged assets (CI rejects stock bundles that still contain them). | Features requiring native FFI (and fff-backed search/UI helpers) are unavailable. Pure-JS and WASM paths can work because the final runtime enables WebAssembly, but wasm-backed optional components are not individually validated on device. | documented fallback |
 | 5 | **Two runtime variants: Node 22.9.0 v6 (primary, device-verified) and Node 18.20.4 (fallback).** The `.deb` ships exactly one. The **node22 v6 runtime is DEVICE-VERIFIED for the released package** with the mandatory `--single-threaded` launcher flag (JIT/WASM/fetch/ICU/CLI matrix and mock-provider agent turn PASS); node18 remains the documented alternative (V8 10.2 memory model, sql.js sqlite shim, acceptance pending). Upstream OpenCode's Node build path normally targets an even newer Node version, so APIs added after the chosen line are missing (e.g. `module.registerHooks` on Node 18/22.9); the iOS prelude avoids them and the Vite bundle is patched. Both runtimes are built with WASM+JIT+full-ICU. | Variant-specific behaviour must be taken into account when triaging; `package-report.json` records `variant`/`runtime_kind`. | node22 v6: DEVICE-VERIFIED (packaged PASS=14/0); node18: fallback, acceptance pending |
@@ -61,17 +63,20 @@ in [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md).**
   W^X patch (`0004`/`0005`/`0006` family); those are hard failures, not warnings.
   The node18 variant intentionally does not require the Node-22-only W^X patches
   (V8 10.2 uses its own device-proven memory model).
-- Package history: **node22 v6 is the released, DEVICE-VERIFIED primary path** —
-  released `.deb` SHA-256
-  `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
-  (package run `41274221353`; runtime `41273024931`; CLI `41273112229`; packaged
-  acceptance PASS=14/FAIL=0). Do **not** rebuild/replace the release artifact
-  without re-running device acceptance. Superseded node22 builds are not
-  shippable: v1 intermediate (run `41185611403`; WASM-disabled), v3 (run
-  `41202900005`; SIGBUS), v4 (run `41218342323`, `.deb` SHA-256
-  `1d643c3b8b3e4238bb1e692fadce9fcb72f74ea1b7b61621229cf502571b6dc4`; SIGTRAP/
+- Package history: **node22 v6 is the released, DEVICE-VERIFIED primary path.**
+  Current release `v2.2.5-ios.3` — `.deb` SHA-256
+  `8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`
+  (package run `41279438605`; runtime `41273024931`; CLI `41278475579`;
+  packaged acceptance PASS=14/0 + PTY TUI-guidance tests). Previous release
+  `v2.2.5-ios.2` (`.deb` SHA-256
+  `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`,
+  package run `41274221353`; PASS=14/0) is kept for traceability. Do **not**
+  rebuild/replace a released artifact without re-running device acceptance.
+  Superseded node22 builds are not shippable: v1 intermediate (run `41185611403`;
+  WASM-disabled), v3 (run `41202900005`; SIGBUS), v4 (run `41218342323`; SIGTRAP/
   `FatalOOM` at V8 code-range reservation), v5. **node18** remains a documented
-  alternative fallback (its own runtime build + acceptance pending).
+  alternative fallback (repo-built runtime CI-green; no primary acceptance
+  requirement).
 - Optional bundled `rg` (stretch `ios-ripgrep` artifact) is only used if the
   artifact was published; its absence is reported as `SKIP`, not as a failure of
   the package. The optional `libjitshim.dylib` (`ios-jit-shim` artifact) is
