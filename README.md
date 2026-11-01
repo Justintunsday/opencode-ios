@@ -1,4 +1,4 @@
-# OpenCode iOS 鈥?native iPhoneOS ARM64 port (rootless)
+# OpenCode iOS native iPhoneOS ARM64 port (rootless)
 
 Native port of the **OpenCode v2 CLI** (`anomalyco/opencode`, macOS ARM64 baseline) to
 jailbroken **iOS 16 / arm64** (iPhone SE 2, Dopamine rootless, ElleKit, NewTerm/SSH).
