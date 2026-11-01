@@ -127,6 +127,7 @@ change surface — upstream itself is never modified.
 | 0008 | `node18-inspector-optional` | `packages/cli/vite.node.config.ts` | **Node 18 fallback only.** Inspector-less Node 18.20.4 iOS builds make the static `node:inspector` import in `cli/src/cpu-profile.ts` throw `ERR_INSPECTOR_NOT_AVAILABLE` at bundle link time (device-reported). Maps `node:inspector` to a build-time stub so startup succeeds and `SIGPROF` CPU profiling fails cleanly (handler logs and continues). Node 22 bundle untouched. |
 | 0009 | `ios-standalone-direct-spawn` | `packages/cli/src/services/standalone.ts` | **iOS path.** On the device, `opencode run --standalone` never saw the child's readiness line through the Effect `ChildProcessSpawner`/`Stream` path (`Standalone server exited before reporting readiness`) although `serve --stdio --port 0` works when spawned with plain `node:child_process` (device-reported). When `process.platform === "ios"` or `OPENCODE_IOS=1`, spawn the server directly (stdin pipe kept open as lease, stdout pipe drained, stderr inherit when `OPENCODE_PRINT_LOGS=1`), resolve on the first JSON `{url}` stdout line, keep the child referenced, and enforce a 20s readiness timeout that kills the child and throws a clear error. Non-iOS behavior unchanged. |
 | 0010 | `ios-child-node-flags` | `packages/cli/src/util/process.ts` | **iOS path (device-verified).** The v6 Node 22.9 iPhoneOS runtime only executes JIT/WebAssembly safely single-threaded (process-wide mprotect W^X toggle races background V8 threads → SIGBUS 138). The launcher passes `--single-threaded`, but `nodeFlags()` dropped it when building `selfCommand()`, so spawned `serve --service`/`serve --stdio` children crashed. Forwards `--single-threaded` and `--max-old-space-size=...` to children when present in the parent's `execArgv`; nothing is added unconditionally, so desktop behavior is unchanged (device proof: full CLI matrix + mock-provider agent turn pass; without the forwarding the children SIGBUS). |
+| 0011 | `ios-tui-unavailable-guidance` | `packages/cli/src/util/ios.ts` (new), `packages/cli/src/commands/handlers/default.ts`, `packages/cli/src/commands/handlers/mini.ts` | **iOS path (device-reported).** Plain `opencode` and `opencode mini` crashed inside OpenTUI renderer init (`Unsupported OpenTUI Node asset target: ios-arm64` + native stack trace) because OpenTUI has no iPhoneOS renderer. Both handlers now check `isIOS()` at the top, before starting the background server, and print an actionable headless-CLI message (run/continue/standalone/models/auth/session/debug + docs path) to stderr, exiting 1 with no stack trace or server-start noise. A defensive `Effect.catchCause` around the renderer entry points degrades future renderer-init failures to the same guidance. Non-iOS behavior unchanged. |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -314,7 +315,7 @@ not contain; they are patched to degrade gracefully rather than crash:
 | File watcher (`@parcel/watcher`) | native binding absent → no native watcher; consumers already fall back (watcher-less). | upstream fallback + asset set |
 | Image resize (photon WebAssembly) | unavailable in v1: the port deliberately keeps the `@silvia-odwyer/photon-node` wasm-bindgen JS module external/lazy and the single-file bundle does not ship that JS glue nor the photon worker entry, so `photon-normalize` reports “unavailable” and image files pass through unchanged. (WebAssembly itself is available on the shipped runtime; enabling image resize needs a follow-up patch that ships the photon JS payload.) | patch 0003 + prelude does not set `OPENCODE_PHOTON_WASM_PATH` |
 | TUI syntax highlighting (web-tree-sitter wasm) | tree-sitter wasm payload is included and WebAssembly is available on the shipped runtime; the TUI renderer itself is unavailable (see next row), so syntax highlighting only matters if the TUI is ever brought up. | asset set + TUI renderer gap |
-| TUI renderer (`@opentui/core` native library) | the native OpenTUI library is not shipped for iPhoneOS; headless CLI (`run`, `serve`, `models`, …) is the supported surface. | asset set excludes the dylib |
+| TUI renderer (`@opentui/core` native library) | the native OpenTUI library has no iPhoneOS (`ios-arm64`) build, so the interactive TUI and `opencode mini` cannot start at all. Running `opencode` (no args) or `opencode mini` prints an actionable headless-CLI message to stderr and exits 1 — no native renderer stack trace, no background server started (patch 0011). Headless CLI (`run`, `serve`, `models`, …) is the supported surface. | patch 0011 + asset set excludes the dylib |
 | grep/glob (ripgrep binary) | no `rg` in the artifact; the tool reports an actionable error (patch 0006). If a system `rg` is present in `PATH` (runtime team may ship one under `/var/jb`), it is used. | upstream `which("rg")` first |
 | Plugin loading/registration | plugins load, but Node 22.9 has no `module.registerHooks`, so live reload of a local plugin’s relative module graph degrades and the special `@opencode/plugin` runtime specifier mapping is unavailable to external plugin code. | patch 0002 |
 | git integration | git is not installed by default on the device; commands needing git fail with “install it with `apt install git`” instead of a generic ENOENT. | patch 0004 |
@@ -462,6 +463,16 @@ device identity (`id -un`), `git --version` (2.39.1) and `pwd`; the mock server 
 `GET /api/v1/models` and three `POST /chat/completions` (2nd/3rd carrying `toolResult`).
 This evidence was obtained with a local one-line hack of patch 0010's forwarding on the
 device; the official artifact (patch 0010) is being retested at the time of writing.
+
+**Interactive TUI is unavailable on iOS by design.** OpenTUI ships no iPhoneOS
+(`ios-arm64`) native renderer, so the full TUI (`opencode` with no args) and `opencode mini`
+cannot start; before patch 0011 they aborted with
+`Unsupported OpenTUI Node asset target: ios-arm64` and a native-renderer stack trace. Patch
+0011 detects iOS at the top of both handlers (before any background-server start), prints the
+headless-CLI guidance with a docs pointer to stderr and exits 1 — cleanly, with no stack
+trace. The headless CLI is the supported interface; TUI/PTY remains a documented limitation
+(§8). This is orthogonal to the runtime: a native renderer for iPhoneOS does not exist in the
+dependency at all.
 
 Runtime issues found and fixed during device bring-up (in order):
 

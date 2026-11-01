@@ -1,0 +1,142 @@
+# OpenCode iOS port patch -- 0011
+# Title: iPhoneOS: no interactive TUI (OpenTUI has no iOS renderer) -> actionable headless guidance
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0010 applied first.
+# Files: packages/cli/src/util/ios.ts (new), packages/cli/src/commands/handlers/default.ts,
+#        packages/cli/src/commands/handlers/mini.ts
+# Why (device-reported): running plain `opencode` (or `opencode mini`) on the iPhone aborts inside
+#      OpenTUI native renderer initialization with "Unsupported OpenTUI Node asset target: ios-arm64"
+#      plus a native stack trace. OpenTUI ships no iPhoneOS renderer, so both TUI frontends cannot
+#      start on this port; the headless CLI is the supported interface. This patch adds a shared
+#      helper (isIOS(), TUI_UNAVAILABLE_MESSAGE, reportTUIUnavailable()) and checks it at the top of
+#      the root TUI handler and the mini handler, BEFORE any background server start: the CLI prints
+#      a user-friendly message (headless commands + docs path) to stderr and exits 1 with no stack
+#      trace or "Starting background server..." noise. A defensive Effect.catchCause around the
+#      renderer entry points degrades any future renderer-initialization failure to the same
+#      message. Non-iOS behavior is unchanged (isIOS() is false).
+# Test: artifact + stock host Node: `node opencode.mjs` and `node opencode.mjs mini` with
+#       OPENCODE_IOS=1 print the guidance and exit 1; host smoke commands stay green; device PTY test.
+# Status: iOS-only guard; TUI/PTY remains a documented limitation (§8/§12 of docs/OPENCODE_BUILD.md).
+
+diff --git a/packages/cli/src/commands/handlers/default.ts b/packages/cli/src/commands/handlers/default.ts
+index c23e2be..c741562 100644
+--- a/packages/cli/src/commands/handlers/default.ts
++++ b/packages/cli/src/commands/handlers/default.ts
+@@ -4,7 +4,7 @@ import { run } from "@opencode/tui"
+ import { Commands } from "../commands"
+ import { Runtime } from "../../framework/runtime"
+ import { Config } from "../../config"
+-import { Context, Effect, FileSystem, Option, Queue, Schedule, Semaphore } from "effect"
++import { Context, Cause, Effect, FileSystem, Option, Queue, Schedule, Semaphore } from "effect"
+ import { ServerConnection } from "../../services/server-connection"
+ import { Updater } from "../../services/updater"
+ import { UpdatePreflight } from "../../services/update-preflight"
+@@ -15,9 +15,17 @@ import { Service } from "@opencode/client/effect/service"
+ import { OpenCode } from "@opencode/client/promise"
+ import { findSession } from "../../session-target"
+ import { errorMessage } from "../../util/error"
++import { isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands, (input) =>
+   Effect.gen(function* () {
++    // iPhoneOS has no OpenTUI native renderer: there is no TUI to start. Explain the
++    // supported headless interface instead of starting the background server and crashing
++    // inside the renderer with a native stack trace.
++    if (isIOS()) {
++      yield* Effect.sync(reportTUIUnavailable)
++      return
++    }
+     const requestedDirectory = Option.getOrUndefined(input.directory)
+     const requestedServer = Option.getOrUndefined(input.server)
+     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
+@@ -155,6 +163,15 @@ export default Runtime.handler(Commands, (input) =>
+                 : Effect.logInfo(message, tags)
+         runFork(effect)
+       },
+-    }).pipe(Effect.provide(LayerNode.compile(Global.node)))
++    }).pipe(
++      Effect.provide(LayerNode.compile(Global.node)),
++      // Defensive: if a future path reaches renderer initialization on iOS, degrade to the
++      // same guidance instead of a native renderer stack trace.
++      Effect.catchCause((cause) =>
++        isTUIRendererUnavailable(Cause.pretty(cause))
++          ? Effect.sync(reportTUIUnavailable)
++          : Effect.failCause(cause),
++      ),
++    )
+   }),
+ )
+diff --git a/packages/cli/src/commands/handlers/mini.ts b/packages/cli/src/commands/handlers/mini.ts
+index 6bcc6f5..15eab55 100644
+--- a/packages/cli/src/commands/handlers/mini.ts
++++ b/packages/cli/src/commands/handlers/mini.ts
+@@ -1,13 +1,19 @@
+-import { Context, Effect, FileSystem, Option } from "effect"
++import { Context, Cause, Effect, FileSystem, Option } from "effect"
+ import { Commands } from "../commands"
+ import { Runtime } from "../../framework/runtime"
+ import { ServerConnection } from "../../services/server-connection"
+ import { Config } from "../../config"
+ import { resolve } from "@opencode/tui/config"
+ import { Global } from "@opencode/util/global"
++import { isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands.commands.mini, (input) =>
+   Effect.gen(function* () {
++    // `opencode mini` is an OpenTUI frontend too; on iPhoneOS there is no native renderer.
++    if (isIOS()) {
++      yield* Effect.sync(reportTUIUnavailable)
++      return
++    }
+     const { runMini, validateMiniTerminal } = yield* Effect.promise(() => import("../../mini"))
+     yield* Effect.promise(async () => validateMiniTerminal())
+     const server = yield* ServerConnection.resolve({
+@@ -40,6 +46,13 @@ export default Runtime.handler(Commands.commands.mini, (input) =>
+         },
+         paths: { home: global.home, state: global.state, log: global.log },
+       }),
++    ).pipe(
++      // Defensive: renderer initialization failures on iOS degrade to the same guidance.
++      Effect.catchCause((cause) =>
++        isTUIRendererUnavailable(Cause.pretty(cause))
++          ? Effect.sync(reportTUIUnavailable)
++          : Effect.failCause(cause),
++      ),
+     )
+   }),
+ )
+diff --git a/packages/cli/src/util/ios.ts b/packages/cli/src/util/ios.ts
+new file mode 100644
+index 0000000..7188f16
+--- /dev/null
++++ b/packages/cli/src/util/ios.ts
+@@ -0,0 +1,29 @@
++// iPhoneOS has no OpenTUI native renderer (ios-arm64 asset): the interactive TUI and
++// `opencode mini` cannot start on the port. The headless CLI is the supported interface.
++export const TUI_UNAVAILABLE_MESSAGE = `Interactive TUI is not available on this iOS build.
++The OpenTUI native renderer has no iPhoneOS (ios-arm64) build, so the full TUI
++and \`opencode mini\` cannot start on this device. Use the headless CLI instead:
++  opencode run "your prompt"        # one-shot agent turn
++  opencode run -c "your prompt"     # continue the last session
++  opencode run --standalone "..."   # private server (recommended)
++  opencode models | auth login | auth list | session list | debug paths
++Docs: /var/jb/usr/share/doc/opencode/KNOWN_LIMITATIONS.md`
++
++export function isIOS() {
++  return (process.platform as string) === "ios" || process.env.OPENCODE_IOS === "1"
++}
++
++// Defensive fallback for renderer initialization failures on iOS builds.
++export function isTUIRendererUnavailable(error: unknown) {
++  const text = String(error instanceof Error ? error.message : error)
++  return (
++    text.includes("Failed to initialize OpenTUI render library") || text.includes("Unsupported OpenTUI Node asset target")
++  )
++}
++
++// Print the guidance to stderr and make the process exit 1 without a stack trace.
++// The CLI entry point exits with process.exitCode when a handler returns successfully.
++export function reportTUIUnavailable() {
++  process.stderr.write(TUI_UNAVAILABLE_MESSAGE + "\n")
++  process.exitCode = 1
++}
