@@ -116,6 +116,14 @@ built-in `fetch()` fails at startup, do not use that artifact for the CLI.
   statically compatible can load; prebuilt macOS/Linux addons will not.
 - `process.platform === "ios"` — CLI code must treat iOS as its own platform,
   not `darwin` (device-confirmed).
+- **No full OpenTUI TUI on this runtime** — `@opentui/core` 0.8.0's Node binding
+  needs Node `>= 26.4.0` with `--experimental-ffi`/`node:ffi`, which Node 22.9.0
+  does not have (device-confirmed: `bad option: --experimental-ffi`). On iOS the
+  CLI provides a **pure-JS, line-based interactive REPL** instead (streaming
+  text/tool activity, `/new` `/exit` `/help`, Ctrl-C cancels a turn, session
+  continuity); non-TTY runs keep the guidance output. No runtime/launcher change
+  is needed for that. A real TUI would require a future Node 26+ iPhoneOS
+  runtime (nodejs-mobile Node 26 + V8 14 + redoing the W^X patch series).
 
 ## 4. Rebuild / reproduce locally
 

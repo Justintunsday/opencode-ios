@@ -549,6 +549,30 @@ may be less concurrent; functionally the CLI works (matrix above). Per-page
 mprotect granularity is possible future work if the requirement proves too
 costly, but it is not needed for the shipped runtime.
 
+### 6.6 Interactive interface on iOS (device-verified constraint)
+
+The CLI's interactive modes (`opencode`, `opencode mini`) run on an iOS TTY. A
+full OpenTUI TUI is **not possible on this runtime**, and porting OpenTUI does
+not change that (verified facts, 2026-11-01):
+
+- `@opentui/core` 0.8.0's Node binding loads its native Zig core through Node
+  **`>= 26.4.0` `--experimental-ffi` / `node:ffi`**, and native renderer packages
+  exist only for darwin/linux/win32.
+- The device-verified runtime is **Node 22.9.0**, which has no
+  `--experimental-ffi` and no `node:ffi` (device-confirmed: `bad option:
+  --experimental-ffi`).
+
+Therefore iOS gets a **pure-JS, line-based interactive REPL** for `opencode` /
+`opencode mini` on TTYs (streaming assistant text, tool activity lines,
+`/new` `/exit` `/help`, Ctrl-C cancels the current turn, session continuity),
+while non-TTY invocations keep the existing guidance output. This is a
+CLI-bundle change only: no runtime or launcher change and no rebuild is needed.
+
+**Future work (not planned now):** a real TUI would need a Node 26+ iPhoneOS
+runtime: a nodejs-mobile Node 26 branch, a V8 14 port, and re-doing the
+`0001..0006` build-fix/W^X patch series against that V8 (plus the same device
+memory-model work). Only then could OpenTUI's FFI binding be revisited.
+
 ## 7. CI design (performance and debuggability)
 
 - `macos-15` + Xcode 16.4, `timeout-minutes: 360` on the build job.
