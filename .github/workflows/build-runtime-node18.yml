@@ -1,0 +1,83 @@
+name: Build iOS Node.js 18 runtime (fallback runtime)
+
+# Builds the native iPhoneOS arm64 Node.js 18.20.4 CLI executable that the
+# Node 18 fallback CLI bundle (`opencode-cli-node18-ios`) runs on. The primary
+# runtime remains the Node 22.9 build in build-runtime.yml; this workflow exists
+# because the Node 22.9 V8 code-page model is incompatible with iOS 16.1.1 W^X
+# (see docs/DEVICE_TEST_RESULTS.md), while the Node 18 / V8 10.2 memory model is
+# device-proven on the target iPhone by the community Node 18 binary.
+#
+# Artifact contract: `ios-node18-runtime` = node, entitlements.plist,
+# entitlements-signed.xml, runtime18-manifest.txt, file.txt, otool-L.txt,
+# vtool.txt, SHA256SUMS, configure/make logs (small).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/build-ios-runtime-node18.sh'
+      - 'patches/nodejs-mobile18/**'
+      - '.github/workflows/build-runtime-node18.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-runtime-node18-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-node18:
+    name: Node.js 18.20.4 iPhoneOS arm64 (fallback runtime; NOT device-verified by CI)
+    runs-on: macos-15
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          sudo rm -rf /Library/Frameworks/Mono.framework /Library/Frameworks/Xamarin.iOS.framework
+          sudo rm -rf /Library/Frameworks/Xamarin.Android.framework /Users/runner/Library/Android
+          sudo rm -rf /usr/local/lib/android /usr/local/share/dotnet /opt/hostedtoolcache/CodeQL
+          df -h
+      - name: Select Xcode
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+      - name: Python 3.12 venv (node-gyp needs setuptools)
+        run: |
+          python3.12 -m venv .venv-node18
+          source .venv-node18/bin/activate
+          python3.12 -m pip install --quiet setuptools
+      - name: Install ldid
+        run: brew install ldid
+      - name: Build iOS Node 18 runtime
+        run: |
+          source .venv-node18/bin/activate
+          bash scripts/build-ios-runtime-node18.sh 2>&1 | tee dist/node18-build.log
+      - name: Upload runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-node18-runtime-logs
+          path: |
+            dist/node18-build.log
+            dist/node18-build-logs/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload ios-node18-runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-node18-runtime
+          path: |
+            dist/ios-node18-runtime/node
+            dist/ios-node18-runtime/entitlements.plist
+            dist/ios-node18-runtime/entitlements-signed.xml
+            dist/ios-node18-runtime/runtime18-manifest.txt
+            dist/ios-node18-runtime/file.txt
+            dist/ios-node18-runtime/otool-L.txt
+            dist/ios-node18-runtime/vtool.txt
+            dist/ios-node18-runtime/icu-symbol-count.txt
+            dist/ios-node18-runtime/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
