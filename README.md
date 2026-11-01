@@ -59,7 +59,7 @@ opencode --help
 ## Verification status
 
 **Current status: DEVICE-VERIFIED WORKING PORT.** The released rootless `.deb` (SHA-256
-`8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`) was installed on the target
+`b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073`) was installed on the target
 iPhone SE 2 (iOS 16.1.1, Dopamine rootless) and passed the full packaged acceptance:
 **PASS=14 FAIL=0** - dpkg install/status, `opencode --version`, `--help`, `debug paths`,
 `debug config`, `models`, `auth list`, `session list`, a complete mock-provider agent turn
@@ -78,7 +78,7 @@ Device-verified components: the native iPhoneOS arm64 Node.js 22.9.0 runtime exe
 native `node:sqlite`, fetch/TLS, fs, shell spawn); the launcher runs it with
 `--single-threaded` (required: the V8 mprotect W^X toggling is process-wide, and V8 background
 threads would race it - see KNOWN_LIMITATIONS); `git` from Procursus apt is used by the agent shell
-tool. Interactive TUI and `opencode mini` cannot start on iPhoneOS: OpenTUI has no iPhoneOS renderer, so the CLI prints clean usage guidance and exits 1 (patch 0011) - use the headless CLI (`opencode run`, `models`, `auth`, `session`, `debug`). Known limits (documented in `docs/KNOWN_LIMITATIONS.md`): interactive TUI/PTY is not fully
+tool. In a terminal, `opencode` (and `opencode mini`) start a pure-JS line REPL (streaming text, tool activity, /new /help /exit, Ctrl-C cancels turn, 3-attempt transport retry); the full-screen TUI is unavailable because OpenTUI needs Node >= 26.4 + `node:ffi`, which the iPhoneOS Node 22.9 runtime lacks. Non-TTY runs print clean guidance and exit 1; the headless CLI (`opencode run`, `models`, `auth`, `session`, `debug`) is also supported. Known limits (documented in `docs/KNOWN_LIMITATIONS.md`): interactive TUI/PTY is not fully
 validated on device, native file watchers degrade to the node/fallback backend, the local
 mock-provider transport is intermittently flaky (retry succeeds), and 2 GB iPhones need the
 packaged `--max-old-space-size=1536` default / other apps closed.
@@ -100,13 +100,13 @@ the package (`/var/jb/usr/share/doc/opencode/copyright`).
 | Workflow | Run | Result |
 | --- | --- | --- |
 | Build iOS Node.js runtime (v6: ICU + WebAssembly + JIT, V8 mprotect RW<->RX W^X model) | `41273024931` | success |
-| Build OpenCode CLI iOS bundle (11-patch series incl. patch 0010 child flags + patch 0011 iOS TUI guidance) | `41278475579` | success |
-| Package rootless iOS .deb (node22 variant, pins the two runs above + optional iPhoneOS ripgrep) | `41279438605` | success |
-| Port verification on the final package | `41274690207` / `41274713331` | success |
+| Build OpenCode CLI iOS bundle (14-patch series: iOS line REPL + per-turn fresh connection + 3-attempt retry) | `41291337297` | success |
+| Package rootless iOS .deb (node22 variant, pins the two runs above + optional iPhoneOS ripgrep) | `41292412240` | success |
+| Port verification on the final package | `41293124128` / `41293169688` | success |
 
-Final released artifact: `OpenCode-iOS-rootless.deb`, 52,964,804 bytes, SHA-256
-`8a625f75a1f1fa3909d5128491c781a6559fff6d8d6894b9156e90e8d0d880dc`
+Final released artifact: `OpenCode-iOS-rootless.deb`, 52,926,812 bytes, SHA-256
+`b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073`
 (Architecture `iphoneos-arm64`, rootless `/var/jb`, installs `/var/jb/usr/bin/opencode`; ships the
-device-verified `v6` Node 22.9.0 runtime, the patch-0011 CLI bundle and the optional
+device-verified `v6` Node 22.9.0 runtime, the patch-0014 CLI bundle and the optional
 `/var/jb/usr/bin/rg`). The Node 18 fallback runtime/bundle remains available as a documented
 alternative, but node22+v6 is the device-verified primary deliverable.
