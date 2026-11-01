@@ -1,0 +1,29 @@
+# =============================================================================
+# nodejs-mobile (Node 18.20.4): zlib fdopen macro fix for Apple host builds
+# =============================================================================
+# Base:   nodejs-mobile/nodejs-mobile tag v18.20.4
+# Reason: during the iPhoneOS cross build, V8's zlib is also compiled for the
+#         macOS host toolset (mksnapshot). zutil.h's classic-MacOS branch
+#         defines fdopen() as NULL under TARGET_OS_MAC, which is also 1 on
+#         modern macOS/iOS, and that macro conflicts with the real <stdio.h>
+#         prototype (gzguts.h includes stdio after zutil.h). Modern Apple
+#         platforms provide fdopen(), so only keep the branch for classic MACOS.
+# =============================================================================
+diff --git a/deps/v8/third_party/zlib/zutil.h b/deps/v8/third_party/zlib/zutil.h
+index ec1993f..512f527 100644
+--- a/deps/v8/third_party/zlib/zutil.h
++++ b/deps/v8/third_party/zlib/zutil.h
+@@ -141,7 +141,12 @@ extern z_const char * const z_errmsg[10]; /* indexed by 2-zlib_error */
+ #  endif
+ #endif
+ 
+-#if defined(MACOS) || defined(TARGET_OS_MAC)
++/* nodejs-mobile-build-fixes: the classic-MacOS branch below defines fdopen()
++ * as NULL, which conflicts with the modern macOS/iOS SDK prototype when this
++ * header is included before <stdio.h> (e.g. zutil.c -> gzguts.h on a host-toolset
++ * build of v8_zlib during the iOS cross build). Modern Apple platforms have a
++ * real fdopen(), so only honour MACOS (classic) here. */
++#if defined(MACOS)
+ #  define OS_CODE  7
+ #  ifndef Z_SOLO
+ #    if defined(__MWERKS__) && __dest_os != __be_os && __dest_os != __win32_os
