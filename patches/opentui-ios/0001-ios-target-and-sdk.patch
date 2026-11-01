@@ -1,11 +1,13 @@
 # OpenTUI iOS port patch -- 0001
-# Title: add aarch64-ios (iPhoneOS) library target + iPhoneOS SDK framework wiring
+# Title: add aarch64-ios (iPhoneOS) library target + iPhoneOS SDK wiring
 # Upstream: anomalyco/opentui @ v0.8.0 (commit 738067f47e940dcec3f5aab74868908574335c6c)
 # Files: packages/native/build.zig, packages/native/src/clipboard/host.zig,
-#        packages/native/src/miniaudio_shim_ios.m (new)
+#        packages/native/src/miniaudio_shim_ios.m (new),
+#        packages/native/src/opentui_ios_stubs.c (new)
 # Why: OpenTUI v0.8.0 ships native libraries for linux/macos/windows only. The port needs an
 #      iPhoneOS arm64 libopentui.dylib that the Node 26 iOS runtime can load via node:ffi
-#      (Phase C/D). This patch adds the target and the Apple-SDK plumbing:
+#      (Phase C/D). This patch adds the target, the Apple-SDK wiring and the workarounds for
+#      Zig 0.16.0`s Darwin/iOS toolchain gaps:
 #      - SUPPORTED_TARGETS gains aarch64-ios.15.0 (output_name aarch64-ios); the custom-target
 #        fallback already accepted arbitrary Zig target strings.
 #      - new -Dios-sdk=... / IOS_SDK_PATH resolution (iPhoneOS*.sdk with CoreFoundation/ImageIO/
@@ -15,20 +17,26 @@
 #        (AVAudioSession), so the iOS target compiles src/miniaudio_shim_ios.m (an Objective-C
 #        translation unit including miniaudio_shim.c); other targets compile the C shim directly.
 #      - iPhoneOS framework linking: CoreFoundation, CoreAudio, AudioToolbox, Foundation,
-#        AVFoundation (no AppKit/UIKit), plus the SDK usr/lib library search path so the linker
-#        finds the SDK libSystem stub. No global `zig build --sysroot` is passed: it is global to
-#        every compilation unit (including host tools and Zig`s bundled libc++ sub-build) and
-#        broke both. Explicit -isysroot flags are only given to the C/Objective-C shims.
-#      - C++ (yoga) stays hermetic: Zig`s bundled libc++ and Darwin libc headers are built
-#        together for the target. Mixing them with the iPhoneOS SDK libc++ headers does not
-#        compile (SDK libc++ expects C23 ::nullptr_t from SDK C headers while Zig supplies its
-#        own libc headers).
+#        AVFoundation (no AppKit/UIKit), SDK include/framework search paths and the SDK usr/lib
+#        library path so the linker finds the SDK libSystem stub. No global `zig build --sysroot`
+#        is passed (it would apply to every compilation unit, including the host tool and Zig`s
+#        bundled libc++ sub-build); explicit -isysroot flags only go to the C/ObjC shims.
+#      - C++ (yoga) on iOS is a hybrid: Zig 0.16.0 cannot build its bundled libc++ for
+#        aarch64-ios (the libc++ sub-build gets no libc headers and dies in __mbstate_t.h), and
+#        the SDK libc++ headers do not compile against Zig`s Darwin libc headers (C23
+#        ::nullptr_t). So the C++ sources are compiled with Zig`s bundled libc++/libc++abi
+#        headers (via -I, plus the configuration defines Zig normally passes when it builds
+#        libc++ itself: ABI version 1, hardening mode, feature macros) while linking the
+#        iPhoneOS SDK`s libc++/libc++abi stubs (.tbd) supplied as linker inputs; no bundled
+#        libc++ sub-build is created.
 #      - translate-c steps (miniaudio.h, yoga-bridge.h, opentui.h) get explicit iPhoneOS SDK
 #        include and framework search paths (translate-c does not use the target sysroot).
 #      - new -Duucode-tables=<path> option: the iOS build passes a pre-generated uucode tables.zig
 #        (vendored in patches/opentui-ios/files/uucode-tables.zig.gz, generated once with Zig 0.16.0)
 #        so the build skips the native uucode_generate host executable entirely (no host tools in
 #        the iOS build graph).
+#      - src/opentui_ios_stubs.c provides _dyld_get_image_header_containing_address, a private
+#        macOS-only dyld symbol referenced by Zig std debug self-info but absent on iPhoneOS.
 #      - clipboard: iPhoneOS keeps the "unsupported" clipboard path (the macOS implementation is
 #        the AppKit NSPasteboard shim, which does not exist on iOS); the worker-thread compile
 #        switch gains an .ios arm.
@@ -36,6 +44,8 @@
 # Test: zig build -Dlibrary-target=aarch64-ios.15.0 -Doptimize=ReleaseFast -Dios-sdk=$IOS_SDK
 #       -Duucode-tables=uucode-tables.zig from packages/native on macos-15 with Zig 0.16.0;
 #       scripts/build-opentui-ios.sh extracts the tables and runs build + static validation.
+#       Result: green CI run 41313516105, libopentui.dylib 3,785,600 bytes, sha256
+#       95d84e79788edfa1c6362e49e868400c736164b40b6ced26d63f8f3c2761c35e.
 #       Status: build feasibility only -- NOT device-verified; loading via node:ffi is Phase D.
 
 diff --git a/packages/native/build.zig b/packages/native/build.zig

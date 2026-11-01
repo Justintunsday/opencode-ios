@@ -37,7 +37,7 @@ OpenTUI's Zig dependencies (yoga, uucode, ghostty) are vendored in
 
 | # | Patch | Files | Purpose |
 | --- | --- | --- | --- |
-| 0001 | `ios-target-and-sdk` | `packages/native/build.zig`, `packages/native/src/clipboard/host.zig` | Adds the `aarch64-ios.15.0` library target; resolves an iPhoneOS SDK (`-Dios-sdk=` / `IOS_SDK_PATH`); adds `.ios` arms for the miniaudio/image/libwebp C flags (`-isysroot <iPhoneOS.sdk>`), iPhoneOS framework linking (CoreFoundation/CoreAudio/AudioToolbox/AudioUnit/pthread, no AppKit/UIKit), SDK include/framework/lib search paths, explicit SDK include/framework paths for the three `translate-c` steps (a global build sysroot does not reach translate-c), and an `.ios` arm for the clipboard worker switch. It also adds a `-Duucode-tables=<path>` option used by the iOS build to supply a pre-generated `tables.zig`, skipping the native `uucode_generate` host executable (which would otherwise inherit the iPhoneOS `--sysroot` and fail to link macOS libc). iOS keeps the "clipboard unsupported" path (the macOS NSPasteboard shim is AppKit-only). |
+| 0001 | `ios-target-and-sdk` | `packages/native/build.zig`, `packages/native/src/clipboard/host.zig`, `packages/native/src/miniaudio_shim_ios.m` (new), `packages/native/src/opentui_ios_stubs.c` (new) | Adds the `aarch64-ios.15.0` library target; resolves an iPhoneOS SDK (`-Dios-sdk=` / `IOS_SDK_PATH`); `.ios` C flags (`-isysroot`) and an ObjC miniaudio shim (AVAudioSession/AVFoundation) for iOS; iPhoneOS framework linking (CoreFoundation/CoreAudio/AudioToolbox/Foundation/AVFoundation, no AppKit/UIKit) with SDK include/framework/library search paths; explicit SDK paths for the three `translate-c` steps. C++ is a hybrid: Zig 0.16 bundled libc++ headers + Zig`s libc++ configuration defines, linked against the SDK libc++/libc++abi `.tbd` stubs, with no bundled libc++ sub-build. Also adds `-Duucode-tables=<path>` (vendored pre-generated tables, no native `uucode_generate` host tool) and an iOS stub for the private macOS-only `_dyld_get_image_header_containing_address` symbol referenced by Zig`s debug self-info. iOS keeps the "clipboard unsupported" path. |
 
 Apply with `git apply` from the OpenTUI checkout root (the script does this).
 
@@ -60,14 +60,17 @@ The script extracts the vendored uucode tables and the build is:
 gzip -dc patches/opentui-ios/files/uucode-tables.zig.gz > packages/native/uucode-tables.zig
 zig build -Dlibrary-target=aarch64-ios.15.0 -Doptimize=ReleaseFast \
   -Dios-sdk="$(xcrun --sdk iphoneos --show-sdk-path)" \
-  -Duucode-tables=uucode-tables.zig --sysroot "$(xcrun --sdk iphoneos --show-sdk-path)"
+  -Duucode-tables=uucode-tables.zig
 ```
 
-The iPhoneOS SDK is passed both as the build `--sysroot` (needed for libSystem/headers of the
-target library; Zig does not ship Darwin libc stubs) and as explicit SDK paths in `build.zig`.
-That global sysroot is only safe because the iOS graph contains no host executables: the uucode
-table generator is skipped via the vendored tables. Any future host tool added to this build path
-must be pre-generated/vendored the same way, not compiled inside the iOS `zig build` invocation.
+No global `zig build --sysroot` is used: it would apply to every compilation unit (including the
+uucode host-tool build and Zig's bundled libc++ sub-build) and broke both. The iPhoneOS SDK is
+wired explicitly in `build.zig` instead (`-isysroot` for the C/ObjC shims, SDK include/framework/
+library search paths, translate-c SDK paths) and the uucode host tool is eliminated via the
+vendored tables, so the iOS build graph contains no host executables. C++ is compiled with Zig's
+bundled libc++ headers plus the configuration defines Zig normally supplies, and linked against
+the iPhoneOS SDK's libc++/libc++abi stubs (see the patch table) because Zig 0.16.0 cannot build
+its bundled libc++ for `aarch64-ios` and the SDK libc++ headers do not mix with Zig's libc headers.
 
 from `dist/opentui-build/opentui/packages/native`; the dylib lands in
 `packages/native/zig-out/lib/aarch64-ios/libopentui.dylib`. Environment overrides:
@@ -93,10 +96,31 @@ Static validation (hard gates in the script, so a green run means all of these p
 3. `vtool -show-build` reports `platform IOS`.
 4. `ldid -e` returns an embedded signature blob (signed).
 
+## Result (green CI run)
+
+| Field | Value |
+| --- | --- |
+| Run | [41313516105](https://github.com/Justintunsday/opencode-ios/actions/runs/41313516105) (success; commit `7b98627`) |
+| Artifact | `opentui-ios-renderer` (zip 1,585,492 bytes) |
+| Library | `libopentui.dylib`, **3,785,600 bytes**, sha256 **`95d84e79788edfa1c6362e49e868400c736164b40b6ced26d63f8f3c2761c35e`** |
+| Mach-O | thin arm64 `MH_DYLIB`, `LC_BUILD_VERSION` platform **iOS**, minOS **15.0.0** (gate <= 16.1.1), ldid-signed with the device-verified 2-key node entitlements |
+| Dependencies (`otool -L`) | own `@rpath/libopentui.dylib` id + `/usr/lib/libc++.1.dylib`, `/usr/lib/libc++abi.dylib`, `/usr/lib/libSystem.B.dylib`, `/usr/lib/libobjc.A.dylib`, `CoreFoundation`, `CoreAudio`, `AudioToolbox`, `Foundation`, `AVFoundation`, `AVFAudio` (all iOS system libs) |
+| Build time | ~2.5 min (Zig build step; full job ~3 min warm) |
+| Patch | `0001-ios-target-and-sdk.patch` (sha256 `cdf73ce4…` at run time; see patch header) |
+
 ## Known limitations / remaining Phase D work
 
 - **Not device-verified.** The library has never been loaded on the iPhone; CI only proves it is a
   correctly built/signed iPhoneOS dylib. A device run needs the Node 26 iPhoneOS runtime first.
+- **Hybrid C++ ABI (Zig 0.16.0 workaround).** The C++ translation units are compiled with Zig's
+  bundled libc++/libc++abi headers (ABI version 1, hardening mode none, Zig's feature defines) but
+  linked against the iPhoneOS SDK's libc++/libc++abi stubs. Both are LLVM libc++ (ABI 1) so this is
+  expected to be compatible, but it is a workaround for Zig's missing Darwin/iOS libc++ support and
+  must be confirmed by the Phase D device test (and revisited when Zig supports iOS libc++ natively).
+- **Private dyld symbol stub.** `src/opentui_ios_stubs.c` defines
+  `_dyld_get_image_header_containing_address` (a private macOS dyld API Zig's debug self-info
+  references, absent on iPhoneOS). It is only used in panic/stack-trace self-info; rendering paths do
+  not call it.
 - **Clipboard is unsupported on iOS** in this library (v1): the macOS backend is the AppKit
   NSPasteboard shim; a future patch can add a UIPasteboard implementation. OpenTUI clipboard calls
   will report `unsupported` through the existing result codes.
