@@ -1,0 +1,90 @@
+# OpenCode iOS port patch -- 0014
+# Title: iOS line REPL: 3 attempts per turn (2 retries) + short first-turn warm-up
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0013 applied first.
+# Files: packages/cli/src/ios-repl.ts
+# Why (device-reported): the patch-0013 REPL retried a failed turn only once (2 attempts), but on the
+#      device turn 1 (and occasionally turn 3) still failed both attempts: `Transport: fetch failed`
+#      then `Transport: terminated`, so the prompt was lost even though later turns succeeded. Two
+#      changes make turns robust:
+#      - the transport retry budget is now 2 retries per turn (3 attempts) with a 1 s delay between
+#        attempts, each attempt resolving a fresh server connection exactly like a separate run;
+#        the user-visible "Transport error: ..." + "Retrying turn..." lines are unchanged (and the
+#        reason text now prefers the actual transport/error line rather than captured banner text).
+#      - the first turn waits FIRST_TURN_WARMUP_MS (300 ms) after the first private server resolves,
+#        because the freshly spawned server may still be settling when the first prompt arrives.
+#      Failure classes that persist across all attempts still return to the prompt cleanly.
+# Test: host mock provider with all chat requests aborted: a single prompt performed 3 attempts
+#       (2 "Retrying turn..." lines), returned to the prompt and `/exit` exited 0; normal 4-prompt
+#       mock runs still succeed and write the shell-tool marker; unreachable-provider runs print
+#       clean retry reasons. Device PTY re-test follows in v2.2.5-ios.5.
+# Status: iOS-only; non-iOS behavior unchanged.
+
+diff --git a/packages/cli/src/ios-repl.ts b/packages/cli/src/ios-repl.ts
+index acd80fb..c3a7466 100644
+--- a/packages/cli/src/ios-repl.ts
++++ b/packages/cli/src/ios-repl.ts
+@@ -34,7 +34,11 @@ const HELP = `commands:
+ const TRANSPORT_ERROR =
+   /transport|fetch failed|terminated|socket|ECONNRESET|ECONNREFUSED|EPIPE|other side closed|network/i
+ 
+-const RETRY_DELAY_MS = 400
++const MAX_ATTEMPTS = 3
++const RETRY_DELAY_MS = 1_000
++// One small warm-up after the first private server resolves: device reports show turn 1 is the
++// flakiest (the freshly spawned server may still be settling when the first prompt arrives).
++const FIRST_TURN_WARMUP_MS = 300
+ 
+ export async function runIOSRepl(options: ReplOptions) {
+   const { input } = options
+@@ -54,6 +58,7 @@ export async function runIOSRepl(options: ReplOptions) {
+   let busy = false
+   let eof = false
+   let resolveDone: (() => void) | undefined
++  let warmed = false
+   const pending: string[] = []
+   // The run pipeline must not consume stdin: the REPL owns it.
+   process.env.OPENCODE_RUN_SKIP_STDIN = "1"
+@@ -92,7 +97,7 @@ export async function runIOSRepl(options: ReplOptions) {
+     busy = true
+     rl.pause()
+     let attempt = 0
+-    while (!finished) {
++    while (!finished && attempt < MAX_ATTEMPTS) {
+       attempt++
+       let server: ServerConnection.Resolved | undefined
+       let error: string | undefined
+@@ -109,6 +114,10 @@ export async function runIOSRepl(options: ReplOptions) {
+         // Fresh connection per turn/attempt: exactly like a separate `opencode run` process.
+         server = await resolveServer()
+         resolved = true
++        if (!warmed) {
++          warmed = true
++          await new Promise((resolve) => setTimeout(resolve, FIRST_TURN_WARMUP_MS))
++        }
+         process.exitCode = 0
+         await runNonInteractiveWithOptions(
+           {
+@@ -144,12 +153,17 @@ export async function runIOSRepl(options: ReplOptions) {
+         break
+       }
+       const retryable = !resolved || Boolean(error && TRANSPORT_ERROR.test(error)) || transport
+-      if (attempt < 2 && retryable && !interrupted) {
++      if (attempt < MAX_ATTEMPTS && retryable && !interrupted) {
++        const lines = ((error ?? "") || output)
++          .replace(/\u001b\[[0-9;]*m/g, "")
++          .split("\n")
++          .map((value) => value.trim())
++          .filter(Boolean)
+         const reason =
+-          ((error ?? "").replace(/\u001b\[[0-9;]*m/g, "") || output.replace(/\u001b\[[0-9;]*m/g, ""))
+-            .split("\n")
+-            .map((value) => value.trim())
+-            .find(Boolean) ?? "connection failed"
++          lines.find((value) => TRANSPORT_ERROR.test(value)) ??
++          lines.find((value) => /error|failed/i.test(value)) ??
++          lines[0] ??
++          "connection failed"
+         write(`Transport error: ${reason.slice(0, 200)}`)
+         write(`Retrying turn with a fresh server connection...`)
+         await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
