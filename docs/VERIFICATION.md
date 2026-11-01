@@ -75,19 +75,19 @@ the device-test artifact):
 
 | Item | Value |
 | --- | --- |
-| Package workflow run (node22 v6) | <https://github.com/Justintunsday/opencode-ios/actions/runs/41272951356> (dispatch, commit `eb6812a`; pinned runtime `41265520491`) |
-| Package artifact | `OpenCode-iOS-rootless`, artifact id `13069769061` |
-| `.deb` | `OpenCode-iOS-rootless.deb`, 53,004,972 bytes |
-| `.deb` SHA-256 | `c39b9b2b7f032dc350518546126078c4096f37c2c6a5cc6fde7919467ad021a0` |
+| Package workflow run (node22 v6) | <https://github.com/Justintunsday/opencode-ios/actions/runs/41274221353> (dispatch, commit `7e76eab`; pinned runtime `41273024931`, CLI `41273112229`) |
+| Package artifact | `OpenCode-iOS-rootless`, artifact id `13071295324` |
+| `.deb` | `OpenCode-iOS-rootless.deb`, 52,968,920 bytes |
+| `.deb` SHA-256 | `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b` |
 | Version / arch | `2.2.5-1` / `iphoneos-arm64`, Installed-Size 164,040 KiB |
 | Variant / runtime kind | `node22` / `node22`; runtime node_version `22.9.0` |
-| Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41265520491> (v6 mprotect W^X; node sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`, 106,842,800 bytes, 2-key signed; `runtime_policy.jit_memory` = mprotect RW⇄RX, no MAP_JIT/no RWX) |
-| Launcher contract | node22 launcher passes `--single-threaded` (mandatory), `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size`; gate PASS |
-| CLI artifact | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41271384704> (pre-patch-0010); `opencode.mjs` sha256 `e3746a991f21741d23eebc68226419fd5fc46e88b8af8db904fd2cf29bbc4d84`, 21,391,077 bytes; 22 assets, 32,881,480 bytes |
-| Optional bundled `rg` | `ios-ripgrep` from runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
-| Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim` not shipped); package-report confirms variant fields and launcher `--single-threaded` |
-| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41273207844> (artifact `port-verification`, id `13069264535`): 48 PASS / 0 FAIL / 1 SKIP, `ci_status=PASS`, `device_status=UNVERIFIED ON DEVICE` |
-| Device status | **UNVERIFIED ON DEVICE for this packaged artifact** — maintainer v6 raw evidence above used the runtime/CLI artifacts directly; packaged acceptance run in progress. Note: rebuild with CLI patch `0010` (child-spawn `--single-threaded`) is expected before release; the final release table will be pinned to that build. |
+| Runtime artifact run | <https://github.com/Justintunsday/opencode-ios/actions/runs/41273024931> (v6 mprotect W^X; node sha256 `cf707ebe5122531958e01e9737509476c419ff890b8165438a8ba8ad82ef4fce`, 106,842,800 bytes, 2-key signed; manifest `device_status: DEVICE-VERIFIED (runtime; launcher must pass --single-threaded)`, `device_verification.verified=true`, `launcher.required_flags: ["--single-threaded","--experimental-sqlite"]`) |
+| Launcher contract | node22 launcher passes `--single-threaded` (mandatory), `--experimental-sqlite`, `--disable-warning=ExperimentalWarning`, `--no-warnings`, `--max-old-space-size`; CI cross-checks the manifest's required launcher flags against the packaged launcher: PASS |
+| CLI artifact | run <https://github.com/Justintunsday/opencode-ios/actions/runs/41273112229> (patch `0010`: children inherit `--single-threaded`); `opencode.mjs` sha256 `2e916ffad16fb7ae2b71d4446a527d1fa11ec82e94d7cd12932373d734cbd410` |
+| Optional bundled `rg` | `ios-ripgrep` from the runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
+| Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim` not shipped); package-report carries variant fields, manifest device-verification markers and launcher-flag cross-check |
+| Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41274690207> (test-port; fill artifact id/counts when green) |
+| Device status | **Packaged artifact UNVERIFIED ON DEVICE (CI runner)**; the runtime manifest itself is DEVICE-VERIFIED (2-key, single-threaded launch) and the maintainer has device-verified the same CLI artifact on the same runtime. The maintainer's packaged-acceptance run (installed `.deb`) is in progress; on receipt these results are recorded under *Device verification results* and the final release `.deb` may be rebuilt from the same runtime/CLI to carry the packaged PASS. |
 
 ### Node 22 pipeline history (superseded, not shippable)
 
