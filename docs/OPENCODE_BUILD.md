@@ -129,6 +129,7 @@ change surface — upstream itself is never modified.
 | 0010 | `ios-child-node-flags` | `packages/cli/src/util/process.ts` | **iOS path (device-verified).** The v6 Node 22.9 iPhoneOS runtime only executes JIT/WebAssembly safely single-threaded (process-wide mprotect W^X toggle races background V8 threads → SIGBUS 138). The launcher passes `--single-threaded`, but `nodeFlags()` dropped it when building `selfCommand()`, so spawned `serve --service`/`serve --stdio` children crashed. Forwards `--single-threaded` and `--max-old-space-size=...` to children when present in the parent's `execArgv`; nothing is added unconditionally, so desktop behavior is unchanged (device proof: full CLI matrix + mock-provider agent turn pass; without the forwarding the children SIGBUS). |
 | 0011 | `ios-tui-unavailable-guidance` | `packages/cli/src/util/ios.ts` (new), `packages/cli/src/commands/handlers/default.ts`, `packages/cli/src/commands/handlers/mini.ts` | **iOS path (device-reported).** Plain `opencode` and `opencode mini` crashed inside OpenTUI renderer init (`Unsupported OpenTUI Node asset target: ios-arm64` + native stack trace). The real TUI needs OpenTUI's Node binding, which loads its Zig core through `node:ffi` (Node >= 26.4 + `--experimental-ffi`); the Node 22.9 iOS runtime has neither. Both handlers now check `isIOS()` before starting the background server: the terminal path goes to the pure-JS REPL (patch 0012), the non-TTY path prints an actionable headless-CLI message to stderr and exits 1 with no stack trace. A defensive `Effect.catchCause` around the renderer entry points degrades future renderer-init failures to the same guidance. Non-iOS behavior unchanged. |
 | 0012 | `ios-line-repl` | `packages/cli/src/ios-repl.ts` (new), `packages/cli/src/util/ios.ts`, `packages/cli/src/commands/handlers/default.ts`, `packages/cli/src/commands/handlers/mini.ts` | **iOS path.** Adds a pure-JS interactive line REPL for `opencode` (no args) and `opencode mini` when stdio is a TTY (node:readline, no OpenTUI/FFI imports): each line is sent through the same non-interactive run pipeline as `opencode run` (streamed assistant text, tool activity lines, auto-handled permission/questions, Ctrl-C interrupts the turn via the pipeline's SIGINT handling), session continuity across turns like `run -c`, `/help`/`/new`/`/exit`/Ctrl-D, errors return to the prompt instead of killing the loop. Non-TTY keeps guidance + exit 1. `TUI_UNAVAILABLE_MESSAGE` now explains the Node >= 26.4 + node:ffi requirement and the TTY/line-REPL alternative. Host-test hook `OPENCODE_IOS_REPL_ASSUME_TTY=1` exercises the REPL with piped stdio. Non-iOS behavior unchanged. |
+| 0013 | `ios-repl-turn-lifecycle` | `packages/cli/src/ios-repl.ts`, `packages/cli/src/commands/handlers/default.ts`, `packages/cli/src/commands/handlers/mini.ts`, `packages/cli/src/run/run.ts`, `packages/cli/src/services/standalone.ts` | **iOS path (device-reported).** The patch-0012 REPL resolved its server once and reused that connection for every turn; after the first device turn the transport died (`Transport: terminated`) and later turns failed with `Transport: fetch failed` without reaching the provider. The REPL now takes a `resolveServer()` closure and resolves a **fresh connection per turn/attempt**, exactly like separate `opencode run` processes: with `--standalone` each turn gets its own private stdio server (disposed through a new `close()` on the owned endpoint); with the managed service it re-discovers/reconnects per turn. One automatic retry per turn on transport-class failures (caught through the new internal `onError` hook plus captured pipeline stderr: transport/fetch failed/terminated/socket/ECONNRESET/EPIPE/network), with a short `Retrying turn...` line. The first prompt waits for a healthy resolution because resolution happens inside the turn. Headless behavior is unchanged. |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -483,6 +484,21 @@ session continuity across turns (like `run -c`) and errors that return to the pr
 of killing the loop. Non-TTY invocations (pipes/scripts) keep the guidance + exit 1, which
 now states that interactive mode requires a TTY and that OpenTUI needs Node >= 26.4 +
 node:ffi. The headless commands are unchanged. TUI/PTY remains a documented limitation (§8).
+
+**Patch 0013 fixes REPL turn lifecycle (device-reported).** The first device PTY run of patch
+0012 failed from turn 2 on: the REPL had resolved its server once and reused that connection,
+so after the first turn the transport died (`Transport: terminated`, then `Transport: fetch
+failed` with no provider traffic). The REPL now resolves a **fresh connection per turn**, like
+separate `opencode run` processes: with `--standalone` each prompt gets its own private stdio
+server (owned endpoints expose `close()` and are disposed after the turn), and the managed
+service is re-discovered/reconnected per turn. One automatic retry per turn covers
+transport-class failures (`Transport: ...`, `fetch failed`, terminated/socket/ECONNRESET/EPIPE)
+with a `Retrying turn with a fresh server connection...` line; the first prompt waits for a
+healthy resolution because resolution happens inside the turn. Host verification (mock
+OpenAI-compatible provider, 4 consecutive REPL prompts): every turn reached the provider on a
+fresh server, the shell tool wrote the marker file in all modes (`--standalone` and managed),
+`/help`/`/new`/`/exit`/EOF work, and the retry path was exercised with an unreachable provider
+(one retry line, then a clean error, loop still exits 0 on `/exit`).
 
 Runtime issues found and fixed during device bring-up (in order):
 

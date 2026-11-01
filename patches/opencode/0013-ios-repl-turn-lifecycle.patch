@@ -1,0 +1,357 @@
+# OpenCode iOS port patch -- 0013
+# Title: iOS line REPL turn lifecycle: fresh server connection per turn + transport retry
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0012 applied first.
+# Files: packages/cli/src/ios-repl.ts, packages/cli/src/commands/handlers/default.ts,
+#        packages/cli/src/commands/handlers/mini.ts, packages/cli/src/run/run.ts,
+#        packages/cli/src/services/standalone.ts
+# Why (device-reported): the patch-0012 REPL resolved its server ONCE and reused the same resolved
+#      connection for every turn. After the first device turn the transport died ("Transport:
+#      terminated"), later turns failed with "Transport: fetch failed" and the mock provider received
+#      no further requests - the shared client/server state was poisoned. Headless `opencode run`
+#      works because each process resolves and consumes a fresh connection. Fix:
+#      - the REPL now takes a `resolveServer()` closure and re-resolves a fresh connection for every
+#        turn (and retry). With --standalone each turn gets its own private stdio server; the
+#        endpoint exposes a `close()` (ends the stdin lease and kills the owned child) so servers are
+#        disposed after the turn. With the managed service it re-discovers/reconnects per turn.
+#      - one automatic retry per turn on transport-class errors (transport/fetch failed/terminated/
+#        socket/ECONNRESET/EPIPE/network), with a short "Retrying turn..." line; the run pipeline
+#        gained an internal onError callback so the REPL can classify failures (headless reporting
+#        is unchanged).
+#      - the first prompt now waits for a healthy resolution (it is resolved lazily inside the turn),
+#        so a not-yet-ready server cannot fail the first turn.
+# Test: host mock OpenAI-compatible server (3 consecutive turns, induced abort to exercise retry);
+#       device PTY test with --standalone mock provider.
+# Status: iOS-only; non-iOS behavior unchanged.
+
+diff --git a/packages/cli/src/commands/handlers/default.ts b/packages/cli/src/commands/handlers/default.ts
+index 61d5b5f..d8019e9 100644
+--- a/packages/cli/src/commands/handlers/default.ts
++++ b/packages/cli/src/commands/handlers/default.ts
+@@ -4,7 +4,7 @@ import { run } from "@opencode/tui"
+ import { Commands } from "../commands"
+ import { Runtime } from "../../framework/runtime"
+ import { Config } from "../../config"
+-import { Context, Cause, Effect, FileSystem, Option, Queue, Schedule, Semaphore } from "effect"
++import { Context, Cause, Effect, FileSystem, Option, Queue, Schedule, Scope, Semaphore } from "effect"
+ import { ServerConnection } from "../../services/server-connection"
+ import { Updater } from "../../services/updater"
+ import { UpdatePreflight } from "../../services/update-preflight"
+@@ -30,21 +30,29 @@ export default Runtime.handler(Commands, (input) =>
+         yield* Effect.sync(reportTUIUnavailable)
+         return
+       }
+-      const replServer = yield* ServerConnection.resolve({
+-        server: requestedServer,
+-        standalone: input.standalone,
+-        mismatch: "replace",
+-        onStart: (reason) =>
+-          process.stderr.write(
+-            reason === "version-mismatch"
+-              ? "Restarting background server (version mismatch)...\n"
+-              : "Starting background server...\n",
+-          ),
+-      })
++      // Resolve a fresh connection per turn (a dead/poisoned client from a failed turn must not
++      // break the next one), like a separate `opencode run` process per prompt.
++      const context = yield* Effect.context<
++        FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Config.Service | Scope.Scope
++      >()
++      const runPromise = Effect.runPromiseWith(context)
+       const { runIOSRepl } = yield* Effect.promise(() => import("../../ios-repl"))
+       yield* Effect.promise(() =>
+         runIOSRepl({
+-          server: replServer,
++          resolveServer: () =>
++            runPromise(
++              ServerConnection.resolve({
++                server: requestedServer,
++                standalone: input.standalone,
++                mismatch: "replace",
++                onStart: (reason) =>
++                  process.stderr.write(
++                    reason === "version-mismatch"
++                      ? "Restarting background server (version mismatch)...\n"
++                      : "Starting background server...\n",
++                  ),
++              }),
++            ),
+           input: {
+             continue: input.continue,
+             session: Option.getOrUndefined(input.session),
+diff --git a/packages/cli/src/commands/handlers/mini.ts b/packages/cli/src/commands/handlers/mini.ts
+index a787bed..0de1311 100644
+--- a/packages/cli/src/commands/handlers/mini.ts
++++ b/packages/cli/src/commands/handlers/mini.ts
+@@ -1,9 +1,11 @@
+-import { Context, Cause, Effect, FileSystem, Option } from "effect"
++import { Context, Cause, Effect, FileSystem, Option, Scope } from "effect"
+ import { Commands } from "../commands"
+ import { Runtime } from "../../framework/runtime"
+ import { ServerConnection } from "../../services/server-connection"
++import { Updater } from "../../services/updater"
+ import { Config } from "../../config"
+ import { Global } from "@opencode/util/global"
++import { Npm } from "@opencode/util/npm"
+ import { isInteractiveTTY, isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands.commands.mini, (input) =>
+@@ -15,11 +17,15 @@ export default Runtime.handler(Commands.commands.mini, (input) =>
+         yield* Effect.sync(reportTUIUnavailable)
+         return
+       }
+-      const replServer = yield* ServerConnection.resolve({ mismatch: "replace" })
++      // Fresh connection per turn (see handlers/default.ts).
++      const context = yield* Effect.context<
++        FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Config.Service | Scope.Scope
++      >()
++      const runPromise = Effect.runPromiseWith(context)
+       const { runIOSRepl } = yield* Effect.promise(() => import("../../ios-repl"))
+       yield* Effect.promise(() =>
+         runIOSRepl({
+-          server: replServer,
++          resolveServer: () => runPromise(ServerConnection.resolve({ mismatch: "replace" })),
+           input: {
+             model: Option.getOrUndefined(input.model),
+             agent: Option.getOrUndefined(input.agent),
+diff --git a/packages/cli/src/ios-repl.ts b/packages/cli/src/ios-repl.ts
+index 1a74724..acd80fb 100644
+--- a/packages/cli/src/ios-repl.ts
++++ b/packages/cli/src/ios-repl.ts
+@@ -18,7 +18,10 @@ export type ReplInput = {
+ }
+ 
+ export type ReplOptions = {
+-  readonly server: ServerConnection.Resolved
++  // Resolves a (re)connection for one turn. Called once per turn/attempt so every turn behaves
++  // like a fresh `opencode run` process: with --standalone this starts a private server per turn;
++  // with the managed service it re-discovers/reconnects (and restarts a dead service).
++  readonly resolveServer: () => Promise<ServerConnection.Resolved>
+   readonly input: ReplInput
+ }
+ 
+@@ -28,8 +31,14 @@ const HELP = `commands:
+   /exit   quit (Ctrl-D also quits)
+   Ctrl-C  cancel the running turn (does not quit)`
+ 
++const TRANSPORT_ERROR =
++  /transport|fetch failed|terminated|socket|ECONNRESET|ECONNREFUSED|EPIPE|other side closed|network/i
++
++const RETRY_DELAY_MS = 400
++
+ export async function runIOSRepl(options: ReplOptions) {
+-  const { server, input } = options
++  const { input } = options
++  const resolveServer = options.resolveServer
+   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY)
+   const rl = createInterface({
+     input: process.stdin,
+@@ -73,7 +82,7 @@ export async function runIOSRepl(options: ReplOptions) {
+   }
+   // After handling a line: keep prompting interactively, or settle once piped input is exhausted.
+   // Queued lines are drained even after EOF so scripted `/cmd` sequences all execute.
+-  const respond = () => {
++  const respond = (): void => {
+     if (!eof) return showPrompt()
+     if (pending.length > 0) return drain()
+     maybeFinish()
+@@ -82,31 +91,73 @@ export async function runIOSRepl(options: ReplOptions) {
+   const runTurn = async (line: string) => {
+     busy = true
+     rl.pause()
+-    try {
+-      // The run pipeline reports failures itself and only sets process.exitCode; reset it so one
+-      // failed turn (provider/network) cannot change the REPL's eventual exit status.
+-      process.exitCode = 0
+-      await runNonInteractiveWithOptions(
+-        {
+-          server,
+-          message: line.split(/\s+/).filter(Boolean),
+-          continue: continueSession,
+-          session: continueSession ? undefined : (session ?? input.session),
+-          fork: false,
+-          model: input.model,
+-          agent: input.agent,
+-          format: "default",
+-          file: [],
+-          thinking: input.thinking ?? false,
+-          auto: input.auto ?? false,
+-        },
+-        {},
+-      )
+-      continueSession = true
+-      session = undefined
+-    } catch (error) {
++    let attempt = 0
++    while (!finished) {
++      attempt++
++      let server: ServerConnection.Resolved | undefined
++      let error: string | undefined
++      let resolved = false
++      // The run pipeline reports in-turn session errors (provider/transport) to stderr instead of
++      // throwing; capture that output so transport-class failures can be retried.
++      const captured: string[] = []
++      const stderrWrite = process.stderr.write
++      process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
++        captured.push(String(chunk))
++        return (stderrWrite as (...args: unknown[]) => boolean).call(process.stderr, chunk, ...rest)
++      }) as typeof process.stderr.write
++      try {
++        // Fresh connection per turn/attempt: exactly like a separate `opencode run` process.
++        server = await resolveServer()
++        resolved = true
++        process.exitCode = 0
++        await runNonInteractiveWithOptions(
++          {
++            server,
++            message: line.split(/\s+/).filter(Boolean),
++            continue: continueSession,
++            session: continueSession ? undefined : (session ?? input.session),
++            fork: false,
++            model: input.model,
++            agent: input.agent,
++            format: "default",
++            file: [],
++            thinking: input.thinking ?? false,
++            auto: input.auto ?? false,
++          },
++          { onError: (message) => (error = message) },
++        )
++      } catch (failure) {
++        error = failure instanceof Error ? failure.message : String(failure)
++      } finally {
++        process.stderr.write = stderrWrite
++      }
++      const output = captured.join("")
++      const transport = !error && TRANSPORT_ERROR.test(output)
++      const interrupted = /interrupted|aborted/i.test(output)
++      const failed = Boolean(error) || transport || process.exitCode === 1
++      // Owned standalone servers are disposed after the turn; managed services are not ours to stop.
++      ;(server?.endpoint as { close?: () => void } | undefined)?.close?.()
+       process.exitCode = 0
+-      write(`Error: ${error instanceof Error ? error.message : String(error)}`)
++      if (!failed) {
++        continueSession = true
++        session = undefined
++        break
++      }
++      const retryable = !resolved || Boolean(error && TRANSPORT_ERROR.test(error)) || transport
++      if (attempt < 2 && retryable && !interrupted) {
++        const reason =
++          ((error ?? "").replace(/\u001b\[[0-9;]*m/g, "") || output.replace(/\u001b\[[0-9;]*m/g, ""))
++            .split("\n")
++            .map((value) => value.trim())
++            .find(Boolean) ?? "connection failed"
++        write(`Transport error: ${reason.slice(0, 200)}`)
++        write(`Retrying turn with a fresh server connection...`)
++        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
++        continue
++      }
++      // The pipeline already printed session/provider errors to stderr; only surface setup failures.
++      if (!resolved && error) write(`Error: ${error.split("\n")[0]}`)
++      break
+     }
+     process.exitCode = 0
+     busy = false
+@@ -115,7 +166,7 @@ export async function runIOSRepl(options: ReplOptions) {
+     drain()
+   }
+ 
+-  const processLine = (line: string) => {
++  const processLine = (line: string): void => {
+     if (finished) return
+     if (line === "/exit" || line === "/quit") return finish()
+     if (line === "/help") {
+@@ -137,7 +188,7 @@ export async function runIOSRepl(options: ReplOptions) {
+   }
+ 
+   // Lines typed while a turn runs (or piped input arriving ahead of the loop) are queued, not lost.
+-  const drain = () => {
++  const drain = (): void => {
+     if (finished) return
+     const next = pending.shift()
+     if (next !== undefined) return processLine(next)
+diff --git a/packages/cli/src/run/run.ts b/packages/cli/src/run/run.ts
+index 2c47bf3..bd1e01e 100644
+--- a/packages/cli/src/run/run.ts
++++ b/packages/cli/src/run/run.ts
+@@ -48,6 +48,9 @@ type ExecutionOptions = {
+   variant?: string
+   attached?: boolean
+   compatibility?: "v1"
++  // Lets the iOS line REPL observe a failed turn (and retry transport-class failures) without
++  // changing headless reporting behaviour.
++  onError?: (message: string) => void
+ }
+ 
+ class RunTargetError extends Error {
+@@ -67,7 +70,11 @@ export function runNonInteractive(input: RunCommandInput) {
+ 
+ /** @internal Used only by the V1 command boundary. */
+ export function runNonInteractiveWithOptions(input: RunCommandInput, options: ExecutionOptions) {
+-  return run(input, options).catch((error) => reportRunError(input, errorMessage(error)))
++  return run(input, options).catch((error) => {
++    const message = errorMessage(error)
++    options.onError?.(message)
++    reportRunError(input, message)
++  })
+ }
+ 
+ async function run(input: RunCommandInput, options: ExecutionOptions) {
+@@ -165,7 +172,11 @@ async function execute(input: RunCommandInput, prepared: Prepared, endpoint: End
+     compatibility: options.compatibility,
+     renderTool: (part) => renderTool(part, target.location.directory),
+     renderToolError: (part) => renderToolError(part, target.location.directory),
+-  }).catch((error) => reportRunError(input, errorMessage(error), target.session.id))
++  }).catch((error) => {
++    const message = errorMessage(error)
++    options.onError?.(message)
++    reportRunError(input, message, target.session.id)
++  })
+ }
+ 
+ export function mergeInput(message: string | undefined, piped: string | undefined) {
+diff --git a/packages/cli/src/services/standalone.ts b/packages/cli/src/services/standalone.ts
+index 33ece24..05c28eb 100644
+--- a/packages/cli/src/services/standalone.ts
++++ b/packages/cli/src/services/standalone.ts
+@@ -19,6 +19,8 @@ type Endpoint = {
+   readonly auth: { readonly type: "basic"; readonly username: string; readonly password: string }
+   readonly pid: number
+   readonly exited: Effect.Effect<number, Error>
++  // Ends the ownership lease (stdin) and the child; only set for servers this process owns.
++  readonly close?: () => void
+ }
+ 
+ const startupDirectory = process.cwd()
+@@ -116,7 +118,20 @@ function makeEndpointDirect(options: Options) {
+               const parsed: unknown = JSON.parse(line)
+               if (parsed !== null && typeof parsed === "object" && typeof (parsed as { url?: unknown }).url === "string") {
+                 const url = (parsed as { url: string }).url
+-                settle(undefined, { url, auth: { type: "basic", username: "opencode", password }, pid: child.pid ?? -1, exited })
++                settle(undefined, {
++                  url,
++                  auth: { type: "basic", username: "opencode", password },
++                  pid: child.pid ?? -1,
++                  exited,
++                  close: () => {
++                    try {
++                      child.stdin?.end()
++                    } catch {
++                      // already closed
++                    }
++                    child.kill("SIGTERM")
++                  },
++                })
+                 return
+               }
+             } catch {
+@@ -158,7 +173,7 @@ function makeEndpointDirect(options: Options) {
+ export function start(options: Options = {}) {
+   // Device runtime: use the direct spawn path (see makeEndpointDirect). Host smoke sets
+   // OPENCODE_IOS=1 too, so the path is exercised on CI as well.
+-  if (process.platform === "ios" || process.env.OPENCODE_IOS === "1") return makeEndpointDirect(options)
++  if ((process.platform as string) === "ios" || process.env.OPENCODE_IOS === "1") return makeEndpointDirect(options)
+   return makeEndpoint(options)
+ }
+ 
