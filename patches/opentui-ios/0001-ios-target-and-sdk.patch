@@ -39,7 +39,7 @@
 #       Status: build feasibility only -- NOT device-verified; loading via node:ffi is Phase D.
 
 diff --git a/packages/native/build.zig b/packages/native/build.zig
-index c2d5b1e..2f4c193 100644
+index c2d5b1e..5a0eca8 100644
 --- a/packages/native/build.zig
 +++ b/packages/native/build.zig
 @@ -27,10 +27,14 @@ const SUPPORTED_TARGETS = [_]SupportedTarget{
@@ -227,19 +227,46 @@ index c2d5b1e..2f4c193 100644
          .linux => {
              module.linkSystemLibrary("dl", .{});
              module.linkSystemLibrary("pthread", .{});
-@@ -381,7 +476,11 @@ fn addYogaDependencies(b: *std.Build, module: *std.Build.Module, test_allocator:
+@@ -374,14 +469,36 @@ fn addNativeAudioDependencies(
+     }
+ }
+ 
+-fn addYogaDependencies(b: *std.Build, module: *std.Build.Module, test_allocator: bool) void {
++fn addYogaDependencies(
++    b: *std.Build,
++    module: *std.Build.Module,
++    test_allocator: bool,
++    target: std.Build.ResolvedTarget,
++    ios_sdk_path: ?[]const u8,
++) void {
+     const yoga_dep = b.dependency("yoga", .{});
+     const flags = if (test_allocator)
+         appendCFlags(b, &YOGA_CXX_FLAGS, &.{"-DOT_YOGA_TEST_ALLOCATOR"})
      else
          &YOGA_CXX_FLAGS;
  
-+    // Keep C++ hermetic: Zig's bundled libc++ and Darwin libc headers are built together for the
-+    // target. Mixing them with the iPhoneOS SDK's libc++ headers does not compile (the SDK libc++
-+    // expects C23 ::nullptr_t from the SDK C headers while Zig supplies its own libc headers).
-     module.link_libcpp = true;
+-    module.link_libcpp = true;
++    if (target.result.os.tag == .ios) {
++        // Zig 0.16.0 cannot build its bundled libc++ for aarch64-ios (its libc++ sub-build gets no
++        // libc headers and fails in __mbstate_t.h), and mixing the SDK libc++ headers with Zig's
++        // bundled Darwin libc headers fails on C23 ::nullptr_t. Hybrid: compile the C++ sources
++        // with Zig's bundled libc++ *headers* (self-consistent with Zig's libc headers) but link
++        // the iPhoneOS SDK's libc++/libc++abi stubs, so no bundled libc++ sub-build is created.
++        module.link_libcpp = false;
++        if (std.fs.path.dirname(b.graph.zig_exe)) |zig_root| {
++            module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ zig_root, "lib", "libcxx", "include" }) });
++            module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ zig_root, "lib", "libcxxabi", "include" }) });
++        }
++        module.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ ios_sdk_path.?, "usr", "lib", "libc++.tbd" }) });
++        module.addObjectFile(.{ .cwd_relative = b.pathJoin(&.{ ios_sdk_path.?, "usr", "lib", "libc++abi.tbd" }) });
++    } else {
++        module.link_libcpp = true;
++    }
 +
      module.addIncludePath(yoga_dep.path(""));
      module.addCSourceFiles(.{
          .root = yoga_dep.path(""),
-@@ -404,11 +503,17 @@ fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {
+@@ -404,11 +521,17 @@ fn ghosttyVtAvailable(target: std.Build.ResolvedTarget) bool {
      };
  }
  
@@ -257,7 +284,7 @@ index c2d5b1e..2f4c193 100644
  ) void {
      const miniaudio_translate = b.addTranslateC(.{
          .root_source_file = b.path("src/vendor/miniaudio/miniaudio.h"),
-@@ -426,7 +531,12 @@ fn addTranslatedCImports(
+@@ -426,7 +549,12 @@ fn addTranslatedCImports(
      });
      yoga_translate.addIncludePath(yoga_dep.path(""));
      module.addImport("yoga", yoga_translate.createModule());
@@ -271,7 +298,7 @@ index c2d5b1e..2f4c193 100644
  }
  
  fn addContextABIHeader(
-@@ -434,12 +544,14 @@ fn addContextABIHeader(
+@@ -434,12 +562,14 @@ fn addContextABIHeader(
      module: *std.Build.Module,
      optimize: std.builtin.OptimizeMode,
      target: std.Build.ResolvedTarget,
@@ -286,7 +313,7 @@ index c2d5b1e..2f4c193 100644
      module.addImport("context_abi_c", header.createModule());
  }
  
-@@ -457,9 +569,10 @@ fn applyDependencies(
+@@ -457,9 +587,10 @@ fn applyDependencies(
      optimize: std.builtin.OptimizeMode,
      target: std.Build.ResolvedTarget,
      build_options: *std.Build.Step.Options,
@@ -298,7 +325,7 @@ index c2d5b1e..2f4c193 100644
  
      const ghostty_vt_available = ghosttyVtAvailable(target);
      const ghostty_vt_options = b.addOptions();
-@@ -485,8 +598,17 @@ fn applyDependencies(
+@@ -485,8 +616,17 @@ fn applyDependencies(
          }
      }
  
@@ -318,7 +345,7 @@ index c2d5b1e..2f4c193 100644
          .target = target,
          .optimize = optimize,
          .fields = @as([]const []const u8, &.{
-@@ -496,7 +618,9 @@ fn applyDependencies(
+@@ -496,7 +636,9 @@ fn applyDependencies(
              "is_default_ignorable",
          }),
          .fields_1 = @as([]const []const u8, &.{"wcwidth_zero_in_grapheme"}),
@@ -329,7 +356,7 @@ index c2d5b1e..2f4c193 100644
          module.addImport("uucode", uucode_dep.module("uucode"));
      }
  }
-@@ -545,6 +669,12 @@ pub fn build(b: *std.Build) void {
+@@ -545,6 +687,12 @@ pub fn build(b: *std.Build) void {
      const build_all = b.option(bool, "all", "Build for all supported targets") orelse false;
      const gpa_safe_stats = b.option(bool, "gpa-safe-stats", "Enable GPA safety checks for trustworthy allocator stats") orelse false;
      const macos_sdk_path = resolveMacOSSDKPath(b);
@@ -342,15 +369,16 @@ index c2d5b1e..2f4c193 100644
      const build_options = b.addOptions();
      build_options.addOption(bool, "gpa_safe_stats", gpa_safe_stats);
  
-@@ -554,25 +684,25 @@ pub fn build(b: *std.Build) void {
+@@ -554,25 +702,25 @@ pub fn build(b: *std.Build) void {
          .target = module_target,
          .optimize = optimize,
      });
 -    applyDependencies(b, opentui_module, optimize, module_target, build_options);
 -    addNativeAudioDependencies(b, opentui_module, module_target, macos_sdk_path);
+-    addYogaDependencies(b, opentui_module, false);
 +    applyDependencies(b, opentui_module, optimize, module_target, build_options, ios_sdk_path);
 +    addNativeAudioDependencies(b, opentui_module, module_target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, opentui_module, false);
++    addYogaDependencies(b, opentui_module, false, module_target, ios_sdk_path);
  
      if (target_option) |target_str| {
          // Build single target
@@ -373,7 +401,7 @@ index c2d5b1e..2f4c193 100644
              std.debug.print("Error building native target: {}\n", .{err});
              std.process.exit(1);
          };
-@@ -586,7 +716,7 @@ pub fn build(b: *std.Build) void {
+@@ -586,7 +734,7 @@ pub fn build(b: *std.Build) void {
          .target = native_target,
          .optimize = test_optimize,
      });
@@ -382,16 +410,18 @@ index c2d5b1e..2f4c193 100644
      addTestFixtures(b, test_mod);
      const test_artifact = b.addTest(.{
          .root_module = test_mod,
-@@ -598,7 +728,7 @@ pub fn build(b: *std.Build) void {
+@@ -598,8 +746,8 @@ pub fn build(b: *std.Build) void {
          printMissingMacOSSDK("native macOS tests");
          std.process.exit(1);
      }
 -    addNativeAudioDependencies(b, test_mod, native_target, macos_sdk_path);
+-    addYogaDependencies(b, test_mod, true);
 +    addNativeAudioDependencies(b, test_mod, native_target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, test_mod, true);
++    addYogaDependencies(b, test_mod, true, native_target, ios_sdk_path);
  
      const run_test = b.addRunArtifact(test_artifact);
-@@ -614,7 +744,7 @@ pub fn build(b: *std.Build) void {
+     test_step.dependOn(&run_test.step);
+@@ -614,7 +762,7 @@ pub fn build(b: *std.Build) void {
          .optimize = .Debug,
          .fuzz = true,
      });
@@ -400,16 +430,18 @@ index c2d5b1e..2f4c193 100644
      addTestFixtures(b, cov_mod);
      const cov_artifact = b.addTest(.{
          .name = "test-cov",
-@@ -623,7 +753,7 @@ pub fn build(b: *std.Build) void {
+@@ -623,8 +771,8 @@ pub fn build(b: *std.Build) void {
          .test_runner = .{ .path = b.path("src/cov_runner.zig"), .mode = .simple },
          .use_llvm = true,
      });
 -    addNativeAudioDependencies(b, cov_mod, native_target, macos_sdk_path);
+-    addYogaDependencies(b, cov_mod, true);
 +    addNativeAudioDependencies(b, cov_mod, native_target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, cov_mod, true);
++    addYogaDependencies(b, cov_mod, true, native_target, ios_sdk_path);
      const install_cov = b.addInstallArtifact(cov_artifact, .{});
      cov_step.dependOn(&install_cov.step);
-@@ -641,7 +771,7 @@ pub fn build(b: *std.Build) void {
+ 
+@@ -641,7 +789,7 @@ pub fn build(b: *std.Build) void {
          })
      else
          native_target;
@@ -418,7 +450,7 @@ index c2d5b1e..2f4c193 100644
          const fixture_module = b.createModule(.{
              .target = abi_target,
              .optimize = .Debug,
-@@ -668,14 +798,14 @@ pub fn build(b: *std.Build) void {
+@@ -668,15 +816,15 @@ pub fn build(b: *std.Build) void {
          .target = native_target,
          .optimize = .Debug,
      });
@@ -431,11 +463,13 @@ index c2d5b1e..2f4c193 100644
          .use_llvm = debug_use_llvm,
      });
 -    addNativeAudioDependencies(b, lifetime_mod, native_target, macos_sdk_path);
+-    addYogaDependencies(b, lifetime_mod, true);
 +    addNativeAudioDependencies(b, lifetime_mod, native_target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, lifetime_mod, true);
++    addYogaDependencies(b, lifetime_mod, true, native_target, ios_sdk_path);
      const run_lifetime = b.addRunArtifact(lifetime_artifact);
      lifetime_step.dependOn(&run_lifetime.step);
-@@ -687,14 +817,14 @@ pub fn build(b: *std.Build) void {
+ 
+@@ -687,15 +835,15 @@ pub fn build(b: *std.Build) void {
          .target = native_target,
          .optimize = bench_optimize,
      });
@@ -448,11 +482,13 @@ index c2d5b1e..2f4c193 100644
      bench_mod.link_libc = true;
      // The scene bench drives a whole Context, which owns audio resources; this adds the image shim too.
 -    addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path);
+-    addYogaDependencies(b, bench_mod, false);
 +    addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, bench_mod, false);
++    addYogaDependencies(b, bench_mod, false, native_target, ios_sdk_path);
      if (native_target.result.os.tag == .macos) addMacOSSDKSearchPaths(b, bench_mod, macos_sdk_path.?);
      // The benches in bench-isolated.zig compile as their own unit, so other benches cannot change their code.
-@@ -704,7 +834,7 @@ pub fn build(b: *std.Build) void {
+     const bench_isolated_mod = b.createModule(.{
+@@ -704,7 +852,7 @@ pub fn build(b: *std.Build) void {
          .optimize = bench_optimize,
          .link_libc = true,
      });
@@ -461,7 +497,7 @@ index c2d5b1e..2f4c193 100644
      bench_mod.addObject(b.addObject(.{ .name = "opentui-bench-isolated", .root_module = bench_isolated_mod }));
      const run_bench = b.addRunArtifact(bench_exe);
      if (b.args) |args| {
-@@ -719,7 +849,7 @@ pub fn build(b: *std.Build) void {
+@@ -719,7 +867,7 @@ pub fn build(b: *std.Build) void {
          .target = bench_ffi_target,
          .optimize = bench_optimize,
      });
@@ -470,16 +506,18 @@ index c2d5b1e..2f4c193 100644
      const bench_ffi_lib = b.addLibrary(.{
          .name = "native_span_feed_bench",
          .root_module = bench_ffi_mod,
-@@ -729,7 +859,7 @@ pub fn build(b: *std.Build) void {
+@@ -729,8 +877,8 @@ pub fn build(b: *std.Build) void {
          printMissingMacOSSDK("native macOS benchmark FFI library");
          std.process.exit(1);
      }
 -    addNativeAudioDependencies(b, bench_ffi_mod, bench_ffi_target, macos_sdk_path);
+-    addYogaDependencies(b, bench_ffi_mod, false);
 +    addNativeAudioDependencies(b, bench_ffi_mod, bench_ffi_target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, bench_ffi_mod, false);
++    addYogaDependencies(b, bench_ffi_mod, false, bench_ffi_target, ios_sdk_path);
      const install_bench_ffi = b.addInstallArtifact(bench_ffi_lib, .{});
      bench_ffi_step.dependOn(&install_bench_ffi.step);
-@@ -742,7 +872,7 @@ pub fn build(b: *std.Build) void {
+     bench_step.dependOn(bench_ffi_step);
+@@ -742,7 +890,7 @@ pub fn build(b: *std.Build) void {
          .target = native_target,
          .optimize = .Debug,
      });
@@ -488,7 +526,7 @@ index c2d5b1e..2f4c193 100644
      const debug_exe = b.addExecutable(.{
          .name = "opentui-debug",
          .root_module = debug_mod,
-@@ -757,6 +887,7 @@ fn buildAllTargets(
+@@ -757,6 +905,7 @@ fn buildAllTargets(
      optimize: std.builtin.OptimizeMode,
      build_options: *std.Build.Step.Options,
      macos_sdk_path: ?[]const u8,
@@ -496,7 +534,7 @@ index c2d5b1e..2f4c193 100644
  ) !void {
      for (SUPPORTED_TARGETS) |supported_target| {
          try buildTarget(
-@@ -767,6 +898,7 @@ fn buildAllTargets(
+@@ -767,6 +916,7 @@ fn buildAllTargets(
              optimize,
              build_options,
              macos_sdk_path,
@@ -504,7 +542,7 @@ index c2d5b1e..2f4c193 100644
          );
      }
  }
-@@ -776,6 +908,7 @@ fn buildNativeTarget(
+@@ -776,6 +926,7 @@ fn buildNativeTarget(
      optimize: std.builtin.OptimizeMode,
      build_options: *std.Build.Step.Options,
      macos_sdk_path: ?[]const u8,
@@ -512,7 +550,7 @@ index c2d5b1e..2f4c193 100644
  ) !void {
      // Find the matching supported target for the native platform
      const native_arch = @tagName(builtin.cpu.arch);
-@@ -794,6 +927,7 @@ fn buildNativeTarget(
+@@ -794,6 +945,7 @@ fn buildNativeTarget(
                  optimize,
                  build_options,
                  macos_sdk_path,
@@ -520,7 +558,7 @@ index c2d5b1e..2f4c193 100644
              );
              return;
          }
-@@ -809,6 +943,7 @@ fn buildSingleTarget(
+@@ -809,6 +961,7 @@ fn buildSingleTarget(
      optimize: std.builtin.OptimizeMode,
      build_options: *std.Build.Step.Options,
      macos_sdk_path: ?[]const u8,
@@ -528,7 +566,7 @@ index c2d5b1e..2f4c193 100644
  ) !void {
      // Check if it matches a known target, use its output_name
      for (SUPPORTED_TARGETS) |supported_target| {
-@@ -821,13 +956,14 @@ fn buildSingleTarget(
+@@ -821,13 +974,14 @@ fn buildSingleTarget(
                  optimize,
                  build_options,
                  macos_sdk_path,
@@ -544,7 +582,7 @@ index c2d5b1e..2f4c193 100644
  }
  
  fn buildTarget(
-@@ -838,6 +974,7 @@ fn buildTarget(
+@@ -838,6 +992,7 @@ fn buildTarget(
      optimize: std.builtin.OptimizeMode,
      build_options: *std.Build.Step.Options,
      macos_sdk_path: ?[]const u8,
@@ -552,7 +590,7 @@ index c2d5b1e..2f4c193 100644
  ) !void {
      const target_query = try std.Target.Query.parse(.{ .arch_os_abi = zig_target });
      const target = b.resolveTargetQuery(target_query);
-@@ -846,11 +983,15 @@ fn buildTarget(
+@@ -846,11 +1001,15 @@ fn buildTarget(
          printMissingMacOSSDK(description);
          return error.MissingMacOSSDK;
      }
@@ -569,7 +607,7 @@ index c2d5b1e..2f4c193 100644
          const install_dir = b.addInstallArtifact(lib, .{
              .dest_dir = .{ .override = .{ .custom = install_path } },
              .h_dir = .{ .override = .{ .custom = install_path } },
-@@ -874,6 +1015,7 @@ fn createLibraries(
+@@ -874,6 +1033,7 @@ fn createLibraries(
      optimize: std.builtin.OptimizeMode,
      build_options: *std.Build.Step.Options,
      macos_sdk_path: ?[]const u8,
@@ -577,17 +615,19 @@ index c2d5b1e..2f4c193 100644
  ) [2]*std.Build.Step.Compile {
      const module = b.createModule(.{
          .root_source_file = b.path(ROOT_SOURCE_FILE),
-@@ -884,8 +1026,8 @@ fn createLibraries(
+@@ -884,9 +1044,9 @@ fn createLibraries(
          .strip = false,
          .pic = true,
      });
 -    applyDependencies(b, module, optimize, target, build_options);
 -    addNativeAudioDependencies(b, module, target, macos_sdk_path);
+-    addYogaDependencies(b, module, false);
 +    applyDependencies(b, module, optimize, target, build_options, ios_sdk_path);
 +    addNativeAudioDependencies(b, module, target, macos_sdk_path, ios_sdk_path);
-     addYogaDependencies(b, module, false);
++    addYogaDependencies(b, module, false, target, ios_sdk_path);
      const shared = b.addLibrary(.{
          .name = LIB_NAME,
+         .root_module = module,
 diff --git a/packages/native/src/clipboard/host.zig b/packages/native/src/clipboard/host.zig
 index f3a4e0e..f882089 100644
 --- a/packages/native/src/clipboard/host.zig
