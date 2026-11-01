@@ -140,7 +140,8 @@ consumer can tell exactly which series produced the artifact.
 | [41176539017](https://github.com/Justintunsday/opencode-ios/actions/runs/41176539017) | `14a5d9f` | **success** | First 6-patch build: adds patch 0006 (TMPDIR fallback, persistent-PTY capability false, ripgrep install hint). 18/18 host-Node smoke commands passed; asset tree byte-identical to the previous run (`06ef5eb6…`, 22 files / 32,881,480 bytes — deterministic). Artifact: `opencode.mjs` 21,389,137 bytes, sha256 `69ce398b9d60bca0d93110417a91f910962e722b48271c3da58c8e5d8f7657ce`; patch series sha256 `5cb5ceb52c96c7631010de11e13dfc10774d2fd627adcb274b599e1756360c4a`. This payload is the one packaged into the green `.deb` (package run 41185611403). |
 | [41192939688](https://github.com/Justintunsday/opencode-ios/actions/runs/41192939688) | `2179099` | **success** | Documentation-only correction of runtime-capability text in the patch comments and `bundle-manifest.json` (WebAssembly/JIT now provided by the runtime; wasm payloads remain lazy). **Bundle payload is byte-identical to run 41176539017**: `opencode.mjs` sha256 `69ce398b…`, same 22-file asset tree. 18/18 host-Node smoke commands passed; patch series sha256 `02b80588924db742…`. |
 | [41266035760](https://github.com/Justintunsday/opencode-ios/actions/runs/41266035760) | `be216d3` | **success** | Adds patch 0007 + the conditional Node 18 fallback variant; **both jobs green**. Default Node 22 artifact: `opencode.mjs` 21,389,249 bytes, sha256 `2e506a36eca415a158600302319b7ab3c4830c6ee661f37675eb835904fad8d9` (bundle changed only because 0007 removes iterator helpers in shared code), 22 assets (32,881,480 bytes), required Node 22.9.0 smoke 18/18. Node 18 fallback artifact `opencode-cli-node18-ios`: `opencode.mjs` 21,393,413 bytes, sha256 `f1ef6ea78f3fb80417f28040bbddb6f8bbf902376e69a35a26d37a459ce82018`, 24 assets (33,614,156 bytes incl. sql.js), required Node 18.20.4 smoke 12/12 (plus Node 22.9.0 informational 6/6). Patch series sha256 `628a195774f7bd6a…`. |
-| [41269585090](https://github.com/Justintunsday/opencode-ios/actions/runs/41269585090) | `38faf40` | **success** | Adds patch 0008 (`node:inspector` stub for the Node 18 variant) after the first device startup attempt hit `ERR_INSPECTOR_NOT_AVAILABLE` at bundle link. **Both jobs green**; default Node 22 artifact **byte-identical** to the previous run (`opencode.mjs` sha256 `2e506a36…`, 22 assets); Node 18 fallback artifact `opencode-cli-node18-ios`: `opencode.mjs` 21,393,629 bytes, sha256 `9256f2caf2e475f9f37bf4fe47881bca1cc4c5a9580efe329cdcb46b16d04cdf`, 24 assets, 8 patches (series sha256 `de9fa7eb52a34850…`), required Node 18.20.4 smoke passed (+ Node 22.9.0 informational). Device retest of this artifact pending. |
+| [41269585090](https://github.com/Justintunsday/opencode-ios/actions/runs/41269585090) | `38faf40` | **success** | Adds patch 0008 (`node:inspector` stub for the Node 18 variant) after the first device startup attempt hit `ERR_INSPECTOR_NOT_AVAILABLE` at bundle link. **Both jobs green**; default Node 22 artifact **byte-identical** to the previous run (`opencode.mjs` sha256 `2e506a36…`, 22 assets); Node 18 fallback artifact `opencode-cli-node18-ios`: `opencode.mjs` 21,393,629 bytes, sha256 `9256f2caf2e475f9f37bf4fe47881bca1cc4c5a9580efe329cdcb46b16d04cdf`, 24 assets, 8 patches (series sha256 `de9fa7eb52a34850…`), required Node 18.20.4 smoke passed (+ Node 22.9.0 informational). On device this artifact then ran `--version`/`debug paths`/`debug config`/`models`/`session list` successfully; `run --standalone` was still blocked (patch 0009). |
+| [41271384704](https://github.com/Justintunsday/opencode-ios/actions/runs/41271384704) | `d66bac7` | **success** | Adds patch 0009 (iOS direct `node:child_process` standalone-server spawn for `opencode run --standalone`) after the device-reported readiness failure. Both jobs green. Node 18 fallback artifact `opencode-cli-node18-ios`: `opencode.mjs` 21,395,457 bytes, sha256 `25f5f4f39f8fead79a349d170ce1d644ca2890a3555055a6aa8f2e91434c9286`, 24 assets (33,614,156 bytes), 9 patches (series `f56cfd572e74d58f…`), required Node 18.20.4 smoke passed (+ Node 22.9.0 informational); local host `run --standalone` resolves the server and reaches model resolution. Default Node 22 artifact rebuilt with shared-code change: `opencode.mjs` sha256 `e3746a991f21741d23eebc68226419fd5fc46e88b8af8db904fd2cf29bbc4d84`, 22 assets, Node 22.9.0 smoke green (device path unchanged unless `process.platform === "ios"`). Device retest pending. |
 
 The workflow never claims device success: `bundle-manifest.json` always records
 `verification_status.device_verified = false` and the runner only executes stock host
@@ -536,17 +537,21 @@ agent turn is still required to call this end-to-end verified.
 
 CI evidence for this variant: the `bundle-node18` job in `build-opencode.yml` runs exactly the
 same matrix on the macOS runner and passed it in
-[run 41269585090](https://github.com/Justintunsday/opencode-ios/actions/runs/41269585090)
-(both jobs green, 8 patches incl. the node:inspector stub): artifact `opencode-cli-node18-ios`,
-`opencode.mjs` 21,393,629 bytes, sha256
-`9256f2caf2e475f9f37bf4fe47881bca1cc4c5a9580efe329cdcb46b16d04cdf`, 24 assets /
+[run 41271384704](https://github.com/Justintunsday/opencode-ios/actions/runs/41271384704)
+(both jobs green, 9 patches incl. the node:inspector stub and the standalone direct-spawn
+path): artifact `opencode-cli-node18-ios`, `opencode.mjs` 21,395,457 bytes, sha256
+`25f5f4f39f8fead79a349d170ce1d644ca2890a3555055a6aa8f2e91434c9286`, 24 assets /
 33,614,156 bytes, manifest `variant=node18-fallback`,
 `host_smoke_required_node_version=18.20.4`, `host_smoke_required_passed=true`; the required
-Node 18.20.4 checks and all informational checks passed (Node 18.20.4 + 22.9.0). The previous
-7-patch run (41266035760) reached CLI startup on the device and then hit the inspector link
-error fixed by patch 0008. The manifest's `verification_status.device_verified` stays `false`.
-The default Node 22 artifact in the same run is unchanged byte-for-byte (same `opencode.mjs`
-sha256 `2e506a36…`, 22 assets); only the patch count/series sha moved to 8.
+Node 18.20.4 checks and all informational checks passed (Node 18.20.4 + 22.9.0). Device
+history: the 7-patch artifact reached CLI startup and hit the inspector link error (fixed by
+0008); the 8-patch artifact then passed `--version`/`debug paths`/`debug config`/`models`/
+`session list` on the device and failed `run --standalone` at server readiness (fixed by
+0009); the 9-patch artifact's device agent turn was pending at the time of writing. The
+manifest's `verification_status.device_verified` stays `false`. The default Node 22 artifact
+also rebuilt in this run (shared-code change): `opencode.mjs` sha256 `e3746a99…`, 22
+assets, Node 22.9.0 smoke green; its runtime behaviour is unchanged unless
+`process.platform === "ios"`.
 
 ### Device risk / open questions for shipping the Node 18 variant
 
