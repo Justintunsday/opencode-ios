@@ -125,6 +125,7 @@ change surface — upstream itself is never modified.
 | 0006 | `device-robustness` | `packages/cli/vite.node.config.ts`, `packages/core/src/persistent-pty/binary.node.ts`, `packages/core/src/ripgrep/binary.ts` | Rootless-iOS robustness: home-rooted `TMPDIR` fallback in the prelude (do not depend on `/tmp`), persistent-PTY capability reports `false` on ios (the daemon binary is not shipped), and a missing `rg` produces an actionable install hint instead of `unsupported platform for ripgrep: arm64-ios`. |
 | 0007 | `node18-ios-compat` | `packages/cli/vite.node.config.ts`, `packages/cli/script/node-assets.ts`, `packages/core/src/provider.ts`, `packages/util/src/runtime/import.node.ts`, `packages/codemode/src/interpreter/objects.ts` | **Conditional Node 18 fallback variant** (`OPENCODE_IOS_NODE18=1`, separate artifact, §13). Node 18 prelude (`__filename`/`__dirname` from `import.meta.url`, global `crypto`, built-in polyfills for `toSorted`/`groupBy`/`withResolvers`/…, no `--experimental-sqlite`/`--disable-warning` flags, Vite target `node18`); maps `node:sqlite` to the sql.js-backed shim; `vm.constants` fallback for plugin imports; iterator-helper-free `mergeRecord`/codemode iterators (Node 18 predates `Iterator.prototype.map`). |
 | 0008 | `node18-inspector-optional` | `packages/cli/vite.node.config.ts` | **Node 18 fallback only.** Inspector-less Node 18.20.4 iOS builds make the static `node:inspector` import in `cli/src/cpu-profile.ts` throw `ERR_INSPECTOR_NOT_AVAILABLE` at bundle link time (device-reported). Maps `node:inspector` to a build-time stub so startup succeeds and `SIGPROF` CPU profiling fails cleanly (handler logs and continues). Node 22 bundle untouched. |
+| 0009 | `ios-standalone-direct-spawn` | `packages/cli/src/services/standalone.ts` | **iOS path.** On the device, `opencode run --standalone` never saw the child's readiness line through the Effect `ChildProcessSpawner`/`Stream` path (`Standalone server exited before reporting readiness`) although `serve --stdio --port 0` works when spawned with plain `node:child_process` (device-reported). When `process.platform === "ios"` or `OPENCODE_IOS=1`, spawn the server directly (stdin pipe kept open as lease, stdout pipe drained, stderr inherit when `OPENCODE_PRINT_LOGS=1`), resolve on the first JSON `{url}` stdout line, keep the child referenced, and enforce a 20s readiness timeout that kills the child and throws a clear error. Non-iOS behavior unchanged. |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -504,6 +505,8 @@ handled by patch 0007 (the first two were startup-fatal):
 | 7 | `--experimental-sqlite`, `--disable-warning=…`, `--use-system-ca`, `--experimental-ffi` flags absent | `bad option` at launch | variant prelude/launcher use `--no-warnings` only |
 | 8 | Vite output target | new syntax lowered by `build.target: node18` | — |
 | 9 | `node:inspector` disabled in the device runtime (device-reported: `ERR_INSPECTOR_NOT_AVAILABLE` at startup; only static import is `cli/src/cpu-profile.ts`) | bundle failed to link before any CLI code ran | patch 0008 maps it to a build-time stub; `SIGPROF` CPU profiling is unavailable on this variant (handler logs and continues) |
+| 10 | Effect `ChildProcessSpawner` + `Stream` readiness path did not surface the standalone server's promise line on device (device-reported: `opencode run --standalone` → `Standalone server exited before reporting readiness`; direct `node:child_process.spawn` of the same command works) | agent turns could not start: no standalone server, no model request | patch 0009: iOS/`OPENCODE_IOS=1` spawns the server with plain `node:child_process`, reads the first JSON `{url}` line, keeps the stdin lease pipe open and enforces a 20 s readiness timeout; non-iOS unaffected |
+| 11 | `Intl.Segmenter` has no `brkitr` data on the reference Node 18 runtime (small-ICU) → `--help` SIGSEGV in `v8::internal::JSSegmenter::Create` (device-reported) | help rendering crashes on that runtime only | runtime-side: use a full-ICU Node 18 build (`build-runtime-node18.yml` builds `--with-intl=full-icu`); no CLI patch planned (a SIGSEGV cannot be caught in JS) |
 
 `node:sea` (absent on Node 18) is already never imported by the iOS bundle (patch 0001).
 The sql.js shim implements only the `DatabaseSync`/`StatementSync` subset this tree uses
@@ -523,6 +526,13 @@ nodejs.org, SHA-256 verified) and Node 22.9.0, throw-away `HOME`:
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | 18.20.4 (required) | PASS | PASS | PASS | PASS | PASS | PASS | runtime module absent; bundled sql.js shim used |
 | 22.9.0 (informational) | PASS | PASS | PASS | PASS | PASS | PASS | runtime `node:sqlite` + `--experimental-sqlite` |
+
+Additional local check (`OPENCODE_IOS=1`, stock Node 18.20.4): `opencode run --standalone
+--model openai/gpt-4o-mini "say hi"` started the directly-spawned standalone server, created
+a session and reached model resolution (fails only with `Model unavailable` because no
+provider is configured locally) — the device-reported `Standalone server exited before
+reporting readiness` failure is gone from the bundle (patch 0009). A device mock-provider
+agent turn is still required to call this end-to-end verified.
 
 CI evidence for this variant: the `bundle-node18` job in `build-opencode.yml` runs exactly the
 same matrix on the macOS runner and passed it in

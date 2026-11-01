@@ -1,0 +1,151 @@
+# OpenCode iOS port patch -- 0009
+# Title: iOS/Node 18 fallback: direct node:child_process standalone server spawn
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0008 applied first.
+# Files: packages/cli/src/services/standalone.ts
+# Why: on the device Node 18.20.4 runtime, `opencode run --standalone` could not resolve its server:
+#      the child was spawned but its readiness line never reached the parent through the Effect
+#      ChildProcessSpawner + Stream.decodeText/splitLines + Deferred path (parent error:
+#      `Standalone server exited before reporting readiness`). The same spawn/pipe pattern works on
+#      the device with plain node:child_process.spawn (stdin pipe, stdout pipe, stderr inherit or
+#      ignore), and `serve --stdio --port 0` directly prints a JSON url line and stays up. The
+#      variant therefore uses a direct spawn implementation when process.platform === ios or
+#      OPENCODE_IOS=1 (device + host smoke): spawn(executable, [...args, --stdio, --port, 0]), keep
+#      the stdin pipe open as the ownership lease, read the first JSON stdout line, retain the child,
+#      drain stdout, and enforce a 20s readiness timeout that kills the child and fails clearly.
+#      The existing Effect implementation is unchanged for non-iOS platforms.
+# Test: OPENCODE_IOS_NODE18=1 bash scripts/build-opencode-bundle.sh build stage smoke manifest;
+#       OPENCODE_IOS=1 node opencode.mjs run --standalone ... on host Node 18.20.4, and the device
+#       `opencode run --standalone` mock-provider turn.
+# Status: iOS device path; behavior on non-iOS is unchanged.
+
+diff --git a/packages/cli/src/services/standalone.ts b/packages/cli/src/services/standalone.ts
+index 2e4cbc1..33ece24 100644
+--- a/packages/cli/src/services/standalone.ts
++++ b/packages/cli/src/services/standalone.ts
+@@ -3,17 +3,30 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
+ import { Deferred, Effect, Schema, Stream } from "effect"
+ import { ChildProcess, ChildProcessSpawner } from "effect/process"
+ import { randomBytes } from "node:crypto"
++import { spawn, type ChildProcess as NodeChildProcess } from "node:child_process"
+ import { selfCommand } from "../util/process"
+ 
+ const Ready = Schema.Struct({ url: Schema.String })
+ const decodeReady = Schema.decodeUnknownPromise(Schema.fromJsonString(Ready))
++const READINESS_TIMEOUT_MS = 20_000
+ 
+ type Options = {
+   readonly command?: ReadonlyArray<string>
+ }
+ 
++type Endpoint = {
++  readonly url: string
++  readonly auth: { readonly type: "basic"; readonly username: string; readonly password: string }
++  readonly pid: number
++  readonly exited: Effect.Effect<number, Error>
++}
++
+ const startupDirectory = process.cwd()
+ 
++// Keep spawned standalone servers referenced so neither the child handle nor its stdin pipe can be
++// collected while the parent is still running (the server treats EOF on stdin as lease end).
++const running = new Set<NodeChildProcess>()
++
+ function command(password: string, options: Options) {
+   const [executable, ...args] = options.command ?? [...selfCommand(), "serve"]
+   if (!executable) throw new Error("Failed to resolve standalone server command")
+@@ -58,7 +71,94 @@ const makeEndpoint = Effect.fn("cli.standalone.endpoint")(
+   Effect.provide(LayerNode.compile(CrossSpawnSpawner.node)),
+ )
+ 
++// iPhoneOS / Node 18 fallback: the Effect ChildProcessSpawner + Stream readiness path does not
++// report readiness on the device runtime even though the same spawn/pipe pattern works with plain
++// node:child_process (device-reported "Standalone server exited before reporting readiness").
++// Spawn the child directly, read the first JSON stdout line and keep the stdin pipe open.
++function makeEndpointDirect(options: Options) {
++  return Effect.tryPromise({
++    try: () =>
++      new Promise<Endpoint>((resolve, reject) => {
++        const password = randomBytes(32).toString("base64url")
++        const [executable, ...args] = options.command ?? [...selfCommand(), "serve"]
++        if (!executable) throw new Error("Failed to resolve standalone server command")
++        const child = spawn(executable, [...args, "--stdio", "--port", "0"], {
++          cwd: startupDirectory,
++          env: { ...process.env, OPENCODE_PASSWORD: password },
++          stdio: ["pipe", "pipe", process.env.OPENCODE_PRINT_LOGS === "1" ? "inherit" : "ignore"],
++        })
++        running.add(child)
++        let settled = false
++        let buffered = ""
++        const settle = (error: Error | undefined, endpoint?: Endpoint) => {
++          if (settled) return
++          settled = true
++          clearTimeout(timer)
++          child.stdout?.removeListener("data", onData)
++          if (error) {
++            reject(error)
++            return
++          }
++          // Keep draining stdout so later server writes cannot hit EPIPE; leave stdin open as the
++          // server's ownership lease.
++          child.stdout?.resume()
++          resolve(endpoint!)
++        }
++        const onData = (chunk: Buffer | string) => {
++          buffered += chunk.toString()
++          let index = buffered.indexOf("\n")
++          while (index !== -1) {
++            const line = buffered.slice(0, index).trim()
++            buffered = buffered.slice(index + 1)
++            index = buffered.indexOf("\n")
++            if (!line) continue
++            try {
++              const parsed: unknown = JSON.parse(line)
++              if (parsed !== null && typeof parsed === "object" && typeof (parsed as { url?: unknown }).url === "string") {
++                const url = (parsed as { url: string }).url
++                settle(undefined, { url, auth: { type: "basic", username: "opencode", password }, pid: child.pid ?? -1, exited })
++                return
++              }
++            } catch {
++              // Not the readiness line yet (bootstrap logging goes to stderr, but be tolerant).
++            }
++          }
++        }
++        const exited = Effect.callback<number, Error>((resume) => {
++          const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
++            running.delete(child)
++            if (signal) return resume(Effect.fail(new Error(`Standalone server exited by signal ${signal}`)))
++            resume(Effect.succeed(code ?? 0))
++          }
++          child.once("exit", onExit)
++          return Effect.sync(() => child.removeListener("exit", onExit))
++        })
++        const timer = setTimeout(() => {
++          child.kill("SIGTERM")
++          settle(new Error(`Standalone server did not report readiness within ${READINESS_TIMEOUT_MS}ms`))
++        }, READINESS_TIMEOUT_MS)
++        child.once("exit", (code, signal) => {
++          running.delete(child)
++          settle(
++            new Error(
++              `Standalone server exited before reporting readiness (code ${code ?? "none"}, signal ${signal ?? "none"})`,
++            ),
++          )
++        })
++        child.once("error", (error) => {
++          running.delete(child)
++          settle(new Error("Failed to start standalone server", { cause: error }))
++        })
++        child.stdout?.on("data", onData)
++      }),
++    catch: (error) => (error instanceof Error ? error : new Error(String(error))),
++  })
++}
++
+ export function start(options: Options = {}) {
++  // Device runtime: use the direct spawn path (see makeEndpointDirect). Host smoke sets
++  // OPENCODE_IOS=1 too, so the path is exercised on CI as well.
++  if (process.platform === "ios" || process.env.OPENCODE_IOS === "1") return makeEndpointDirect(options)
+   return makeEndpoint(options)
+ }
+ 
