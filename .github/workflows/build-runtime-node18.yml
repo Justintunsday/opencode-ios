@@ -52,6 +52,7 @@ jobs:
         run: brew install ldid
       - name: Build iOS Node 18 runtime
         run: |
+          mkdir -p dist
           source .venv-node18/bin/activate
           bash scripts/build-ios-runtime-node18.sh 2>&1 | tee dist/node18-build.log
       - name: Upload runtime logs
