@@ -5,13 +5,21 @@ This is the device installation procedure for `OpenCode-iOS-rootless.deb`, an
 on a native iPhoneOS arm64 **Node.js 22.9.0** runtime, entirely beneath
 `/var/jb` (Dopamine rootless layout).
 
-> **Verification status:** the package is built and statically validated in GitHub
-> Actions, and the CLI bundle is smoke-tested on a host Node.js 22.9.0 runtime.
-> **On-device execution has not been performed by CI and remains
-> `UNVERIFIED ON DEVICE`** until you run the smoke test in section 10 and report
-> the result. See [`VERIFICATION.md`](VERIFICATION.md).
+> **Verification status:** the released package is **DEVICE-VERIFIED** on the
+> target iPhone SE 2 (iOS 16.1.1, Dopamine rootless): packaged acceptance
+> **PASS=14 / FAIL=0** for `OpenCode-iOS-rootless.deb` SHA-256
+> `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
+> (2026-11-01), including a mock-provider agent turn whose shell tool executed on
+> the device. Raw evidence:
+> [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md); condensed matrix:
+> [`VERIFICATION.md`](VERIFICATION.md). Hosted CI runners cannot execute iOS
+> binaries, so CI-generated reports keep the runner-scoped `UNVERIFIED ON DEVICE`
+> wording; that does not apply to the released device-tested artifact. The
+> smoke test in section 10 is still the recommended way to validate your own
+> install.
 
-Target environment (only configuration validated by CI):
+Target environment (validated by CI and, for the released artifact, on real
+hardware):
 
 | Property | Value |
 | --- | --- |
@@ -83,30 +91,35 @@ One package ships exactly one runtime; the artifact name is the same for both:
 
 | Variant | Runtime | Status | How to tell |
 | --- | --- | --- | --- |
-| `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite, **v6 mprotect-W^X runtime** | **Primary.** Device-working with `--single-threaded` (JIT loop, WebAssembly, fetch, full-ICU/`Intl.Segmenter`, `--version`, `--help`, `debug paths` all pass on the target iPhone). The packaged acceptance run is still pending. | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
+| `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite, **v6 mprotect-W^X runtime** | **Primary — DEVICE-VERIFIED (packaged, PASS=14/0)** with the mandatory `--single-threaded` launcher flag; CLI matrix + mock-provider agent turn PASS through the packaged launcher. | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
 | `node18` | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 device-proven memory model, bundled sql.js sqlite shim | **Fallback**, CLI bundle runs on device with a community Node 18 runtime; our own full-ICU Node 18 runtime is CI-built and awaiting its acceptance run | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
 
 Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`
 prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manifest.json`
 declares the capability profile.
 
-> **Shipping status (2026-11-01):** the **Node 22 v6 variant is the primary
-> deliverable**, pending the maintainer's acceptance run on the final package.
-> Device evidence so far (v6 runtime run `41265520491`, 2-key signed): with the
-> launcher's mandatory `--single-threaded` flag, JIT loops, WebAssembly, `fetch`
-> (HTTPS 200) and full-ICU/`Intl.Segmenter` work, and `opencode --version`,
-> `--help`, `debug paths` return rc=0 on the target iPhone. Without
-> `--single-threaded`, JIT-heavy code dies with SIGBUS (V8 background threads
-> race the process-wide mprotect W^X toggle), so the launcher always passes it.
-> Commands that spawn a server child currently SIGBUS pending CLI patch `0010`
-> (child-spawn whitelist must pass `--single-threaded`). The **Node 18 variant is
-> the documented fallback** (V8 10.2 memory model, sql.js sqlite persistence
-> caveats). Superseded builds are not shippable: v3-runtime package (run
-> `41202900005`; SIGBUS on generated code), the v4-runtime package (run
-> `41218342323`; SIGTRAP/FatalOOM at V8 code-range reservation because iOS denies
-> `mprotect` RWX), WASM-disabled packages (`.deb` sha `13a0483d...`;
-> `ReferenceError: WebAssembly is not defined`). Install a package only after the
-> maintainer records a matching device run in `docs/VERIFICATION.md`.
+> **Shipping status (2026-11-01): the Node 22 v6 variant is DEVICE-VERIFIED and
+> released.** Released artifact: `OpenCode-iOS-rootless.deb`, SHA-256
+> `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
+> (52,968,920 bytes), from package run
+> <https://github.com/Justintunsday/opencode-ios/actions/runs/41274221353>.
+> Installed and exercised on the target iPhone SE 2 / iOS 16.1.1 / Dopamine
+> rootless: packaged acceptance **PASS=14 / FAIL=0** — `--version`, `--help`,
+> `debug paths`, `debug config`, `models`, `auth list`, `session list`
+> (native `node:sqlite` with WAL), remove/reinstall cycle, and a mock-provider
+> agent turn whose shell tool executed on the device. Raw log:
+> [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). The launcher's mandatory
+> `--single-threaded` flag is what makes the v6 mprotect W^X runtime safe: without
+> it JIT-heavy code dies with SIGBUS because V8 background threads race the
+> process-wide mprotect toggle. The **Node 18 variant is the documented fallback**
+> (alternative; V8 10.2 memory model, sql.js sqlite persistence caveats) and gets
+> its own acceptance run when packaged. Superseded builds are not shippable:
+> v3-runtime package (run `41202900005`; SIGBUS on generated code), the v4-runtime
+> package (run `41218342323`; SIGTRAP/FatalOOM at V8 code-range reservation
+> because iOS denies `mprotect` RWX), WASM-disabled packages (`.deb` sha
+> `13a0483d...`; `ReferenceError: WebAssembly is not defined`). Upgrade/install
+> only a released artifact whose `SHA256SUMS` matches the device-tested SHA above
+> (or a later device-tested release recorded in `docs/VERIFICATION.md`).
 
 ## 3. Transfer the package to the device
 
@@ -340,7 +353,7 @@ test.
 | Process killed immediately (`Killed: 9`, exit 137) or bus error at startup | Entitlement/code-signature problem. The package ships the **device-verified minimal entitlement set**: `platform-application` + `com.apple.private.security.no-sandbox` (`runtime/entitlements.xml`). Re-sign the runtime with exactly those shipped entitlements, then retry: `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node`. Do **not** substitute the older allow-jit / allow-unsigned-executable-memory / disable-library-validation / dynamic-codesigning sets: those were empirically SIGKILLed on the target device (exit 137), while the 2-key set was device-proven to run the JIT+WebAssembly-enabled runtime. `ldid` is installed on the target device; it is not a package dependency. |
 | Every command fails with `ReferenceError: WebAssembly is not defined` | The runtime was built with WebAssembly disabled (device-verified on the intermediate package: Node's fetch/undici needs wasm llhttp) or `OPENCODE_IOS_JITLESS=1` is set in the environment. Install the final package built from a WebAssembly+JIT-enabled runtime (check `package-report.json` → `runtime.build-profile`: "WebAssembly enabled; JIT enabled") and unset `OPENCODE_IOS_JITLESS`. |
 | CLI crashes early with `EXC_BREAKPOINT`/SIGTRAP, `FatalOOM`, `CodeRange::InitReservation`, or SIGBUS on JIT-heavy code | The node22 runtime needs the launcher's mandatory `--single-threaded` flag (v6 mprotect W^X is process-wide; V8 background threads race it and SIGBUS without the flag). Reinstall the package/use its launcher unmodified. The superseded v4 runtime crashed even with it (STOP: do not use v4; use the v6 package). For the node18 fallback use `variant=node18` packages. |
-| Commands that spawn a child server SIGBUS (node22) | Pending CLI patch `0010`: the child-spawn whitelist must pass `--single-threaded` to the child Node. Until the final CLI artifact lands, server-spawning commands are not usable; `--version`, `--help`, `models`, `debug paths` and the offline smoke test work. |
+| Commands that spawn a child server SIGBUS (node22) | Fixed by CLI patch `0010` (final CLI artifact forwards `--single-threaded` to spawned children) and device-verified for the released package. If you see this with a custom/older build, reinstall the released `.deb`; do not strip `--single-threaded` from the launcher. |
 | `bad option: --experimental-sqlite` / `--disable-warning` / `--use-system-ca` | A **node22** launcher/flags were used with the Node 18 runtime (or a hand-edited launcher). Node 18.20.4 rejects those flags. Reinstall the node18 package and use its installed launcher unmodified (it passes `--no-warnings` and `--max-old-space-size` only). |
 | `opencode --help` crashes in `Intl.Segmenter` / `JSSegmenter::Create` | The runtime is a small-ICU build (observed with a community small-ICU Node 18 runtime). The shipped runtimes are full-ICU; reinstall a package from the latest green `package-rootless.yml` run (check `package-report.json` → `runtime.capabilities.intl_mode: full-icu`). |
 | sqlite writes appear to be lost after a crash (node18) | Expected sql.js shim behaviour: the database is persisted as a whole file with no WAL, so a hard crash can lose recent writes (see `KNOWN_LIMITATIONS.md`). Close/quit the CLI cleanly; Node 22 (experimental) uses native `node:sqlite` with WAL. |
@@ -378,7 +391,9 @@ contains the device identity table and a per-test evidence template. The CI
 reports (`port-verification`, `package-report.json`) stay runner-only evidence and
 must not be presented as device proof.
 
-To move the port out of `UNVERIFIED ON DEVICE`, open an issue with:
+The released artifact is already device-verified; this section is for reporting
+additional device results (other devices/iOS versions, regressions, or your own
+install). Open an issue with:
 
 1. Device model, iOS version, jailbreak (e.g. "iPhone SE2, iOS 16.1.1, Dopamine rootless").
 2. The exact package version, `.deb` SHA-256 (from `SHA256SUMS`) **and variant**

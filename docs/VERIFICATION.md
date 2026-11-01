@@ -1,8 +1,10 @@
 # Verification matrix — OpenCode iOS (rootless)
 
-This document distinguishes **what CI actually proves** from what is
-**unverified** and must be executed on a real device. No CI run and no document in
-this repository claims on-device success.
+This document distinguishes **what CI actually proves** from what is **device
+evidence**. The released `.deb` (SHA-256 `2f96fc18…`) is **DEVICE-VERIFIED** —
+packaged acceptance PASS=14/FAIL=0 on the target iPhone (2026-11-01); the raw log
+is in [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). No CI run claims device
+execution: hosted runners cannot execute iOS binaries.
 
 ## Status summary
 
@@ -12,18 +14,21 @@ this repository claims on-device success.
 | Runtime capability gating (full-ICU + WebAssembly + JIT required for both variants; `Intl.Segmenter` data; Node 22 additionally requires an iOS V8 W^X patch; Node 18 uses the device-proven V8 10.2 memory model and must not require the Node-22-only W^X patches) | GitHub Actions `macos-15` runner | **CI-verified** |
 | Host-runtime JS smoke | GitHub Actions `macos-15` runner: host Node.js **22.9.0** for node22 and host Node.js **18.20.4** for node18 (nodejs.org, checksum-pinned) | **CI-verified** when the workflows are green |
 | Native iPhoneOS runtime compile | GitHub Actions `macos-15` runner + iPhoneOS SDK: `build-runtime.yml` (node22) / `build-runtime-node18.yml` (node18) | **CI-verified** |
-| Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling, JIT/WASM/ICU requirements) | Real target iPhone, maintainer-executed probes | **Partially device-verified (preliminary)** — see *Interim device evidence* below |
-| Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **Device-working with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
-| Node 22 v6 CLI commands | Real target iPhone, maintainer-executed | **`--version`, `--help`, `debug paths` rc=0** on device; commands that spawn a child server currently SIGBUS pending CLI patch `0010` (child whitelist must pass `--single-threaded`) |
-| Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not yet the CI-built full-ICU runtime) | **CLI commands device-verified (preliminary)**; the shipped Node 18 runtime still needs its acceptance run |
-| Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device | **UNVERIFIED ON DEVICE** — requires the user runbook below |
+| Rootless runtime bootstrap facts (entitlement pair, launcher shebang, dpkg `#!/bin/sh` handling, JIT/WASM/ICU requirements) | Real target iPhone, maintainer-executed probes | **Device-verified** (bootstrap) and **DEVICE-VERIFIED for the released package** — see *Device verification results* |
+| Native Node 22 v6 runtime execution (JIT, WebAssembly, fetch, full ICU) | Real target iPhone, maintainer-executed probes | **DEVICE-VERIFIED with `--single-threaded`** (JIT loop, WASM compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`); without the flag JIT-heavy code SIGBUSes (process-wide mprotect W^X races V8 background threads) |
+| Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device |
+| Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the CI-built full-ICU runtime) | **CLI commands device-verified (preliminary)**; the packaged Node 18 fallback still needs its own acceptance run |
+| Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `2f96fc18…` | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 (2026-11-01)**; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for the raw log |
 
-> **UNVERIFIED ON DEVICE — requires real iPhone SE 2 (iOS 16.1.1, Dopamine rootless).**
-> Hosted GitHub Actions macOS runners cannot execute iOS arm64 binaries. Any green
-> check below is runner-only evidence. Preliminary probes on the real device
-> (entitlement pair, rootless shells, dpkg script handling, runtime capability
-> requirements, and the Node 18 CLI bundle on a community runtime) are recorded
-> separately and do **not** verify the packaged CLI with its own runtime.
+> **Device status:** the **released `.deb` (SHA-256
+> `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`) is
+> DEVICE-VERIFIED** — installed, exercised and reinstall-cycled on the target
+> iPhone SE 2 (iOS 16.1.1, Dopamine rootless) with PASS=14 / FAIL=0, including a
+> mock-provider agent turn whose shell tool executed on the device. Raw evidence:
+> [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md). CI workflows on hosted macOS
+> runners still cannot execute iOS arm64 binaries, so their generated reports keep
+> the literal `UNVERIFIED ON DEVICE`/`DEVICE TESTS: NOT PERFORMED` wording: that
+> is a statement about the runner, not about this released artifact.
 
 ### Runtime variants and current candidates
 
@@ -32,8 +37,8 @@ exactly one and `package-report.json` records which (`variant` / `runtime_kind`)
 
 | Variant | Runtime | Status |
 | --- | --- | --- |
-| **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **Device-working with the mandatory `--single-threaded` launcher flag** (runtime run `41265520491`: node sha256 `cf707ebe…`, 2-key signed). JIT loop, WebAssembly compile+instantiate, HTTPS `fetch` 200, ICU 75/`\p{L}` and `Intl.Segmenter` PASS; `opencode --version`, `--help`, `debug paths` rc=0 on device. Commands that spawn a server child currently SIGBUS pending CLI patch `0010`. Packaged acceptance run pending. |
-| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim | **Documented fallback.** The Node 18 CLI bundle already runs on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created); our own full-ICU Node 18 runtime is built by `build-runtime-node18.yml` and awaits acceptance. |
+| **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **DEVICE-VERIFIED for the released `.deb`** (packaged acceptance PASS=14/0, 2026-11-01) with the mandatory `--single-threaded` launcher flag. Runtime run `41273024931` (node sha256 `cf707ebe…`, 2-key signed): JIT loop, WebAssembly, HTTPS `fetch` 200, ICU 75/`\p{L}`, `Intl.Segmenter` PASS; CLI matrix and mock-provider agent turn PASS through the packaged launcher. |
+| **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim | **Documented fallback.** The Node 18 CLI bundle already runs on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created); our own full-ICU Node 18 runtime is built by `build-runtime-node18.yml` and will be packaged/acceptance-tested as the alternative. |
 
 Node 22 v6 device evidence (maintainer, real iPhone SE 2 / iOS 16.1.1 /
 Dopamine rootless; raw outputs will be recorded below once the packaged
@@ -55,7 +60,8 @@ acceptance run is done):
   and device retest follows.
 
 Node 18 CLI device evidence (maintainer, community Node 18.20.4 iPhoneOS runtime,
-before the CI-built full-ICU runtime existed):
+before the CI-built full-ICU runtime existed; the released node22 v6 package does
+not depend on this):
 
 - `opencode2-node --version` → `opencode2-node v2.2.5` (rc=0)
 - `debug paths`, `debug config`, `models`, `session list` → rc=0 (sql.js sqlite
@@ -87,7 +93,7 @@ the device-test artifact):
 | Optional bundled `rg` | `ios-ripgrep` from the runtime workflow: sha256 `6cc1cea8bc1dbe159f026419d50e404eda6ee1556808e8bbefb37cde9e121b7b` |
 | Package validation | `ci_status=PASS`, 47 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim` not shipped); package-report carries variant fields, manifest device-verification markers and launcher-flag cross-check |
 | Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41274690207> (artifact `port-verification`, id `13070776185`): 48 PASS / 0 FAIL / 1 SKIP (optional `ios-jit-shim`), `ci_status=PASS`, `device_status=UNVERIFIED ON DEVICE` (CI runner) |
-| Device status | **Packaged artifact UNVERIFIED ON DEVICE (CI runner)**; the runtime manifest itself is DEVICE-VERIFIED (2-key, single-threaded launch) and the maintainer has device-verified the same CLI artifact on the same runtime. The maintainer's packaged-acceptance run (installed `.deb`) is in progress; on receipt these results are recorded under *Device verification results* and the final release `.deb` may be rebuilt from the same runtime/CLI to carry the packaged PASS. |
+| Device status | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 (2026-11-01)** on the exact `.deb` sha256 `2f96fc18…`. Raw log, E2E marker and identity evidence: [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) and the completed-run record below. CI reports keep the runner-scoped `UNVERIFIED ON DEVICE` wording by design. |
 
 ### Node 22 pipeline history (superseded, not shippable)
 
@@ -99,16 +105,22 @@ the device-test artifact):
 | v5 | mprotect W^X first attempt (`0005`); superseded by v6. |
 | **v6** (run `41265520491`) | **Device-working with `--single-threaded`** (see device evidence above); this is the primary packaging path. Child-spawn commands await CLI patch `0010`. |
 
-**Artifact identity across docs commits.** The packaged documentation is part of
-the `.deb`, so CI rebuilds triggered by documentation-only commits produce
-byte-different `.debs` (different SHA-256) even though the runtime, CLI bundle and
-launcher code are identical. Pinned runs above identify specific artifacts; later
-green runs on docs commits are pipeline evidence only.
+**Artifact identity — do not rebuild the release.** The packaged documentation is
+part of the `.deb`, so any later documentation-only or code-only commit produces a
+different `.deb` SHA-256. The released artifact
+(`2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`,
+device-verified PASS=14/0) must **not** be rebuilt or replaced without re-running
+the device acceptance on the new SHA-256. The packaged docs inside that `.deb`
+reflect the repository state at its build commit (`7e76eab`, pre-release-docs);
+**this repository document** — updated after the device run — is the authoritative
+post-release record, and the released artifact's identity is the SHA-256 above.
+Later green package runs are pipeline evidence only.
 
-**Honesty note.** The device evidence above is maintainer-reported raw output from
-the runtime artifact/CLI bundle, not from the packaged `.deb`. Until the maintainer
-runs the packaged acceptance procedure and the raw outputs are recorded below, the
-package remains `UNVERIFIED ON DEVICE`.
+**Honesty note.** The device evidence above now includes the packaged acceptance
+run for the released `.deb` (PASS=14/FAIL=0, see *Device verification results*).
+CI reports remain runner-scoped (`UNVERIFIED ON DEVICE`) because hosted runners
+cannot execute iOS binaries; `DEVICE_TEST_RESULTS.md` is the authoritative device
+evidence for the released SHA-256.
 
 ## Where the evidence lives
 
@@ -161,24 +173,28 @@ bundle with a desktop macOS Node.js build of the same version on the same OS
 family; it proves the bundle and launcher logic, not the iPhoneOS runtime,
 signing, entitlements or iOS process environment.
 
-## Device tests — UNVERIFIED ON DEVICE
+## Device tests — acceptance matrix (verified for the released artifact)
 
-The following require a real iPhone SE 2 (iOS 16.1.1, Dopamine rootless). Run the
+The following require a real iPhone SE 2 (iOS 16.1.1, Dopamine rootless). The
+released `.deb` (SHA-256 `2f96fc18…`) has been executed through this matrix — see
+**Device verification results** below and [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md);
+the table remains the acceptance runbook for future builds/devices. Run the
 commands from a NewTerm 3 shell or SSH. Full install instructions:
 [`INSTALL.md`](INSTALL.md).
 
-> **UNVERIFIED ON DEVICE — requires real iPhone SE 2 (iOS 16.1.1, Dopamine rootless).**
-> None of these has been executed by CI. They are the acceptance runbook.
+> **Released artifact: DEVICE-VERIFIED (PASS=14/FAIL=0, 2026-11-01).**
+> This is maintainer/user-reported device evidence, not CI output. CI cannot
+> execute iOS binaries and its reports stay runner-scoped.
 
 | # | Test | Command | Pass criterion |
 | --- | --- | --- | --- |
 | 1 | Install | `sudo dpkg -i ~/Documents/OpenCode-iOS-rootless.deb` | dpkg status `install ok installed`, no errors |
-| 2 | Runtime variant | `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`; `dpkg -s opencode` | prints `18.20.4` (expected for the node18 candidate) or `22.9.0`; matches `package-report.json` → `variant`; control description states the runtime |
+| 2 | Runtime variant | `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`; `dpkg -s opencode` | released primary prints `22.9.0` (node18 fallback prints `18.20.4`); matches `package-report.json` → `variant`; control description states the runtime |
 | 3 | CLI starts | `opencode --version` | exit 0, upstream version (2.2.5) printed |
-| 4 | Help (full-ICU/Segmenter) | `opencode --help` | exit 0, usage/commands printed; on node18 this exercises `Intl.Segmenter` (fails only on small-ICU runtimes) |
+| 4 | Help (full-ICU/Segmenter) | `opencode --help` | exit 0, usage/commands printed; full ICU means `Intl.Segmenter` works (small-ICU runtimes crash) |
 | 5 | Runtime capabilities | `/var/jb/usr/lib/opencode/runtime/node -e "console.log(typeof WebAssembly, process.config.variables.v8_enable_webassembly, typeof fetch, typeof Intl, typeof Intl.Segmenter)"` | `object 1 function object function`; wasm module compiles; `opencode --version` works (no `ReferenceError: WebAssembly is not defined`) |
 | 6 | Paths/models (offline) | `opencode debug paths`, `opencode models` | config/data under `/var/jb/var/mobile/...`; model list prints (version-dependent, optional) |
-| 7 | sqlite persistence | `opencode session list`; check the database file under `~/.local/share/opencode` | exit 0 and a sqlite file exists; node18 uses the bundled sql.js shim (whole-file, no WAL) |
+| 7 | sqlite persistence | `opencode session list`; check the database file under `~/.local/share/opencode` | exit 0 and a sqlite file exists (released node22: native `node:sqlite` with `-wal`/`-shm`; node18 fallback: sql.js whole-file shim) |
 | 8 | Auth | `opencode auth list`, `opencode auth login` | login completes; credentials only in user home |
 | 9 | Offline scripted smoke | `sh /var/jb/usr/share/doc/opencode/device-smoke.sh` | final line `DEVICE SMOKE TEST: PASS` |
 | 10 | Liveness/signature | `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node` then `opencode --version` | re-signed runtime still starts (repair path works; shipped entitlements are the verified minimal pair) |
@@ -194,15 +210,18 @@ the agent in a throwaway repository.
 
 ## Device verification results
 
-Status: **PENDING for the packaged CLI — no full package device run has been
-recorded yet.** The device tests above therefore remain `UNVERIFIED ON DEVICE`.
-Preliminary bootstrap probes performed by the maintainer directly on the target
-iPhone (not via this package) are recorded under *Interim device evidence* below;
-they must not be read as package verification.
+Status: **DEVICE-VERIFIED for the released packaged artifact.** The maintainer
+installed the released `.deb` on the target iPhone and ran the packaged acceptance
+matrix plus a mock-provider agent turn: **PASS=14 / FAIL=0** (2026-11-01). Raw
+evidence, including the full command log, E2E marker content and device identity,
+is in [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md); the condensed record is
+below.
 
 Device results are **user/owner-reported**, not CI-produced. CI reports
 (`port-verification`, `package-report.json`) stay runner-only evidence and must
-never be presented as device proof.
+never be presented as device proof — their `device_status` field stays
+`UNVERIFIED ON DEVICE` by design because hosted runners cannot execute iOS
+binaries.
 
 Target device identity (provided by the project maintainer; no credentials,
 account identifiers or keys are recorded anywhere in this repository):
@@ -218,12 +237,47 @@ account identifiers or keys are recorded anywhere in this repository):
 | `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`; the packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` |
 | Free space | 96 GiB |
 
-### Interim device evidence (preliminary, not package verification)
+### Completed device run — 2026-11-01 (UTC) — iPhone SE 2 / iOS 16.1.1 — opencode 2.2.5-1
+
+| Field | Value |
+| --- | --- |
+| Package file | `OpenCode-iOS-rootless.deb` |
+| Package SHA-256 | `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b` (52,968,920 bytes) |
+| Package variant / runtime | `node22` / v6 mprotect W^X; runtime node sha256 `cf707ebe…`; CLI `opencode.mjs` sha256 `2e916ffa…`; launcher sha256 `86f68f21…` with flags `--single-threaded --experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings --max-old-space-size=1536` |
+| Package / verification runs | package `41274221353`; verification `41274690207`, `41274713331` |
+| Operator | Project maintainer (credentials kept local, never shared) |
+| Device identity | iPhone SE 2 (iPhone12,8), iOS 16.1.1 (20B101), Dopamine rootless, user `mobile` |
+| Result | **FINAL_PACKAGED_ACCEPTANCE PASS=14 FAIL=0** (`/var/jb/usr/bin/opencode` via installed launcher) |
+
+| Test | Status | Evidence / output snippet |
+| --- | --- | --- |
+| device.install (dpkg) | PASS | `Status: install ok installed`, Version 2.2.5-1, Architecture iphoneos-arm64 |
+| device.identity | PASS | runtime node `cf707ebe…`, CLI `2e916ffa…`, launcher `86f68f21…` verified inside installed package |
+| device.version | PASS | `opencode --version` → `opencode2-node v2.2.5` |
+| device.help | PASS | full help; `Intl.Segmenter` works with full ICU |
+| device.paths | PASS | `debug paths` → `~/.config/opencode`, `~/.local/share/opencode`, … |
+| device.models | PASS | catalog + configured mock-provider models |
+| device.auth | PASS | `auth list` → “No authenticated integrations” |
+| device.session-list | PASS | `ses_… Untitled session 11/1/2026, 12:59:10 PM` (native `node:sqlite` with `-wal`/`-shm`) |
+| device.config | PASS | `debug config` → config document discovered |
+| device.agent-turn (mock provider) | PASS | `opencode run --standalone` rc=0, stdout `E2E_OK: shell tool executed on iPhone; file written…`; mock saw `GET /api/v1/models` + 3×`POST /chat/completions` (last `toolResult=true`) |
+| device.shell-tool marker | PASS | `/var/mobile/ocdev-e2e.txt`: `opencode-ios-e2e-ok` / `mobile` / `git version 2.39.1` / `/var/mobile/accept-work` |
+| device.remove | PASS | `dpkg remove` → runtime removed, user data kept |
+| device.reinstall | PASS | `dpkg reinstall` then `--version` OK |
+| device.launcher-flags | PASS | launcher contains `--single-threaded --experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings --max-old-space-size=1536` |
+| device.overall | PASS | `FINAL_PACKAGED_ACCEPTANCE_RESULT=PASS` |
+
+Observed device limitations are recorded in [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md)
+(single-threaded V8; local-mock transport flake ~1/3 first attempts; 2 GB memory
+pressure / stale `serve --service` child holding port 49374; PTY/TUI not fully
+validated; no real external AI provider exercised on-device).
+
+### Interim device evidence (preliminary, superseded by the packaged run)
 
 Recorded by the project maintainer on the target iPhone on 2026-10-31 while
 preparing the port. These probes used a locally re-signed runtime/bootstrapping
-commands, **not** the packaged `.deb`, so the status summary above stays
-`UNVERIFIED ON DEVICE` for the package.
+commands, **not** the packaged `.deb`; they are kept for the record and are
+superseded by the packaged acceptance above.
 
 | Probe | Result |
 | --- | --- |
@@ -260,7 +314,7 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | v4 runtime built (patch 0004 W^X, tentative 4-key JIT set) | CI-green (run `41207449703`): node sha256 `48eecd59…`, `source.patches` includes `0004-ios-jit-write-protect.patch`, manifest marks entitlements tentative / device-unverified; packaged as run `41218342323`. |
 | **v4 runtime on device** | **FAIL:** the package installs but the JIT runtime crashes while reserving V8 code range — `EXC_BREAKPOINT`/SIGTRAP → `FatalOOM` in `CodeRange::InitReservation` because iOS denies `mprotect` to RWX (MAP_JIT memory model). Resolution in progress: v5 runtime (plain-mprotect W^X, patch `0005-no-map-jit-on-ios.patch`, 2-key entitlements) and/or optional `libjitshim.dylib` interposer injected via `DYLD_INSERT_LIBRARIES`. |
 | iOS JIT memory-permission probe | Separate diagnostic workflow (`iOS JIT memory probe dylib`) builds `libjitprobe.dylib` (artifact `ios-jit-probe`, never shipped) to report which executable-memory primitives the jailbreak permits; used to choose the v5/shim approach. |
-| **v5 runtime / jit-shim candidate** | **PENDING** — v5 runtime run in progress; optional `ios-jit-shim` is consumed by packaging when published. Device PASS only after the maintainer's raw outputs. |
+| **v5 runtime / jit-shim candidate** | **Superseded by v6** — v5 plain-RWX mprotect trapped with SIGBUS (kernel drops execute); the mprotect RW⇄RX model of v6 is device-verified. Optional `ios-jit-shim` is consumed by packaging when published but was not needed for the released package. |
 | ICU-enabled iOS Node reference | the community reference Node 18.20.4 binary on the same iPhone reports `process.versions.icu = 74.2` and `typeof Intl === "object"`, confirming an ICU-enabled iOS Node build works on this exact device |
 | **Node 22 v6 runtime on device (mprotect W^X)** | **PASS with `--single-threaded`:** JIT loop rc=0, WebAssembly compile+instantiate, HTTPS fetch 200, ICU 75/`\p{L}`, `Intl.Segmenter`; node sha256 `cf707ebe…` (run `41265520491`). Without `--single-threaded`: SIGBUS (signal 10) on JIT-heavy code — V8 background threads race the process-wide mprotect toggle. |
 | **Node 22 v6 CLI on device** | **PASS (partial):** `--version`, `--help` (full ICU fixes `Intl.Segmenter`) and `debug paths` rc=0 with `--single-threaded`. Commands spawning a server child SIGBUS until CLI patch `0010` adds `--single-threaded` to the child-spawn whitelist. |
@@ -272,6 +326,9 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 
 ### Recording template (copy per device run)
+
+Use this template for future device runs (other devices/iOS versions or new
+artifacts). The completed run for the released artifact is recorded above.
 
 ```markdown
 ### Device run N — YYYY-MM-DD (UTC) — <device> — package <version>
@@ -375,22 +432,30 @@ dry-runs; CI never skips these.
 
 ## Honesty guarantees
 
-- Green CI ≠ device-verified. The report generator emits the literal strings
+- Green CI ≠ device-verified. The CI report generator emits the literal strings
   `UNVERIFIED ON DEVICE` and `DEVICE TESTS: NOT PERFORMED (requires real iPhone)`
-  in every report; there is no code path that marks a device test as passing.
+  in every CI report, because hosted runners cannot execute iOS binaries; there is
+  no code path that marks a CI run as a device test. Device verification exists
+  only in [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md), produced by the
+  maintainer on the target device for a specifically identified `.deb` SHA-256.
+- The released `.deb` `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
+  is device-verified (packaged acceptance PASS=14/FAIL=0, 2026-11-01). Later
+  documentation commits do **not** change that artifact's identity; re-running the
+  package workflow on a docs-only commit produces a different SHA-256 and is
+  pipeline evidence only, not the device-tested release artifact.
 - Preliminary device probes (entitlement pair, rootless shells, dpkg script
-  handling, runtime capability requirements) are recorded above as *Interim
-  device evidence*; they are explicitly **not** package verification and do not
-  change the status summary.
+  handling, runtime capability requirements, Node 18 community-runtime probes)
+  are recorded under *Interim device evidence* and are superseded by the packaged
+  acceptance run.
 - The first CI-green package run is explicitly labelled **INTERMEDIATE, DO NOT
   SHIP** above: it used a WebAssembly-disabled runtime and fails on device. Only
   a package whose `package-report.json` passes the variant-aware runtime gates
-  (full-ICU + WebAssembly + JIT enabled, 2-key entitlements, variant consistency)
-  is a shipping candidate.
-- Variant evidence is kept separate: Node 18 CLI device probes were performed with
-  a community Node 18 runtime and are labelled preliminary; the node22 runtime is
-  recorded as device-incompatible until a device-runnable Node 22 build exists.
-  Neither is presented as verification of the packaged CLI.
+  (full-ICU + WebAssembly + JIT enabled, 2-key entitlements, variant consistency,
+  launcher flags) is a shipping candidate.
+- Variant evidence is kept separate: the node22 v6 package is released and
+  device-verified; the Node 18 fallback's CLI ran on a community Node 18 runtime
+  and remains preliminary until its own runtime/package acceptance run is
+  recorded.
 - If an upstream artifact is missing, the packaging/validation workflows fail
   with an explicit message and never fabricate inputs.
 - Stock/non-iOS CLI artifacts (desktop Mach-O assets, Node-26-only smoke policy,
