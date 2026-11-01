@@ -92,7 +92,7 @@ of both (or explicit `runtime_run_id` / `opencode_run_id` inputs).
 
 ## Licence and attribution
 
-OpenCode is MIT-licensed and  its contributors. Node.js is MIT-licensed and  Node.js
+OpenCode is MIT-licensed and (c) its contributors. Node.js is MIT-licensed and (c) Node.js
 contributors; the nodejs-mobile patch set is MIT-licensed. See the `LICENSE` and NOTICE section of
 the package (`/var/jb/usr/share/doc/opencode/copyright`).
 ## Latest validated artifacts (GitHub Actions)
