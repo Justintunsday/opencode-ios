@@ -702,6 +702,8 @@ Conclusion: the runtime is device-functional; the launcher MUST pass
 `--single-threaded` (§6.5). No entitlement changes were required (2-key set
 accepted for JIT+wasm+fetch).
 
+| [41291057088](https://github.com/Justintunsday/opencode-ios/actions/runs/41291057088) | `1cb50e4` | **success (cold-record rerun)** | workflow_dispatch on main after the corrupt build cache was deleted: clean cold build (~115 min), all audits and signing passed, both artifacts (`ios-node-runtime`, `ios-ripgrep`) uploaded. Cold rebuild is not bit-reproducible: node **106,842,800 bytes sha256 `692ee8a991d723c81d3d48d39e950efd1f97487c21a838327f7ba5f4e854b408`** (differs from the device-verified `cf707ebe…`). The manifest correctly reports `device_status: UNVERIFIED ON DEVICE (binary differs from the device-verified build)` with `device_verification.verified=false`, so the device-verification claim is never applied to a different binary; launcher flags stay declared. For packaging, the pinned device-verified runtime remains **41273024931 / node `cf707ebe…`**. This run makes the latest build-runtime run on main green (the earlier red run 41285699804 was the corrupt-cache incident below). |
+
 ### Related fallback runtime: Node 18 (build-runtime-node18.yml)
 
 A separate `build-runtime-node18.yml` / `scripts/build-ios-runtime-node18.sh`
