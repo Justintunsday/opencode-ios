@@ -26,6 +26,16 @@ covers the OpenTUI Zig kernel/FFI bring-up.
 
 ## Patches (`patches/nodejs26/`)
 
+`0004-gyp-empty-ios-deployment-target.patch` — Node 26's `xcode_emulation.py`
+emitted `-miphoneos-version-min=` (empty value) whenever
+`IPHONEOS_DEPLOYMENT_TARGET` was present in the merged settings. The
+`_toolset=="host"` override intentionally sets it to `''` so ICU/node host tools
+build for macOS, which combined with our `-mmacosx-version-min=13.5` and made
+clang fail with `error: invalid argument '-mmacosx-version-min=13.5' not allowed
+with '-miphoneos-version-min='` (host abseil objects). The patch only emits the
+iPhoneOS flag when the deployment target value is non-empty (matching the
+truthiness check `xcode_emulation` already uses for `isIOS`).
+
 `0003-gyp-make-ios.patch` (provided by the Lead, verified against pristine
 v26.13.0) — Node 26 bundles a newer Chromium gyp whose **make generator** only
 recognizes the `mac` flavor (only the Xcode generator understands iOS, and
@@ -116,4 +126,8 @@ minimum: `node --version`, `node --jitless -e 'console.log(1+1)'`,
 
 | Run | Result |
 | --- | --- |
-| pending | first Phase A build after the initial patch series |
+| 41296656414 | failed at configure gate: config.gypi is JSON with a `#` comment header; validation greps fixed. |
+| 41297273225 | failed at configure gate: config.gypi comment-prefix handling fixed (JSON parse after stripping comment lines). |
+| 41297837897 | configure passed, make failed on the first real error class: bundled abseil/gtest compiled without `-std=gnu++20` because Node 26's gyp make generator had no iOS flavor handling → fixed by patch 0003 (Lead-provided). |
+| 41301667378 | make failed on the next class: host-toolset abseil objects got both `-mmacosx-version-min=13.5` and an empty `-miphoneos-version-min=` from `xcode_emulation.py` → fixed by patch 0004. |
+| 41303517433 | rebuild with patches 0001..0004 (clean rebuild forced on patch-series change); awaiting result. |
