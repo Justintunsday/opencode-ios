@@ -283,8 +283,10 @@ cmd_validate() {
 
   log "otool -L dependency audit"
   xcrun otool -L "$lib" | tee "$DIST/otool-L.txt"
-  local deps bad
-  deps="$(xcrun otool -L "$lib" | tail -n +2 | awk 'NF {print $1}')"
+  local deps bad own_id
+  # otool -L lists the library's own LC_ID_DYLIB install name first; it is not a dependency.
+  own_id="$(xcrun otool -D "$lib" | tail -n +2 | head -n 1 | tr -d '[:space:]')"
+  deps="$(xcrun otool -L "$lib" | tail -n +2 | awk 'NF {print $1}' | grep -vFx "${own_id:-__no_install_id__}" || true)"
   bad="$(printf '%s\n' "$deps" | grep -vE '^(/usr/lib/|/System/Library/Frameworks/)' || true)"
   [ -z "$bad" ] || die "non-iOS-system dylib dependency detected: $bad"
 
