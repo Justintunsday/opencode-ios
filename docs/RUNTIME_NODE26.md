@@ -26,6 +26,14 @@ covers the OpenTUI Zig kernel/FFI bring-up.
 
 ## Patches (`patches/nodejs26/`)
 
+`0005-cares-ios-no-sys-random.patch` — Node 26's c-ares ships one
+`config/darwin/ares_config.h` for macOS and iOS, and it defines
+`HAVE_SYS_RANDOM_H` (present in the macOS SDK but NOT in the iPhoneOS SDK). The
+iOS build failed with `../deps/cares/src/lib/util/ares_rand.c:37:12: fatal error:
+'sys/random.h' file not found`. iOS uses `arc4random_buf()` (already enabled via
+`HAVE_ARC4RANDOM_BUF` in that config), so the patch leaves
+`HAVE_SYS_RANDOM_H` undefined (matching Node 22's c-ares darwin config).
+
 `0004-gyp-empty-ios-deployment-target.patch` — Node 26's `xcode_emulation.py`
 emitted `-miphoneos-version-min=` (empty value) whenever
 `IPHONEOS_DEPLOYMENT_TARGET` was present in the merged settings. The
@@ -130,4 +138,5 @@ minimum: `node --version`, `node --jitless -e 'console.log(1+1)'`,
 | 41297273225 | failed at configure gate: config.gypi comment-prefix handling fixed (JSON parse after stripping comment lines). |
 | 41297837897 | configure passed, make failed on the first real error class: bundled abseil/gtest compiled without `-std=gnu++20` because Node 26's gyp make generator had no iOS flavor handling → fixed by patch 0003 (Lead-provided). |
 | 41301667378 | make failed on the next class: host-toolset abseil objects got both `-mmacosx-version-min=13.5` and an empty `-miphoneos-version-min=` from `xcode_emulation.py` → fixed by patch 0004. |
-| 41302321280 | rebuild with patches 0001..0004 (clean rebuild forced on patch-series change); awaiting result. |
+| 41302321280 | make failed on `deps/cares`: `'sys/random.h' file not found` (darwin config defines HAVE_SYS_RANDOM_H, absent on iOS) → fixed by patch 0005. |
+| 41304176095 | rebuild with patches 0001..0005 (clean rebuild forced on patch-series change); awaiting result. |
