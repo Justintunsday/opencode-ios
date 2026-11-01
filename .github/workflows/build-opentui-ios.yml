@@ -1,0 +1,87 @@
+name: Build OpenTUI iOS native renderer (Phase C prep)
+
+# Cross-compiles OpenTUI v0.8.0's native Zig core (`libopentui.dylib`) for iPhoneOS arm64.
+# This is preparation for the real TUI: OpenTUI 0.8.0's Node binding needs Node >= 26.4 with
+# node:ffi, and the iPhoneOS Node 26 runtime is being built in parallel (build-runtime-node26.yml).
+# CI can only validate the library statically; actual loading via node:ffi, shipping it as a CLI
+# asset and the device run belong to Phase D (see docs/OPENTUI_IOS.md).
+#
+# Artifact contract: `opentui-ios-renderer` = libopentui.dylib, opentui-ios-manifest.txt,
+# entitlements-signed.xml, file.txt, otool-L.txt, vtool.txt, SHA256SUMS.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/build-opentui-ios.sh'
+      - 'patches/opentui-ios/**'
+      - '.github/workflows/build-opentui-ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-opentui-ios-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-renderer:
+    name: OpenTUI libopentui.dylib (iPhoneOS arm64; NOT device-verified)
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      OPENTUI_BUILD_DIR: dist/opentui-build
+      OPENTUI_DIST: dist/opentui-ios-renderer
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+
+      - name: Show toolchain versions
+        run: |
+          set -euo pipefail
+          uname -a
+          xcodebuild -version || true
+          echo "iPhoneOS SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "iPhoneOS SDK version: $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "ldid: $(ldid --version 2>&1 || echo 'not installed (script installs it)')"
+
+      - name: Cache Zig toolchain, OpenTUI checkout and Zig caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            dist/opentui-build/zig
+            dist/opentui-build/opentui
+            dist/opentui-build/zig-cache
+          key: opentui-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('patches/opentui-ios/**', 'scripts/build-opentui-ios.sh', '.github/workflows/build-opentui-ios.yml') }}
+
+      - name: Build, sign and statically validate iPhoneOS renderer
+        run: bash scripts/build-opentui-ios.sh all
+
+      - name: Show artifact summary
+        run: |
+          set -euo pipefail
+          ls -la dist/opentui-ios-renderer
+          echo '--- manifest ---'
+          cat dist/opentui-ios-renderer/opentui-ios-manifest.txt
+          echo '--- SHA256SUMS ---'
+          cat dist/opentui-ios-renderer/SHA256SUMS
+          echo '--- file ---'
+          file dist/opentui-ios-renderer/libopentui.dylib
+
+      - name: Upload opentui-ios-renderer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentui-ios-renderer
+          path: dist/opentui-ios-renderer/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs (not part of the artifact contract)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentui-ios-build-logs
+          path: |
+            dist/opentui-build/zig-build.log
+          if-no-files-found: warn
+          retention-days: 14

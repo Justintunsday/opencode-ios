@@ -1,0 +1,381 @@
+# OpenTUI iOS port patch -- 0001
+# Title: add aarch64-ios (iPhoneOS) library target + iPhoneOS SDK framework wiring
+# Upstream: anomalyco/opentui @ v0.8.0 (commit 738067f47e940dcec3f5aab74868908574335c6c)
+# Files: packages/native/build.zig, packages/native/src/clipboard/host.zig
+# Why: OpenTUI v0.8.0 ships native libraries for linux/macos/windows only. The port needs an
+#      iPhoneOS arm64 libopentui.dylib that the Node 26 iOS runtime can load via node:ffi
+#      (Phase C/D). This patch adds the target and the Apple-SDK plumbing:
+#      - SUPPORTED_TARGETS gains aarch64-ios.15.0 (output_name aarch64-ios); the custom-target
+#        fallback already accepted arbitrary Zig target strings.
+#      - new -Dios-sdk=... / IOS_SDK_PATH resolution (iPhoneOS*.sdk with CoreFoundation/ImageIO/
+#        CoreAudio/AudioToolbox), mirroring the existing macOS SDK handling; buildTarget refuses
+#        iOS targets without it with a clear message.
+#      - .ios arms for the miniaudio/image/libwebp C flags (-isysroot <iPhoneOS.sdk>), iPhoneOS
+#        framework linking (CoreFoundation, CoreAudio, AudioToolbox, AudioUnit + pthread; NO
+#        AppKit/UIKit) and SDK include/framework/lib search paths.
+#      - clipboard: iPhoneOS keeps the "unsupported" clipboard path (the macOS implementation is
+#        the AppKit NSPasteboard shim, which does not exist on iOS); the worker-thread compile
+#        switch gains an .ios arm.
+#      - ghostty VT stays disabled for iOS (existing availability check: non-linux/macos/windows).
+# Test: zig build -Dlibrary-target=aarch64-ios.15.0 -Doptimize=ReleaseFast -Dios-sdk=$IOS_SDK from
+#       packages/native on macos-15 with Zig 0.16.0; static validation in scripts/build-opentui-ios.sh.
+# Status: build feasibility only -- NOT device-verified; loading via node:ffi is Phase D.
+
+diff --git a/packages/native/build.zig b/packages/native/build.zig
+index c2d5b1e..d0c8060 100644
+--- a/packages/native/build.zig
++++ b/packages/native/build.zig
+@@ -27,6 +27,7 @@ const SUPPORTED_TARGETS = [_]SupportedTarget{
+     .{ .zig_target = "aarch64-macos.13.0", .output_name = "aarch64-macos", .description = "macOS aarch64 (Apple Silicon)" },
+     .{ .zig_target = "x86_64-windows-gnu", .output_name = "x86_64-windows", .description = "Windows x86_64" },
+     .{ .zig_target = "aarch64-windows-gnu", .output_name = "aarch64-windows", .description = "Windows aarch64" },
++    .{ .zig_target = "aarch64-ios.15.0", .output_name = "aarch64-ios", .description = "iPhoneOS arm64" },
+ };
+ 
+ const DEFAULT_MACOS_SDK_PATH = "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk";
+@@ -167,11 +168,55 @@ fn printMissingMacOSSDK(target_description: []const u8) void {
+     );
+ }
+ 
++// iPhoneOS cross builds need the iPhoneOS SDK (headers for AudioToolbox/CoreAudio and framework
++// linking). The iOS port passes it explicitly: -Dios-sdk=/path/to/iPhoneOS.sdk or IOS_SDK_PATH.
++fn isIOSSDKPath(path: []const u8) bool {
++    const trimmed_path = std.mem.trimEnd(u8, path, "/");
++    if (trimmed_path.len == 0) return false;
++
++    const base_name = std.fs.path.basename(trimmed_path);
++    return std.mem.startsWith(u8, base_name, "iPhoneOS") and std.mem.endsWith(u8, base_name, ".sdk");
++}
++
++fn isIOSSDKAvailable(b: *std.Build, sdk_path: []const u8) bool {
++    return isIOSSDKPath(sdk_path) and
++        pathExists(b, b.pathJoin(&.{ sdk_path, "usr", "lib" })) and
++        macOSSDKHasFramework(b, sdk_path, "CoreFoundation") and
++        macOSSDKHasFramework(b, sdk_path, "ImageIO") and
++        macOSSDKHasFramework(b, sdk_path, "CoreAudio") and
++        macOSSDKHasFramework(b, sdk_path, "AudioToolbox");
++}
++
++fn resolveIOSSDKPath(b: *std.Build) ?[]const u8 {
++    if (b.option([]const u8, "ios-sdk", "Path to an iPhoneOS SDK for iOS cross builds (CoreAudio/AudioToolbox headers and framework linking)")) |sdk_path| {
++        if (isIOSSDKAvailable(b, sdk_path)) return sdk_path;
++        std.debug.print("iOS SDK path '{s}' must be an iPhoneOS*.sdk with the required frameworks\n", .{sdk_path});
++        return null;
++    }
++
++    const env_vars = [_][]const u8{ "IOS_SDK_PATH", "IPHONEOS_SDK_PATH" };
++    for (env_vars) |env_var| {
++        if (b.graph.environ_map.get(env_var)) |sdk_path| {
++            if (isIOSSDKAvailable(b, sdk_path)) return sdk_path;
++        }
++    }
++
++    return null;
++}
++
++fn printMissingIOSSDK(target_description: []const u8) void {
++    std.debug.print(
++        "iPhoneOS SDK not found for {s}. Set IOS_SDK_PATH or -Dios-sdk=/path/to/iPhoneOS.sdk (xcrun --sdk iphoneos --show-sdk-path).\n",
++        .{target_description},
++    );
++}
++
+ fn addMiniaudioShim(
+     b: *std.Build,
+     module: *std.Build.Module,
+     target: std.Build.ResolvedTarget,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) void {
+     const c_flags: []const []const u8 = switch (target.result.os.tag) {
+         .macos => blk: {
+@@ -182,6 +227,14 @@ fn addMiniaudioShim(
+             flags[3] = macos_sdk_path.?;
+             break :blk flags;
+         },
++        .ios => blk: {
++            const flags = b.allocator.alloc([]const u8, 4) catch @panic("OOM");
++            flags[0] = "-std=c99";
++            flags[1] = "-DMA_NO_RUNTIME_LINKING";
++            flags[2] = "-isysroot";
++            flags[3] = ios_sdk_path.?;
++            break :blk flags;
++        },
+         else => &.{"-std=c99"},
+     };
+ 
+@@ -200,9 +253,16 @@ fn appendCFlags(b: *std.Build, base: []const []const u8, extra: []const []const
+     return flags;
+ }
+ 
+-fn addImageShim(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, macos_sdk_path: ?[]const u8) void {
++fn addImageShim(
++    b: *std.Build,
++    module: *std.Build.Module,
++    target: std.Build.ResolvedTarget,
++    macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
++) void {
+     const flags: []const []const u8 = switch (target.result.os.tag) {
+         .macos => &.{ "-std=c99", "-ffp-contract=off", "-fvisibility=hidden", "-isysroot", macos_sdk_path.? },
++        .ios => &.{ "-std=c99", "-ffp-contract=off", "-fvisibility=hidden", "-isysroot", ios_sdk_path.? },
+         else => &.{ "-std=c99", "-ffp-contract=off", "-fvisibility=hidden" },
+     };
+ 
+@@ -227,6 +287,7 @@ fn addImageShim(b: *std.Build, module: *std.Build.Module, target: std.Build.Reso
+     // is separate from our coefficient-copy alignment patch. See vendor/stb/README.md.
+     const resize_flags: []const []const u8 = switch (target.result.os.tag) {
+         .macos => &.{ "-std=c99", "-ffp-contract=off", "-fvisibility=hidden", "-fno-sanitize=bounds", "-isysroot", macos_sdk_path.? },
++        .ios => &.{ "-std=c99", "-ffp-contract=off", "-fvisibility=hidden", "-fno-sanitize=bounds", "-isysroot", ios_sdk_path.? },
+         else => &.{ "-std=c99", "-ffp-contract=off", "-fvisibility=hidden", "-fno-sanitize=bounds" },
+     };
+     module.addCSourceFile(.{
+@@ -236,6 +297,7 @@ fn addImageShim(b: *std.Build, module: *std.Build.Module, target: std.Build.Reso
+ 
+     const webp_flags: []const []const u8 = switch (target.result.os.tag) {
+         .macos => &.{ "-std=c99", "-fvisibility=hidden", "-DWEBP_EXTERN=extern", "-isysroot", macos_sdk_path.? },
++        .ios => &.{ "-std=c99", "-fvisibility=hidden", "-DWEBP_EXTERN=extern", "-isysroot", ios_sdk_path.? },
+         else => &.{ "-std=c99", "-fvisibility=hidden", "-DWEBP_EXTERN=extern" },
+     };
+     const webp_dispatch_flags = if (target.result.cpu.arch == .x86_64)
+@@ -325,6 +387,10 @@ fn addImageShim(b: *std.Build, module: *std.Build.Module, target: std.Build.Reso
+ }
+ 
+ fn addMacOSSDKSearchPaths(b: *std.Build, module: *std.Build.Module, sdk_path: []const u8) void {
++    addAppleSDKSearchPaths(b, module, sdk_path);
++}
++
++fn addAppleSDKSearchPaths(b: *std.Build, module: *std.Build.Module, sdk_path: []const u8) void {
+     const include_path = b.pathJoin(&.{ sdk_path, "usr", "include" });
+     const framework_path = b.pathJoin(&.{ sdk_path, "System", "Library", "Frameworks" });
+     const lib_path = b.pathJoin(&.{ sdk_path, "usr", "lib" });
+@@ -354,17 +420,31 @@ fn addMacOSSystemLibraries(b: *std.Build, module: *std.Build.Module, sdk_path: [
+     module.linkFramework("AudioToolbox", .{});
+ }
+ 
++// iPhoneOS: CoreAudio/AudioToolbox/AudioUnit cover the miniaudio backend; the macOS NSPasteboard
++// clipboard shim is AppKit-only, so clipboard operations report "unsupported" on iOS (see
++// src/clipboard/host.zig). No AppKit/UIKit dependency is introduced.
++fn addIOSSystemLibraries(b: *std.Build, module: *std.Build.Module, sdk_path: []const u8) void {
++    module.linkFramework("CoreFoundation", .{});
++    module.linkFramework("CoreAudio", .{});
++    module.linkFramework("AudioToolbox", .{});
++    module.linkFramework("AudioUnit", .{});
++    module.linkSystemLibrary("pthread", .{});
++    addAppleSDKSearchPaths(b, module, sdk_path);
++}
++
+ fn addNativeAudioDependencies(
+     b: *std.Build,
+     module: *std.Build.Module,
+     target: std.Build.ResolvedTarget,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) void {
+-    addMiniaudioShim(b, module, target, macos_sdk_path);
+-    addImageShim(b, module, target, macos_sdk_path);
++    addMiniaudioShim(b, module, target, macos_sdk_path, ios_sdk_path);
++    addImageShim(b, module, target, macos_sdk_path, ios_sdk_path);
+ 
+     switch (target.result.os.tag) {
+         .macos => addMacOSSystemLibraries(b, module, macos_sdk_path.?),
++        .ios => addIOSSystemLibraries(b, module, ios_sdk_path.?),
+         .linux => {
+             module.linkSystemLibrary("dl", .{});
+             module.linkSystemLibrary("pthread", .{});
+@@ -555,24 +635,24 @@ pub fn build(b: *std.Build) void {
+         .optimize = optimize,
+     });
+     applyDependencies(b, opentui_module, optimize, module_target, build_options);
+-    addNativeAudioDependencies(b, opentui_module, module_target, macos_sdk_path);
++    addNativeAudioDependencies(b, opentui_module, module_target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, opentui_module, false);
+ 
+     if (target_option) |target_str| {
+         // Build single target
+-        buildSingleTarget(b, target_str, optimize, build_options, macos_sdk_path) catch |err| {
++        buildSingleTarget(b, target_str, optimize, build_options, macos_sdk_path, ios_sdk_path) catch |err| {
+             std.debug.print("Error building target '{s}': {}\n", .{ target_str, err });
+             std.process.exit(1);
+         };
+     } else if (build_all) {
+         // Build all supported targets
+-        buildAllTargets(b, optimize, build_options, macos_sdk_path) catch |err| {
++        buildAllTargets(b, optimize, build_options, macos_sdk_path, ios_sdk_path) catch |err| {
+             std.debug.print("Error building all targets: {}\n", .{err});
+             std.process.exit(1);
+         };
+     } else {
+         // Build for native target only (default)
+-        buildNativeTarget(b, optimize, build_options, macos_sdk_path) catch |err| {
++        buildNativeTarget(b, optimize, build_options, macos_sdk_path, ios_sdk_path) catch |err| {
+             std.debug.print("Error building native target: {}\n", .{err});
+             std.process.exit(1);
+         };
+@@ -598,7 +678,7 @@ pub fn build(b: *std.Build) void {
+         printMissingMacOSSDK("native macOS tests");
+         std.process.exit(1);
+     }
+-    addNativeAudioDependencies(b, test_mod, native_target, macos_sdk_path);
++    addNativeAudioDependencies(b, test_mod, native_target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, test_mod, true);
+ 
+     const run_test = b.addRunArtifact(test_artifact);
+@@ -623,7 +703,7 @@ pub fn build(b: *std.Build) void {
+         .test_runner = .{ .path = b.path("src/cov_runner.zig"), .mode = .simple },
+         .use_llvm = true,
+     });
+-    addNativeAudioDependencies(b, cov_mod, native_target, macos_sdk_path);
++    addNativeAudioDependencies(b, cov_mod, native_target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, cov_mod, true);
+     const install_cov = b.addInstallArtifact(cov_artifact, .{});
+     cov_step.dependOn(&install_cov.step);
+@@ -641,7 +721,7 @@ pub fn build(b: *std.Build) void {
+         })
+     else
+         native_target;
+-    for (createLibraries(b, abi_target, .Debug, build_options, macos_sdk_path)) |lib| {
++    for (createLibraries(b, abi_target, .Debug, build_options, macos_sdk_path, ios_sdk_path)) |lib| {
+         const fixture_module = b.createModule(.{
+             .target = abi_target,
+             .optimize = .Debug,
+@@ -675,7 +755,7 @@ pub fn build(b: *std.Build) void {
+         .filters = &.{ "measure", "NativeRenderable", "Context Yoga target" },
+         .use_llvm = debug_use_llvm,
+     });
+-    addNativeAudioDependencies(b, lifetime_mod, native_target, macos_sdk_path);
++    addNativeAudioDependencies(b, lifetime_mod, native_target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, lifetime_mod, true);
+     const run_lifetime = b.addRunArtifact(lifetime_artifact);
+     lifetime_step.dependOn(&run_lifetime.step);
+@@ -694,7 +774,7 @@ pub fn build(b: *std.Build) void {
+     });
+     bench_mod.link_libc = true;
+     // The scene bench drives a whole Context, which owns audio resources; this adds the image shim too.
+-    addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path);
++    addNativeAudioDependencies(b, bench_mod, native_target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, bench_mod, false);
+     if (native_target.result.os.tag == .macos) addMacOSSDKSearchPaths(b, bench_mod, macos_sdk_path.?);
+     // The benches in bench-isolated.zig compile as their own unit, so other benches cannot change their code.
+@@ -729,7 +809,7 @@ pub fn build(b: *std.Build) void {
+         printMissingMacOSSDK("native macOS benchmark FFI library");
+         std.process.exit(1);
+     }
+-    addNativeAudioDependencies(b, bench_ffi_mod, bench_ffi_target, macos_sdk_path);
++    addNativeAudioDependencies(b, bench_ffi_mod, bench_ffi_target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, bench_ffi_mod, false);
+     const install_bench_ffi = b.addInstallArtifact(bench_ffi_lib, .{});
+     bench_ffi_step.dependOn(&install_bench_ffi.step);
+@@ -757,6 +837,7 @@ fn buildAllTargets(
+     optimize: std.builtin.OptimizeMode,
+     build_options: *std.Build.Step.Options,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) !void {
+     for (SUPPORTED_TARGETS) |supported_target| {
+         try buildTarget(
+@@ -767,6 +848,7 @@ fn buildAllTargets(
+             optimize,
+             build_options,
+             macos_sdk_path,
++            ios_sdk_path,
+         );
+     }
+ }
+@@ -776,6 +858,7 @@ fn buildNativeTarget(
+     optimize: std.builtin.OptimizeMode,
+     build_options: *std.Build.Step.Options,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) !void {
+     // Find the matching supported target for the native platform
+     const native_arch = @tagName(builtin.cpu.arch);
+@@ -794,6 +877,7 @@ fn buildNativeTarget(
+                 optimize,
+                 build_options,
+                 macos_sdk_path,
++                ios_sdk_path,
+             );
+             return;
+         }
+@@ -809,6 +893,7 @@ fn buildSingleTarget(
+     optimize: std.builtin.OptimizeMode,
+     build_options: *std.Build.Step.Options,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) !void {
+     // Check if it matches a known target, use its output_name
+     for (SUPPORTED_TARGETS) |supported_target| {
+@@ -821,13 +906,14 @@ fn buildSingleTarget(
+                 optimize,
+                 build_options,
+                 macos_sdk_path,
++                ios_sdk_path,
+             );
+             return;
+         }
+     }
+     // Custom target - use target string as output name
+     const description = try std.fmt.allocPrint(b.allocator, "Custom target: {s}", .{target_str});
+-    try buildTarget(b, target_str, target_str, description, optimize, build_options, macos_sdk_path);
++    try buildTarget(b, target_str, target_str, description, optimize, build_options, macos_sdk_path, ios_sdk_path);
+ }
+ 
+ fn buildTarget(
+@@ -838,6 +924,7 @@ fn buildTarget(
+     optimize: std.builtin.OptimizeMode,
+     build_options: *std.Build.Step.Options,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) !void {
+     const target_query = try std.Target.Query.parse(.{ .arch_os_abi = zig_target });
+     const target = b.resolveTargetQuery(target_query);
+@@ -846,11 +933,15 @@ fn buildTarget(
+         printMissingMacOSSDK(description);
+         return error.MissingMacOSSDK;
+     }
++    if (target.result.os.tag == .ios and ios_sdk_path == null) {
++        printMissingIOSSDK(description);
++        return error.MissingIOSSDK;
++    }
+ 
+     const install_path = try std.fmt.allocPrint(b.allocator, "../lib/{s}", .{output_name});
+     const build_step_name = try std.fmt.allocPrint(b.allocator, "build-{s}", .{output_name});
+     const build_step = b.step(build_step_name, try std.fmt.allocPrint(b.allocator, "Build for {s}", .{description}));
+-    for (createLibraries(b, target, optimize, build_options, macos_sdk_path)) |lib| {
++    for (createLibraries(b, target, optimize, build_options, macos_sdk_path, ios_sdk_path)) |lib| {
+         const install_dir = b.addInstallArtifact(lib, .{
+             .dest_dir = .{ .override = .{ .custom = install_path } },
+             .h_dir = .{ .override = .{ .custom = install_path } },
+@@ -874,6 +965,7 @@ fn createLibraries(
+     optimize: std.builtin.OptimizeMode,
+     build_options: *std.Build.Step.Options,
+     macos_sdk_path: ?[]const u8,
++    ios_sdk_path: ?[]const u8,
+ ) [2]*std.Build.Step.Compile {
+     const module = b.createModule(.{
+         .root_source_file = b.path(ROOT_SOURCE_FILE),
+@@ -885,7 +977,7 @@ fn createLibraries(
+         .pic = true,
+     });
+     applyDependencies(b, module, optimize, target, build_options);
+-    addNativeAudioDependencies(b, module, target, macos_sdk_path);
++    addNativeAudioDependencies(b, module, target, macos_sdk_path, ios_sdk_path);
+     addYogaDependencies(b, module, false);
+     const shared = b.addLibrary(.{
+         .name = LIB_NAME,
+diff --git a/packages/native/src/clipboard/host.zig b/packages/native/src/clipboard/host.zig
+index f3a4e0e..f882089 100644
+--- a/packages/native/src/clipboard/host.zig
++++ b/packages/native/src/clipboard/host.zig
+@@ -136,6 +136,10 @@ fn tryJoinThread(thread: std.Thread) bool {
+             thread.join();
+             break :blk true;
+         },
++        // iPhoneOS has no clipboard worker thread: the platform backend is the macOS
++        // NSPasteboard shim (AppKit), which does not exist on iOS. Clipboard operations report
++        // "unsupported" on iOS (see Service.startOperation), so this is never reached.
++        .ios => false,
+         else => @compileError("Unsupported clipboard worker target"),
+     };
+ }
