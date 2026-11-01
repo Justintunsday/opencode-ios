@@ -145,8 +145,9 @@ if os.path.isfile(otool):
     for line in open(otool, encoding="utf-8", errors="replace"):
         line = line.strip()
         # otool -L prints the binary path as the first line, then "	<dylib> (compat ...)".
-        # Only real dependencies are absolute system paths; skip the header line.
-        if line.startswith("/") and "Mach-O" not in line:
+        # Only real dependencies are absolute system paths; skip the header line
+        # (the first otool -L line is the binary path itself and ends with ":").
+        if line.startswith("/") and not line.endswith(":"):
             dylibs.append(line.split(" (")[0])
 
 # Derive the deployment target from vtool instead of hardcoding it: the packager
