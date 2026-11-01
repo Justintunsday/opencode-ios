@@ -1,12 +1,10 @@
 name: iOS JIT memory probe
 
-# Builds two diagnostic arm64-apple-ios artifacts that report which
-# executable-memory primitives are permitted on the jailbroken target device:
-#   - `libjitprobe.dylib` (DYLD_INSERT_LIBRARIES experiment)
-#   - `jitprobe` executable (runs directly, signed with the shipped 2-key
-#     entitlement set) -- the reliable path on iOS where DYLD injection is
-#     ignored for platform binaries.
-# Diagnostic artifacts only; never shipped in the .deb.
+# Diagnostic arm64-apple-ios executable reporting which executable-memory
+# strategies work on the jailbroken target device, under two signatures:
+#   jitprobe-2key    : platform-application + no-sandbox (currently shipped set)
+#   jitprobe-jitkeys : + dynamic-codesigning + allow-unsigned-executable-memory
+# Diagnostic only; never shipped in the .deb.
 
 on:
   workflow_dispatch:
@@ -20,40 +18,56 @@ permissions:
 
 jobs:
   build:
-    name: Build iOS JIT probe (diagnostic only)
+    name: Build iOS JIT probe executable (diagnostic only)
     runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Build dylib and executable for arm64-apple-ios
+      - name: Build probe executable for arm64-apple-ios
         run: |
           set -euo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           mkdir -p dist
           xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
-            -O2 -Wall -Wextra -dynamiclib -o dist/libjitprobe.dylib scripts/jit-probe/probe.c
-          xcrun --sdk iphoneos clang -arch arm64 -target arm64-apple-ios15.0 -isysroot "$SDK" \
-            -O2 -Wall -Wextra scripts/jit-probe/main.c -o dist/jitprobe
-          file dist/libjitprobe.dylib dist/jitprobe
-          xcrun otool -L dist/jitprobe
-      - name: Sign with ldid and validate
+            -O2 -Wall -Wextra scripts/jit-probe/main.c -o dist/jitprobe-2key
+          cp dist/jitprobe-2key dist/jitprobe-jitkeys
+          file dist/jitprobe-2key
+      - name: Sign both variants
         run: |
           set -euo pipefail
           brew install ldid >/dev/null 2>&1 || true
-          ldid -S dist/libjitprobe.dylib
-          cp scripts/ios-runtime/entitlements.plist dist/entitlements.plist
-          ldid -Sdist/entitlements.plist dist/jitprobe
-          ldid -e dist/jitprobe > dist/entitlements-signed.xml
-          python3 scripts/check_macho.py dist/jitprobe --max-minos 16.1.1
-          shasum -a 256 dist/libjitprobe.dylib dist/jitprobe | tee dist/SHA256SUMS
+          cat > dist/entitlements-2key.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>platform-application</key><true/>
+            <key>com.apple.private.security.no-sandbox</key><true/>
+          </dict></plist>
+          PLIST
+          cat > dist/entitlements-jitkeys.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>platform-application</key><true/>
+            <key>com.apple.private.security.no-sandbox</key><true/>
+            <key>dynamic-codesigning</key><true/>
+            <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+          </dict></plist>
+          PLIST
+          ldid -Sdist/entitlements-2key.plist dist/jitprobe-2key
+          ldid -Sdist/entitlements-jitkeys.plist dist/jitprobe-jitkeys
+          ldid -e dist/jitprobe-2key > dist/entitlements-2key-signed.xml
+          ldid -e dist/jitprobe-jitkeys > dist/entitlements-jitkeys-signed.xml
+          python3 scripts/check_macho.py dist/jitprobe-2key --max-minos 16.1.1
+          shasum -a 256 dist/jitprobe-2key dist/jitprobe-jitkeys | tee dist/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: ios-jit-probe
           path: |
-            dist/libjitprobe.dylib
-            dist/jitprobe
-            dist/entitlements.plist
-            dist/entitlements-signed.xml
+            dist/jitprobe-2key
+            dist/jitprobe-jitkeys
+            dist/entitlements-*.plist
+            dist/entitlements-*-signed.xml
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
