@@ -126,6 +126,7 @@ change surface — upstream itself is never modified.
 | 0007 | `node18-ios-compat` | `packages/cli/vite.node.config.ts`, `packages/cli/script/node-assets.ts`, `packages/core/src/provider.ts`, `packages/util/src/runtime/import.node.ts`, `packages/codemode/src/interpreter/objects.ts` | **Conditional Node 18 fallback variant** (`OPENCODE_IOS_NODE18=1`, separate artifact, §13). Node 18 prelude (`__filename`/`__dirname` from `import.meta.url`, global `crypto`, built-in polyfills for `toSorted`/`groupBy`/`withResolvers`/…, no `--experimental-sqlite`/`--disable-warning` flags, Vite target `node18`); maps `node:sqlite` to the sql.js-backed shim; `vm.constants` fallback for plugin imports; iterator-helper-free `mergeRecord`/codemode iterators (Node 18 predates `Iterator.prototype.map`). |
 | 0008 | `node18-inspector-optional` | `packages/cli/vite.node.config.ts` | **Node 18 fallback only.** Inspector-less Node 18.20.4 iOS builds make the static `node:inspector` import in `cli/src/cpu-profile.ts` throw `ERR_INSPECTOR_NOT_AVAILABLE` at bundle link time (device-reported). Maps `node:inspector` to a build-time stub so startup succeeds and `SIGPROF` CPU profiling fails cleanly (handler logs and continues). Node 22 bundle untouched. |
 | 0009 | `ios-standalone-direct-spawn` | `packages/cli/src/services/standalone.ts` | **iOS path.** On the device, `opencode run --standalone` never saw the child's readiness line through the Effect `ChildProcessSpawner`/`Stream` path (`Standalone server exited before reporting readiness`) although `serve --stdio --port 0` works when spawned with plain `node:child_process` (device-reported). When `process.platform === "ios"` or `OPENCODE_IOS=1`, spawn the server directly (stdin pipe kept open as lease, stdout pipe drained, stderr inherit when `OPENCODE_PRINT_LOGS=1`), resolve on the first JSON `{url}` stdout line, keep the child referenced, and enforce a 20s readiness timeout that kills the child and throws a clear error. Non-iOS behavior unchanged. |
+| 0010 | `ios-child-node-flags` | `packages/cli/src/util/process.ts` | **iOS path (device-verified).** The v6 Node 22.9 iPhoneOS runtime only executes JIT/WebAssembly safely single-threaded (process-wide mprotect W^X toggle races background V8 threads → SIGBUS 138). The launcher passes `--single-threaded`, but `nodeFlags()` dropped it when building `selfCommand()`, so spawned `serve --service`/`serve --stdio` children crashed. Forwards `--single-threaded` and `--max-old-space-size=...` to children when present in the parent's `execArgv`; nothing is added unconditionally, so desktop behavior is unchanged (device proof: full CLI matrix + mock-provider agent turn pass; without the forwarding the children SIGBUS). |
 
 Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
@@ -250,17 +251,30 @@ bundle as:
 
 ```sh
 exec /var/jb/usr/lib/opencode/runtime/node \
+  --single-threaded \
   --experimental-sqlite \
+  --disable-warning=ExperimentalWarning \
+  --no-warnings \
+  --max-old-space-size=1536 \
   /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
 ```
 
 - `--experimental-sqlite` is **required**: on Node 22.9 `node:sqlite` (used for
   `DatabaseSync`, session storage) is flag-gated. Do **not** pass `--experimental-ffi` or
   `--use-system-ca`; neither exists on Node 22.9.0.
+- `--single-threaded` is **required on the v6 iPhoneOS Node 22.9 runtime** (device-verified):
+  V8's JIT/WebAssembly code-memory W^X toggle is process-wide (mprotect RW<->RX) and
+  background V8 threads race it, so a multithreaded process dies with SIGBUS (138) on the
+  first optimized loop or `fetch`. `--no-concurrent-recompilation` is an accepted alternative.
+  The CLI forwards `--single-threaded` and `--max-old-space-size=` to every spawned server
+  child (patch 0010), so passing them once on the launcher is sufficient — device proof:
+  without forwarding the child `serve --service` died with SIGBUS and `models`/`debug config`
+  failed; with it the full matrix and the mock-provider agent turn pass.
 - For the **Node 18 fallback variant** (§13) the launcher must instead pass `--no-warnings`
   and must not pass `--experimental-sqlite`/`--disable-warning` (Node 18 rejects them and has
   no `node:sqlite`; the bundle ships a sql.js shim). The variant's exact argv is recorded in
-  its `bundle-manifest.json.env_contract`.
+  its `bundle-manifest.json.env_contract`; `--single-threaded` is forwarded if supplied but is
+  not required by that runtime.
 - The runtime **must be built with ICU** (`--with-intl=full-icu`, used by `build-runtime.yml`;
   `small-icu` would also work). A runtime built `--with-intl=none` cannot run the bundle at
   all: V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
@@ -427,39 +441,60 @@ No device success is claimed in this section; it records a device-reported failu
 contingency analysis. The device verification matrix in §9 will be filled from the
 rebuilt-runtime run.
 
-## 12. Device verification status (device-reported, no CLI claims yet)
+## 12. Device verification status (device-reported)
 
-Target device: iPhone SE (2nd gen), iOS 16.1.1, Dopamine rootless. The `.deb` produced from
-a green CLI artifact is installable on the device and the native iPhoneOS Node.js runtime
-starts (`node --version` works, `process.platform === "ios"`, fs/spawn/TLS/sqlite work on
-device — reported by the device test). The **OpenCode CLI bundle has not yet passed a device
-matrix**. Two runtime issues were found and addressed in the runtime build during device
-testing:
+Target device: iPhone SE (2nd gen), iOS 16.1.1, Dopamine rootless. **The Node 22 default
+artifact is device-verified** with the v6 iPhoneOS Node 22.9 runtime (runtime sha256
+`cf707ebe…`, 106,842,800 bytes, 2-key signed, device accepts it) and launcher flags:
 
-1. **ICU** — the first iPhoneOS Node 22.9 runtime was built `--with-intl=none`; V8 then
-   rejects the bundle's `\p{...}` regexes at parse time and `Intl` is missing. Fixed by
-   rebuilding with `--with-intl=full-icu` (§11).
-2. **JIT / WebAssembly** — the current Node 22.9 iPhoneOS runtime cannot execute JIT or
-   WebAssembly code on this device (V8 12.4 W^X: only `mmap RW → write → mprotect RX → exec`
-   works for generated code and V8 12.4 does not use that sequence; §13 explains why this
-   matters for `fetch`/undici, which uses a wasm llhttp parser). This is a runtime-side V8
-   limitation; the CLI bundle itself does not require wasm at startup.
+```sh
+--single-threaded --experimental-sqlite --disable-warning=ExperimentalWarning \
+--no-warnings --max-old-space-size=1536
+```
 
-Meanwhile the community **Node 18.20.4 iPhoneOS runtime** is device-proven on this exact
-device: JIT, WebAssembly, ICU 74.2 and TLS all work. §13 describes the Node 18 fallback
-variant of the CLI bundle built and host-tested as a hedge.
+Device-verified (all rc=0): `--version` (`opencode2-node v2.2.5`), `--help` (full help;
+`Intl.Segmenter` works with full ICU), `debug paths`, `debug config`, `models`, `auth list`,
+`session list` (native `node:sqlite` DB with `-wal`/`-shm` on device), and a **mock-provider
+agent turn**: `opencode run --standalone --model lmstudio/mock-opencode-1 "…"` where the model
+called the shell tool, which wrote `/var/mobile/ocdev-e2e.txt` with the acceptance marker,
+device identity (`id -un`), `git --version` (2.39.1) and `pwd`; the mock server saw
+`GET /api/v1/models` and three `POST /chat/completions` (2nd/3rd carrying `toolResult`).
+This evidence was obtained with a local one-line hack of patch 0010's forwarding on the
+device; the official artifact (patch 0010) is being retested at the time of writing.
 
-Status: CI builds, host smoke and packaging are complete; on-device CLI matrix remains
-**UNVERIFIED ON DEVICE** and must not be claimed from CI.
+Runtime issues found and fixed during device bring-up (in order):
+
+1. **ICU** — a runtime built `--with-intl=none` makes V8 reject the bundle's `\p{...}`
+   regexes at parse time and leaves `Intl` missing. Fixed by rebuilding with
+   `--with-intl=full-icu` (§11).
+2. **JIT/WebAssembly W^X** — the v6 Node 22.9 runtime toggles code memory with mprotect
+   RW<->RX; that toggle is process-wide, so background V8 threads race it and a multithreaded
+   process dies with SIGBUS (138) on the first optimized loop or `fetch`. Device proof:
+   `--single-threaded` (or `--no-concurrent-recompilation`) makes JIT/WebAssembly/fetch work.
+   **The launcher must pass `--single-threaded`, and the CLI must forward it to every spawned
+   server child (patch 0010)** — without forwarding, `serve --service` children crashed with
+   SIGBUS and `models`/`debug config`/`session list` failed.
+3. **Node 18 fallback** (hedge, §13) — the reference Node 18.20.4 runtime is device-proven for
+   JIT/wasm/ICU/TLS; with patches 0007–0009 the CLI starts, `--version`/`debug paths`/
+   `debug config`/`models`/`session list` pass. `--help` crashes with SIGSEGV only because the
+   reference runtime is small-ICU (`Intl.Segmenter` lacks brkitr data); a full-ICU Node 18
+   runtime is being built (`build-runtime-node18.yml`). Device retest of the official
+   patch-0009/0010 artifact is pending.
+
+CI itself never claims device success: `bundle-manifest.json` keeps
+`verification_status.device_verified = false`; the device evidence above is reported by the
+human-executed device matrix.
 
 ## 13. Node 18 fallback (hedge) — conditional variant
 
-Because the Node 22.9 runtime currently cannot run JIT/wasm on the device, a **separate
-conditional variant** of the same CLI bundle can target the device-proven Node 18.20.4
-iPhoneOS runtime. It does **not** change the default Node 22 artifact path; it is built by a
-second `build-opencode.yml` job (`bundle-node18`) and uploaded as artifact
+While the v6 Node 22.9 iOS runtime was still being fixed, the **device-proven Node 18.20.4
+iPhoneOS runtime** was the fallback path, so a **separate conditional variant** of the same CLI
+bundle can target it. It does **not** change the default Node 22 artifact path; it is built by
+a second `build-opencode.yml` job (`bundle-node18`) and uploaded as artifact
 `opencode-cli-node18-ios` with its own manifest (`artifact`/`variant` = `node18-fallback`,
-`build.runtime_node_version` = `18.20.4`, required host smoke Node 18.20.4).
+`build.runtime_node_version` = `18.20.4`, required host smoke Node 18.20.4). After the v6
+runtime reached JIT/wasm support with `--single-threaded` (§12), the Node 22 artifact is the
+primary path; this variant remains a hedge and is kept green in the same workflow.
 
 ### Build/run
 

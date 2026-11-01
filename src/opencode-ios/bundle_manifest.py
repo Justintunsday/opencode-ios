@@ -50,6 +50,7 @@ ENV_CONTRACT = {
     },
     "launcher_argv": [
         f"{INSTALL_PREFIX}/usr/lib/opencode/runtime/node",
+        "--single-threaded",
         "--experimental-sqlite",
         f"{INSTALL_PREFIX}/usr/lib/opencode/cli/opencode.mjs",
         '"$@"',
@@ -61,11 +62,12 @@ ENV_CONTRACT = {
         "TMPDIR": "writable temporary directory",
     },
     "node_flags": {
-        "required": ["--experimental-sqlite"],
+        "required": ["--single-threaded", "--experimental-sqlite"],
         "forbidden": ["--experimental-ffi", "--use-system-ca"],
         "notes": [
             "--experimental-ffi does not exist on Node 22.9.0 and the ffi-rs addon is absent on iPhoneOS.",
             "--use-system-ca does not exist on Node 22.9.0 (added to later Node lines); do not pass it.",
+            "--single-threaded is REQUIRED by the v6 iPhoneOS Node 22.9 runtime: its V8 JIT/wasm code-memory toggling is process-wide and background V8 threads race it, so multithreaded processes die with SIGBUS on the first optimized loop/fetch. --no-concurrent-recompilation is an accepted alternative (device-reported). The CLI forwards --single-threaded (and --max-old-space-size=...) to spawned server children (patches/opencode/0010), so passing it once on the launcher is enough.",
             "The runtime must provide ECMA-402 Intl (full-icu/small-icu) and Node 22.9's built-in WebAssembly llhttp parser (fetch/undici needs it; a --jitless build cannot instantiate wasm). The shipped runtime enables full-icu + WebAssembly + JIT. The CLI bundle itself does not require WebAssembly at startup.",
         ],
     },

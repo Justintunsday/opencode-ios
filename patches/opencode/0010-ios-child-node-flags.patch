@@ -1,0 +1,41 @@
+# OpenCode iOS port patch -- 0010
+# Title: forward iOS stability flags (--single-threaded, --max-old-space-size) to spawned server children
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Requires: patches 0001-0009 applied first.
+# Files: packages/cli/src/util/process.ts
+# Why (device-reported): the iPhoneOS Node 22.9 v6 runtime only executes JIT/WebAssembly safely when
+#      the process is single-threaded (--single-threaded or --no-concurrent-recompilation): the V8
+#      code-memory W^X toggling is process-wide and background V8 threads race it, so multithreaded
+#      processes die with SIGBUS on the first optimized loop / fetch. The launcher runs the CLI parent
+#      with --single-threaded, but nodeFlags() dropped it when building selfCommand(), so every spawned
+#      server child (`serve --service` and `serve --stdio`) crashed with SIGBUS and commands like
+#      debug config/models/session list failed. This patch forwards --single-threaded (and the
+#      launcher heap cap --max-old-space-size=...) to children. Forwarding is conditional on the flag
+#      actually being present in process.execArgv, so desktop/Node18 behaviour is unchanged.
+# Test: OPENCODE_IOS=1 node --single-threaded --no-warnings opencode.mjs models -> child serve
+#       process command line contains --single-threaded (host smoke; verified locally), then device matrix.
+# Status: affects all iOS variants; non-iOS is unchanged unless the user passes those flags.
+
+diff --git a/packages/cli/src/util/process.ts b/packages/cli/src/util/process.ts
+index 3e9078a..3ea3a25 100644
+--- a/packages/cli/src/util/process.ts
++++ b/packages/cli/src/util/process.ts
+@@ -23,10 +23,18 @@ function nodeFlags() {
+       // too, otherwise the server exits with ERR_UNKNOWN_BUILTIN_MODULE on
+       // every command that starts it. Newer Node lines accept the flag.
+       arg === "--experimental-sqlite" ||
++      // iPhoneOS Node 22.9 v6 runtime: JIT/WebAssembly code memory toggling is
++      // process-wide, so background V8 threads race it and the process dies with
++      // SIGBUS unless the process is single-threaded. The launcher passes
++      // --single-threaded; child server processes must inherit it or they crash
++      // on the first optimized/wasm execution (device-reported).
++      arg === "--single-threaded" ||
+       arg === "--enable-source-maps" ||
+       arg === "--no-addons"
+     )
+       return [arg]
++    // The iOS launcher caps the V8 heap; child servers need the same cap.
++    if (arg.startsWith("--max-old-space-size=")) return [arg]
+     if (arg === "--no-warnings" || arg.startsWith("--disable-warning=")) return [arg]
+     return []
+   })
