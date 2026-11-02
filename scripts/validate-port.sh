@@ -186,6 +186,7 @@ except Exception:
 print(data.get("variant") or data.get("runtime_kind") or data.get("node_version") or "")' \
             "$candidate_file" 2>/dev/null || true)"
         case "$value" in
+            *26*) printf 'node26'; return 0 ;;
             *18*) printf 'node18'; return 0 ;;
             *22*) printf 'node22'; return 0 ;;
         esac
@@ -196,6 +197,10 @@ PKG_VARIANT="$(infer_variant)"
 case "$PKG_VARIANT" in
     node18)
         SMOKE_NODE_VERSION="18.20.4"
+        SMOKE_NODE_FLAGS="--no-warnings"
+        ;;
+    node26)
+        SMOKE_NODE_VERSION="26.13.0"
         SMOKE_NODE_FLAGS="--no-warnings"
         ;;
     *)
