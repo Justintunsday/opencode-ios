@@ -2406,12 +2406,16 @@ def cmd_render_control(args):
     variant = normalize_variant(args.variant) or VARIANT_NODE22
     node_version = args.node_version or EXPECTED_RUNTIME_NODE_VERSION[variant]
     template = read_text(args.template)
+    description = VARIANT_CONTROL_DESCRIPTION[variant]
+    if variant in EXPERIMENTAL_RELEASE_LABELS:
+        label = getattr(args, "experimental_label", "") or EXPERIMENTAL_RELEASE_LABELS[variant]
+        description = description.replace(EXPERIMENTAL_RELEASE_LABELS[variant], label)
     replacements = {
         "@VERSION@": args.version,
         "@MAINTAINER@": args.maintainer,
         "@INSTALLED_SIZE@": str(args.installed_size),
         "@NODE_VERSION@": node_version,
-        "@VARIANT_DESCRIPTION@": VARIANT_CONTROL_DESCRIPTION[variant],
+        "@VARIANT_DESCRIPTION@": description,
     }
     text = template
     for key, value in replacements.items():
@@ -4229,6 +4233,7 @@ def build_parser():
     p.add_argument("--installed-size", required=True, type=int)
     p.add_argument("--variant", default="node22")
     p.add_argument("--node-version", default="")
+    p.add_argument("--experimental-label", default="")
     p.set_defaults(func=cmd_render_control)
 
     p = sub.add_parser("fixture", help="create synthetic placeholder inputs (self-test)")

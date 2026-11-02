@@ -661,11 +661,14 @@ class VariantInferenceTest(unittest.TestCase):
                     template=str(template), out=str(out), version="2.2.5-1",
                     maintainer="Test <test@example.com>", installed_size=123,
                     variant="node26", node_version="",
+                    experimental_label="v2.2.5-ios.5-node26test.4",
                 )
             )
             self.assertEqual(rc, 0)
             text = out.read_text()
             self.assertIn("Node.js 26.13.0", text)
+            self.assertIn("v2.2.5-ios.5-node26test.4", text)
+            self.assertNotIn("v2.2.5-ios.5-node26test.1", text)
             self.assertIn("EXPERIMENTAL", text)
             self.assertIn("OpenTUI", text)
             self.assertIn("--single-threaded", text)

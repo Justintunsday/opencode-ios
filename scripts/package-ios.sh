@@ -444,7 +444,8 @@ INSTALLED_SIZE=$((TOTAL_KB - DEBIAN_KB))
     --maintainer "$MAINTAINER" \
     --installed-size "$INSTALLED_SIZE" \
     --variant "$VARIANT" \
-    --node-version "$RUNTIME_NODE_VERSION"
+    --node-version "$RUNTIME_NODE_VERSION" \
+    --experimental-label "$EXPERIMENTAL_LABEL"
 chmod 0644 "$STAGE/DEBIAN/control"
 if grep -q '@[A-Z_]*@' "$STAGE/DEBIAN/control"; then
     die "unsubstituted placeholder remains in DEBIAN/control"
