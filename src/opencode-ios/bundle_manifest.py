@@ -411,8 +411,9 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
             "sha256": actual_sha,
             "expected_sha256": expected_sha,
             "sha256_matches_expected": True,
-            "format": "Mach-O iPhoneOS arm64 dylib (minOS 15.0.0), 2-key ldid-signed; "
-            "validated by scripts/check_macho.py --kind dylib and the OpenTUI iOS asset check",
+            "format": "Mach-O iPhoneOS arm64 dylib (minOS 15.0.0), Apple codesign ad-hoc signed "
+            "(ldid signatures are mapped non-executable by dyld on the device); validated by "
+            "scripts/check_macho.py --kind dylib, codesign --verify and the OpenTUI iOS asset check",
             "loader": "node:ffi dlopen via the patched OpenTUI FFI backend; OTUI_ASSET_ROOT + asset key",
         }
 

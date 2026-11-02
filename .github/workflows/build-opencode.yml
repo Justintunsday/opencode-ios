@@ -262,7 +262,7 @@ jobs:
           retention-days: 14
 
   # Phase D: Node 26.13.0 + node:ffi real-TUI bundle. It ships the prebuilt OpenTUI iPhoneOS
-  # renderer (`opentui-ios-renderer` artifact from run 41313921358) as a CLI asset under the key
+  # renderer (`opentui-ios-renderer` artifact from run 41487998437, codesign-adhoc signed) as a CLI asset under the key
   # the patched OpenTUI FFI loader resolves: @opentui/core-ios-arm64/libopentui.dylib.
   # This job is static/host verification only: the end-to-end TUI is device-verified separately
   # with the FFI-enabled Node 26 iPhoneOS runtime (the current --without-ffi Phase A/B runtime
@@ -281,11 +281,12 @@ jobs:
       # informational (the bundle must not hard-crash on a supported previous LTS either).
       OPENCODE_NODE_MATRIX: '26.13.0 24.22.2'
       OPENCODE_SMOKE_REQUIRED: '26.13.0'
-      # Phase C green renderer artifact (opencode-ios run 41313921358). The sha256 is pinned and
+      # Phase C renderer artifact, rebuilt and signed with Apple codesign ad-hoc (opencode-ios run
+      # 41487998437; ldid signatures map non-executable on the device). The sha256 is pinned and
       # scripts/build-opencode-bundle.sh re-verifies it plus the Mach-O before staging; the
       # manifest records the actual staged hash.
       OPENCODE_OPENTUI_IOS_DYLIB: dist/opentui-ios-renderer/libopentui.dylib
-      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: 954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638
+      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: c2123919402a3ab418f6e431d3c21bec4c33e130bb439c657a8ac17479da62a9
     steps:
       - name: Checkout port repository
         uses: actions/checkout@v4
@@ -306,7 +307,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: opentui-ios-renderer
-          run-id: '41313921358'
+          run-id: '41487998437'
           github-token: ${{ github.token }}
           path: dist/opentui-ios-renderer
 
@@ -319,6 +320,10 @@ jobs:
           echo "renderer dylib sha256: $actual"
           test "$actual" = "$OPENCODE_OPENTUI_IOS_DYLIB_SHA256"
           python3 scripts/check_macho.py "$dylib" --kind dylib --max-minos 16.1.1
+          # The renderer must be Apple-codesign signed (ad-hoc): ldid-signed dylibs are mapped
+          # non-executable by dyld on the device and SIGBUS when called.
+          xcrun codesign --verify --verbose=2 "$dylib"
+          codesign -dvv "$dylib" 2>&1 | grep -q 'Signature=adhoc'
 
       - name: Set up Bun (upstream build tool only, not the iOS runtime)
         uses: oven-sh/setup-bun@v2
