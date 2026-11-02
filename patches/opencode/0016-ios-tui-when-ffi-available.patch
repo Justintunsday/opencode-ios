@@ -158,15 +158,14 @@ index 44c2ea4..de75fda 100644
  }
  
 diff --git a/packages/cli/vite.node.config.ts b/packages/cli/vite.node.config.ts
-index 7839432..e31fb25 100644
+index 7839432..463d134 100644
 --- a/packages/cli/vite.node.config.ts
 +++ b/packages/cli/vite.node.config.ts
-@@ -163,6 +163,8 @@ const output = (entryFileNames: string, banner?: string) => ({
- function iosNodePrelude() {
-   return `#!/usr/bin/env -S node --experimental-sqlite --disable-warning=ExperimentalWarning
- // opencode-ios-prelude: non-SEA / Node 22.9-safe bootstrap for iPhoneOS
-+// IOS_TUI_FFI_GATE: opencode/opencode mini probe node:ffi and only use the line-REPL fallback
-+// when FFI is unavailable (Node 22 runtime / no-FFI Node 26 build); FFI-enabled Node 26 -> real TUI
- import __cjs_mod__ from "node:module"
- import { fileURLToPath as __ocFileURLToPath } from "node:url"
- import __ocPath from "node:path"
+@@ -170,6 +170,7 @@ const __filename = import.meta.filename
+ const __dirname = import.meta.dirname
+ const require = __cjs_mod__.createRequire(import.meta.url)
+ process.env.OPENCODE_PRELUDE = "opencode-ios-prelude-v1"
++process.env.OPENCODE_IOS_TUI_GATE = "IOS_TUI_FFI_GATE"
+ const __ocAssetRoot =
+   process.env.OPENCODE_NODE_ASSETS_DIR ?? __ocFileURLToPath(new URL("./assets/", import.meta.url))
+ process.env.OPENCODE_NODE_ASSETS_DIR = __ocAssetRoot
