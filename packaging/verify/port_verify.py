@@ -640,6 +640,7 @@ def cmd_sources(args):
             opentui["totals"] = summary.get("totals", {})
     lock = _parse_lock_file(args.lock)
     experimental = bool(EXPERIMENTAL_VARIANTS.get(variant))
+    bootstrap_prep = bool(getattr(args, "allow_non_ffi_runtime", False))
     release_label = (
         getattr(args, "experimental_label", "") if experimental else ""
     ) or (EXPERIMENTAL_RELEASE_LABELS.get(variant) if experimental else "")
@@ -651,6 +652,7 @@ def cmd_sources(args):
         "variant": variant_label,
         "runtime_kind": RUNTIME_KIND[variant],
         "experimental": experimental,
+        "bootstrap_prep": bootstrap_prep,
         "release_label": release_label,
         "expected_node_sha256": getattr(args, "expected_node_sha256", "") or "",
         "repository": args.repository or os.environ.get("GITHUB_REPOSITORY", ""),
@@ -2467,18 +2469,29 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
             or (isinstance(ffi_build, dict) and ffi_build.get("enabled") is False)
         )
         metrics["runtime_ffi_disabled"] = ffi_disabled
-        if ffi_disabled:
+        allow_non_ffi = bool(ctx.get("allow_non_ffi_runtime"))
+        if ffi_disabled and allow_non_ffi:
+            notes.append(
+                "FFI DISABLED — PIPELINE-PREP artifact only: node:ffi cannot load "
+                "the OpenTUI renderer, so the real TUI will NOT work; replace the "
+                "runtime with the Phase C FFI-enabled build for the acceptance artifact"
+            )
+            metrics["runtime_ffi_gate"] = "prep-bypass"
+        elif ffi_disabled:
             problems.append(
                 "node26 runtime is NOT FFI-enabled (--without-ffi / ffi_support "
                 "disabled): node:ffi cannot load the OpenTUI renderer. Use the "
-                "Phase C FFI-enabled ios-node26-runtime artifact."
+                "Phase C FFI-enabled ios-node26-runtime artifact (or dispatch the "
+                "prep build with allow_non_ffi_runtime=true for pipeline validation)."
             )
         elif ffi_support or ffi_build:
             notes.append(
                 "node:ffi declared FFI-capable (required for the OpenTUI renderer)"
             )
+            metrics["runtime_ffi_gate"] = "enabled"
         else:
             notes.append("runtime FFI support not declared (unverified)")
+            metrics["runtime_ffi_gate"] = "unverified"
     device_verification = metrics["runtime_device_verification"]
     if isinstance(device_verification, dict) and device_verification.get("verified") is True:
         notes.append(
@@ -3021,6 +3034,7 @@ def _check_artifact_policy(checks, ctx, cli_dir, variant=VARIANT_NODE22):
         else:
             opentui_asset = str(
                 opentui_decl.get("asset")
+                or opentui_decl.get("asset_key")
                 or opentui_decl.get("key")
                 or opentui_decl.get("path")
                 or ""
@@ -3336,6 +3350,7 @@ def _build_package_report(ctx, checks, sources, manifest, args):
         "variant": VARIANT_LABELS[variant],
         "runtime_kind": runtime_kind,
         "experimental": experimental,
+        "bootstrap_prep": bool(ctx.get("allow_non_ffi_runtime")) if experimental else False,
         "release_label": release_label,
         "package": {
             "name": control.get("Package"),
@@ -3670,6 +3685,10 @@ def cmd_verify(args):
     requested_variant = "" if args.variant in ("", "auto") else args.variant
     variant = infer_variant(ctx, sources, package_report_in, requested_variant)
     ctx["variant"] = variant
+    allow_non_ffi = bool(getattr(args, "allow_non_ffi_runtime", False))
+    if isinstance(sources, dict) and sources.get("bootstrap_prep") is True:
+        allow_non_ffi = True
+    ctx["allow_non_ffi_runtime"] = allow_non_ffi
     check(checks, "pkg.variant", "package",
           "Package runtime variant identified", "PASS",
           f"variant={VARIANT_LABELS[variant]} "
@@ -4009,6 +4028,9 @@ def build_parser():
     p.add_argument("--opentui-relative-path", default="")
     p.add_argument("--expected-node-sha256", default="")
     p.add_argument("--experimental-label", default="")
+    p.add_argument("--allow-non-ffi-runtime", action="store_true",
+                   help="record a pipeline-prep build that tolerates a non-FFI "
+                        "runtime for the experimental node26 variant")
     p.add_argument("--variant", default="",
                    help="node22 (default), node18 or experimental node26")
     p.add_argument("--self-test", action="store_true")
@@ -4046,6 +4068,10 @@ def build_parser():
                         "provenance/manifest)")
     p.add_argument("--skip-smoke", action="store_true")
     p.add_argument("--skip-native-audit", action="store_true")
+    p.add_argument("--allow-non-ffi-runtime", action="store_true",
+                   help="pipeline-prep mode for experimental node26: a non-FFI "
+                        "runtime is reported as a prep caveat instead of a failure "
+                        "(the real TUI will not load)")
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("render-control",

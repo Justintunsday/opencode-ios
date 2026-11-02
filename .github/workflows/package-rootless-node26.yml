@@ -55,6 +55,11 @@ on:
         required: false
         type: string
         default: "954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638"
+      require_ffi_runtime:
+        description: "true = strict: fail unless the runtime is the FFI-enabled Phase C build; false = pipeline-prep: allow the Phase A/B non-FFI runtime, clearly labelled (the real TUI will NOT load)"
+        required: false
+        type: boolean
+        default: false
       experimental_label:
         description: "Experimental build label recorded in the report/control"
         required: false
@@ -169,6 +174,7 @@ jobs:
           EXPECTED_NODE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_node_sha256 || '' }}
           EXPECTED_OPENTUI_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_opentui_sha256 || '954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638' }}
           EXPERIMENTAL_LABEL: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.1' }}
+          REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -200,6 +206,10 @@ jobs:
           fi
           if [ -n "${EXPECTED_NODE_SHA:-}" ]; then
             set -- "$@" --expected-node-sha256 "$EXPECTED_NODE_SHA"
+          fi
+          if [ "${REQUIRE_FFI_RUNTIME}" != "true" ]; then
+            echo "::warning::PIPELINE-PREP MODE: the runtime FFI requirement is relaxed for this build. The real TUI will NOT load unless the runtime is the Phase C FFI-enabled build; dispatch with require_ffi_runtime=true for the acceptance artifact."
+            set -- "$@" --allow-non-ffi-runtime
           fi
           "$@"
 
@@ -249,8 +259,15 @@ jobs:
             echo "  6. 'sudo dpkg -r opencode' + reinstall to test the cycle."
             echo ""
             echo "The launcher always passes --single-threaded (mandatory on iOS)."
+            if [ "${REQUIRE_FFI_RUNTIME}" != "true" ]; then
+              echo "PIPELINE-PREP BUILD: the runtime is NOT guaranteed to be the FFI-enabled"
+              echo "Phase C build. The real OpenTUI TUI will NOT load in this package; it is"
+              echo "produced to validate the packaging pipeline only. Rebuild with"
+              echo "require_ffi_runtime=true once the FFI-enabled runtime exists."
+            fi
             echo "The runtime must be the FFI-enabled Phase C build; the package's"
-            echo "runtime.build-profile gate rejects --without-ffi artifacts."
+            echo "runtime.build-profile gate rejects --without-ffi artifacts unless"
+            echo "require_ffi_runtime=false (pipeline-prep)."
             echo "Device preflight: /var/jb/usr/lib/opencode/runtime/node -e"
             echo "  \"console.log(typeof require('node:ffi').dlopen)\"   # expect function"
             echo "Renderer resolution uses OTUI_ASSET_ROOT=<cli>/assets; the dylib must"
@@ -267,6 +284,11 @@ jobs:
             echo ""
             echo "> Not device-verified: the real TUI/node:ffi path is a separate"
             echo "> maintainer device step. Stable release remains v2.2.5-ios.5 (node22 v6)."
+            if [ "${REQUIRE_FFI_RUNTIME}" != "true" ]; then
+              echo ">"
+              echo "> **PIPELINE-PREP BUILD (non-FFI runtime allowed): the real TUI will NOT load.**"
+              echo "> Dispatch with require_ffi_runtime=true once the FFI Phase C runtime exists."
+            fi
             echo ""
             echo "node26 runtime run: ${{ steps.resolve-runtime.outputs.node26_runtime_run_url }}"
             echo "node26 CLI run:     ${{ steps.resolve-cli.outputs.node26_cli_run_url }}"

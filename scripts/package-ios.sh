@@ -75,6 +75,7 @@ OPENTUI_RUN_URL=""
 OPENTUI_SHA256_EXPECTED=""
 NODE_SHA256_EXPECTED=""
 EXPERIMENTAL_LABEL=""
+ALLOW_NON_FFI_RUNTIME=0
 DEB_NAME="OpenCode-iOS-rootless.deb"
 RUN_URL=""
 COMMIT=""
@@ -106,6 +107,7 @@ while [ $# -gt 0 ]; do
         --opentui-sha256) OPENTUI_SHA256_EXPECTED="${2:-}"; shift 2 ;;
         --expected-node-sha256) NODE_SHA256_EXPECTED="${2:-}"; shift 2 ;;
         --experimental-label) EXPERIMENTAL_LABEL="${2:-}"; shift 2 ;;
+        --allow-non-ffi-runtime) ALLOW_NON_FFI_RUNTIME=1; shift ;;
         --run-url) RUN_URL="${2:-}"; shift 2 ;;
         --commit) COMMIT="${2:-}"; shift 2 ;;
         --self-test) SELF_TEST=1; shift ;;
@@ -486,6 +488,9 @@ set -- "$PYTHON" "$ROOT/packaging/verify/port_verify.py" sources \
     --variant "$VARIANT" \
     --expected-node-sha256 "$NODE_SHA_ACTUAL" \
     --experimental-label "$EXPERIMENTAL_LABEL"
+if [ "$ALLOW_NON_FFI_RUNTIME" = "1" ]; then
+    set -- "$@" --allow-non-ffi-runtime
+fi
 if [ "$VARIANT" = "node26" ]; then
     set -- "$@" --opentui-relative-path "$OPENTUI_REL" \
         --opentui-sha256 "$OPENTUI_SHA_ACTUAL" \
