@@ -55,6 +55,11 @@ on:
         required: false
         type: string
         default: ""
+      expected_cli_sha256:
+        description: "Required opencode.mjs sha256 of the pinned node26 CLI bundle (from that run's SHA256SUMS); empty = record whatever the artifact contains"
+        required: false
+        type: string
+        default: ""
       expected_opentui_sha256:
         description: "Required libopentui.dylib sha256"
         required: false
@@ -150,12 +155,22 @@ jobs:
           find .artifacts/runtime -maxdepth 2 -type f | sort
 
       - name: Download node26 CLI bundle artifact
+        id: download-cli
+        env:
+          EXPECTED_CLI_SHA256: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_cli_sha256 || '' }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/opencode
           gh run download "${{ steps.resolve-cli.outputs.node26_cli_run_id }}" \
             --repo "$GITHUB_REPOSITORY" -n "$CLI_ARTIFACT" -D .artifacts/opencode
           find .artifacts/opencode -maxdepth 3 -type f | sort | head -n 40
+          MJS_SHA="$(shasum -a 256 .artifacts/opencode/opencode.mjs | awk '{print $1}')"
+          echo "opencode.mjs sha256=$MJS_SHA"
+          echo "cli_mjs_sha256=$MJS_SHA" >> "$GITHUB_OUTPUT"
+          if [ -n "${EXPECTED_CLI_SHA256:-}" ] && [ "$MJS_SHA" != "$EXPECTED_CLI_SHA256" ]; then
+            echo "::error::opencode.mjs sha256 mismatch: pinned $EXPECTED_CLI_SHA256, artifact has $MJS_SHA"
+            exit 1
+          fi
 
       - name: Download opentui-ios-renderer artifact
         run: |
