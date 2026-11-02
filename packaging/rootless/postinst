@@ -5,9 +5,7 @@
 #   * idempotent: safe to run on install, reinstall and upgrade,
 #   * no network access, no package manager calls,
 #   * no assumptions beyond the environment dpkg itself provides,
-#   * touches the rootless prefix /var/jb plus the package-owned node26 runtime
-#     asset mirror /var/mobile/Library/OpenCode/assets (iOS exec-mmap sandbox);
-#     user data is never modified.
+#   * touches the rootless prefix /var/jb only; user data is never modified.
 set -e
 
 JB_ROOT=/var/jb
@@ -38,28 +36,13 @@ if [ -d "$CLI/assets" ]; then
     find "$CLI/assets" -type f -exec chmod 0644 {} \; 2>/dev/null || true
 fi
 
-# Experimental node26 variant: the iOS sandbox only maps executables from
-# non-/var/jb paths. Device evidence: calling a renderer function from the
-# /var/jb copy SIGBUSes (dyld maps the dylib __TEXT r--/rw-); the same dylib
-# under /var/mobile executes correctly. Mirror the package-owned asset tree to
-# a runtime path under /var/mobile and let the node26 launcher point
-# OPENCODE_NODE_ASSETS_DIR/OTUI_ASSET_ROOT there. The /var/jb copy above is kept
-# for static validation/inspection. Only this assets subdirectory is touched —
-# user configuration/sessions under /var/mobile/Library/OpenCode are left alone.
-RUNTIME_ASSETS=/var/mobile/Library/OpenCode/assets
+# The OpenTUI renderer dylib must remain executable (mode 0755): the node26
+# launcher loads it from this /var/jb asset tree via node:ffi, and the shipped
+# copy is codesign-signed so dyld maps it executable. (Device finding on iOS
+# 16.1.1: ldid-signed dylibs map non-executable; /var/mobile paths are blocked
+# by the file-system sandbox for dylib mmap, so /var/jb is the only usable root.)
 if [ -f "$CLI/assets/@opentui/core-ios-arm64/libopentui.dylib" ]; then
-    rm -rf "$RUNTIME_ASSETS" 2>/dev/null || true
-    if mkdir -p "$RUNTIME_ASSETS" 2>/dev/null &&
-            cp -R "$CLI/assets/." "$RUNTIME_ASSETS/" 2>/dev/null; then
-        find "$RUNTIME_ASSETS" -type d -exec chmod 0755 {} \; 2>/dev/null || true
-        find "$RUNTIME_ASSETS" -type f -exec chmod 0644 {} \; 2>/dev/null || true
-        chmod 0755 "$RUNTIME_ASSETS/@opentui/core-ios-arm64/libopentui.dylib" 2>/dev/null || true
-        chown -R root:mobile "$RUNTIME_ASSETS" 2>/dev/null || true
-        echo "OpenCode node26 runtime assets mirrored to $RUNTIME_ASSETS (iOS exec-mmap workaround)."
-    else
-        echo "opencode: warning: could not mirror node26 runtime assets to $RUNTIME_ASSETS;" >&2
-        echo "opencode: the TUI renderer will not load (headless CLI still works)." >&2
-    fi
+    chmod 0755 "$CLI/assets/@opentui/core-ios-arm64/libopentui.dylib" 2>/dev/null || true
 fi
 
 if [ -f "$DOC/device-smoke.sh" ]; then

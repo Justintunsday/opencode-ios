@@ -95,10 +95,15 @@ EXPERIMENTAL_RELEASE_LABELS = {
     VARIANT_NODE26: "v2.2.5-ios.5-node26test.1",
 }
 OPENTUI_REL_PATH = "var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib"
-# iOS exec-mmap sandbox: dylibs under /var/jb are mapped non-executable (calling
-# a renderer function SIGBUSes, device-verified). postinst mirrors the CLI asset
-# tree here and the node26 launcher points the asset env vars at it.
-NODE26_RUNTIME_ASSETS = "/var/mobile/Library/OpenCode/assets"
+# iOS renderer execution model (device finding, iOS 16.1.1):
+#  * the packaged /var/jb/usr/lib/opencode/cli/assets tree is the ONLY usable
+#    runtime asset root — /var/mobile paths are refused by the file-system
+#    sandbox for dylib mmap;
+#  * dyld maps ldid-signed dylibs non-executable (calling a renderer function
+#    SIGBUSes with __TEXT r--/rw-), so the shipped renderer must be
+#    Apple `codesign`-signed (ad-hoc) while the node executable keeps the ldid
+#    2-key signature.
+NODE26_ASSET_ROOT = "/var/jb/usr/lib/opencode/cli/assets"
 NODE26_RUNTIME_ASSETS_OVERRIDE = "OPENCODE_IOS_RUNTIME_ASSETS"
 NODE26_ASSET_DYLIB_REL = "@opentui/core-ios-arm64/libopentui.dylib"
 VARIANT_CONTROL_DESCRIPTION = {
@@ -1272,55 +1277,6 @@ def _check_maintainer_scripts(checks, ctx, extract_dir, variant=VARIANT_NODE22):
               "Maintainer scripts are POSIX sh, idempotent-safe and offline", "PASS",
               "postinst/prerm/postrm: #!/bin/sh, set -e, no network, rootless paths, mode 0755")
 
-    # Experimental node26: the exec-mapped asset tree must be mirrored under
-    # /var/mobile by postinst (iOS sandbox maps /var/jb executables non-exec) and
-    # removed by postrm on remove/purge.
-    if variant == VARIANT_NODE26 and not problems:
-        postinst_text = contents.get("postinst", b"").decode("utf-8", "replace")
-        postrm_text = contents.get("postrm", b"").decode("utf-8", "replace")
-        mobile_problems = []
-        if NODE26_RUNTIME_ASSETS not in postinst_text:
-            mobile_problems.append(
-                f"postinst must mirror the CLI assets to {NODE26_RUNTIME_ASSETS}"
-            )
-        if "cp -R" not in postinst_text:
-            mobile_problems.append("postinst must copy the CLI asset tree (cp -R)")
-        if NODE26_ASSET_DYLIB_REL not in postinst_text:
-            mobile_problems.append(
-                f"postinst must special-case {NODE26_ASSET_DYLIB_REL}"
-            )
-        if re.search(r"chmod\s+0755\s+\S*libopentui\.dylib", postinst_text) is None:
-            mobile_problems.append(
-                "postinst must set the mirrored renderer dylib mode to 0755"
-            )
-        if re.search(r"chown\s+-R\s+root:mobile", postinst_text) is None:
-            mobile_problems.append("postinst must chown the mirror root:mobile")
-        if re.search(r"rm\s+-rf\s+\S*mobile\S*OpenCode/assets", postrm_text) is None:
-            mobile_problems.append(
-                "postrm must remove the package-owned /var/mobile asset mirror on "
-                "remove/purge"
-            )
-        metrics = ctx["metrics"]
-        metrics["node26_runtime_assets"] = {
-            "path": NODE26_RUNTIME_ASSETS,
-            "postinst_mirror": not mobile_problems,
-            "postrm_cleanup": bool(
-                re.search(r"rm\s+-rf\s+\S*mobile\S*OpenCode/assets", postrm_text)
-            ),
-        }
-        if mobile_problems:
-            check(checks, "pkg.node26-mobile-assets", "package",
-                  "node26 runtime assets are mirrored to /var/mobile for exec-mmap",
-                  "FAIL", truncate("; ".join(mobile_problems), 1200))
-        else:
-            check(checks, "pkg.node26-mobile-assets", "package",
-                  "node26 runtime assets are mirrored to /var/mobile for exec-mmap",
-                  "PASS",
-                  f"postinst copies cli/assets -> {NODE26_RUNTIME_ASSETS} "
-                  f"(dirs 0755, dylib {NODE26_ASSET_DYLIB_REL} 0755, root:mobile); "
-                  "postrm removes the mirror on remove/purge; /var/jb copy kept for "
-                  "static validation only")
-
     # sh -n each maintainer script + execute idempotency against a rewritten root.
     if problems:
         return
@@ -1455,34 +1411,39 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 "node26 launcher must export OTUI_ASSET_ROOT so the OpenTUI loader "
                 "resolves @opentui/core-ios-arm64/libopentui.dylib"
             )
-        if NODE26_RUNTIME_ASSETS not in code_text:
+        # Device finding (iOS 16.1.1): the runtime asset root MUST be the packaged
+        # /var/jb CLI asset tree; /var/mobile paths are refused by the file-system
+        # sandbox for dylib mmap, and the renderer dylib is codesign-signed so dyld
+        # maps it executable there.
+        if re.search(
+            r'RUNTIME_ASSETS="\$\{OPENCODE_IOS_RUNTIME_ASSETS:-\$ASSETS\}"', code_text
+        ) is None:
             problems.append(
-                f"node26 launcher must use the /var/mobile runtime asset tree "
-                f"({NODE26_RUNTIME_ASSETS}): iOS maps /var/jb executables "
-                "non-executable, so a renderer function call from /var/jb SIGBUSes "
-                "(device-verified)"
+                'node26 launcher must default the runtime asset root to the packaged '
+                '/var/jb CLI assets: RUNTIME_ASSETS="${OPENCODE_IOS_RUNTIME_ASSETS:-$ASSETS}"'
             )
         if NODE26_RUNTIME_ASSETS_OVERRIDE not in code_text:
             problems.append(
                 f"node26 launcher must allow {NODE26_RUNTIME_ASSETS_OVERRIDE} to "
-                "override the runtime asset tree (diagnostics/alternate roots)"
+                "override the asset root (diagnostics only)"
             )
         if not re.search(
             r'OPENCODE_NODE_ASSETS_DIR="\$RUNTIME_ASSETS"', code_text
         ):
             problems.append(
-                "node26 launcher must set OPENCODE_NODE_ASSETS_DIR to the "
-                "/var/mobile runtime asset tree ($RUNTIME_ASSETS)"
+                "node26 launcher must set OPENCODE_NODE_ASSETS_DIR to the runtime "
+                "asset root ($RUNTIME_ASSETS, /var/jb/cli/assets by default)"
             )
         if not re.search(r'OTUI_ASSET_ROOT="\$RUNTIME_ASSETS"', code_text):
             problems.append(
-                "node26 launcher must set OTUI_ASSET_ROOT to the /var/mobile "
-                "runtime asset tree ($RUNTIME_ASSETS)"
+                "node26 launcher must set OTUI_ASSET_ROOT to the runtime asset root "
+                "($RUNTIME_ASSETS, /var/jb/cli/assets by default)"
             )
-        if re.search(r'OTUI_ASSET_ROOT="\$ASSETS"', code_text):
+        if "/var/mobile" in code_text:
             problems.append(
-                "node26 launcher must not point OTUI_ASSET_ROOT at the packaged "
-                "/var/jb asset tree (executables there map non-executable)"
+                "node26 launcher must not use a /var/mobile asset root: the iOS "
+                "file-system sandbox refuses dylib mmap there (device-verified); the "
+                "renderer must be codesign-signed and loaded from /var/jb"
             )
         if "OPENCODE_IOS_JITLESS" in code_text:
             problems.append(
@@ -1540,13 +1501,13 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 "(/var/jb bin/usr/bin/usr/sbin/sbin), TMPDIR fallback, exec, "
                 "\"$@\" forwarding, --single-threaded (mandatory on iOS mprotect "
                 "W^X; no background V8 threads), --no-warnings, "
-                f"OPENCODE_NODE_ASSETS_DIR + OTUI_ASSET_ROOT point at the "
-                f"/var/mobile runtime asset mirror ({NODE26_RUNTIME_ASSETS}) because "
-                "iOS maps /var/jb executables non-executable (device-verified; the "
-                "packaged /var/jb copy is a static-validation fallback only), "
-                "NODE_FLAGS/MAX_OLD_SPACE/RUNTIME_ASSETS escape hatches; no node:ffi "
-                "flags needed (default-on in 26.13), no Node-22-only flags, no "
-                "uname, no credentials"
+                f"OPENCODE_NODE_ASSETS_DIR + OTUI_ASSET_ROOT default to the packaged "
+                f"/var/jb CLI asset tree ({NODE26_ASSET_ROOT}; "
+                "OPENCODE_IOS_RUNTIME_ASSETS override for diagnostics only), renderer "
+                "dylib is codesign-signed (ldid-signature dylibs map non-executable on "
+                "iOS 16.1.1, device-verified; /var/mobile dylib mmap is sandbox-denied), "
+                "NODE_FLAGS/MAX_OLD_SPACE escape hatches; no node:ffi flags needed "
+                "(default-on in 26.13), no Node-22-only flags, no uname, no credentials"
             )
         else:
             evidence = (
@@ -3239,39 +3200,107 @@ def _check_opentui(checks, ctx, extract_dir, variant=VARIANT_NODE22,
             f"OpenTUI renderer sha256 {metrics['opentui']['sha256']} does not match "
             f"the pinned producer hash {expected_sha}"
         )
-    # 2-key ldid entitlements (macOS runners have ldid from the workflow setup;
-    # the verifier must not fail when ldid is unavailable on a dev host).
+    # Renderer signing (device finding, iOS 16.1.1): dyld maps ldid-signed dylibs
+    # non-executable (a renderer function call SIGBUSes with __TEXT r--/rw-), while
+    # Apple `codesign`-signed dylibs execute. The renderer must therefore be
+    # code-signed (ad-hoc is fine); the ldid 2-key entitlement requirement stays on
+    # the node executable only. codesign is the preferred verifier; ldid -e is a
+    # fallback that can only confirm *a* signature, not the codesign flavour.
+    signature = {
+        "checked": False,
+        "signed": None,
+        "tool": "",
+        "adhoc": False,
+        "has_platform_application": False,
+        "has_no_sandbox": False,
+    }
+    codesign = shutil.which("codesign")
     ldid = shutil.which("ldid")
-    if ldid and not skip_native:
+    if skip_native:
+        signature["checked"] = False
+    elif codesign:
+        signature["checked"] = True
+        signature["tool"] = "codesign"
+        try:
+            proc = subprocess.run(
+                [codesign, "-dv", "--verbose=2", str(dylib)],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            problems.append(f"cannot inspect OpenTUI renderer signature: {exc}")
+        else:
+            output = (proc.stdout or "") + (proc.stderr or "")
+            signed = proc.returncode == 0
+            signature["signed"] = signed
+            signature["adhoc"] = (
+                "Signature=adhoc" in output or "Signature=AdHoc" in output
+            )
+            if not signed:
+                problems.append(
+                    "OpenTUI renderer is not codesign-signed: on iOS 16.1.1 dyld "
+                    "maps ldid/unsigned dylibs non-executable (renderer function "
+                    "calls SIGBUS); the artifact must be codesign-signed (ad-hoc OK)"
+                )
+            try:
+                ent_proc = subprocess.run(
+                    [codesign, "-d", "--entitlements", ":-", str(dylib)],
+                    capture_output=True, text=True, timeout=60,
+                )
+            except (OSError, subprocess.SubprocessError):
+                entitlements = ""
+            else:
+                entitlements = (ent_proc.stdout or "") + (ent_proc.stderr or "")
+            signature["has_platform_application"] = (
+                "platform-application" in entitlements
+            )
+            signature["has_no_sandbox"] = (
+                "com.apple.private.security.no-sandbox" in entitlements
+            )
+    elif ldid:
+        signature["checked"] = True
+        signature["tool"] = "ldid"
         try:
             proc = subprocess.run(
                 [ldid, "-e", str(dylib)],
                 capture_output=True, text=True, timeout=60,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            problems.append(f"cannot extract OpenTUI entitlements via ldid: {exc}")
+            problems.append(f"cannot inspect OpenTUI renderer signature via ldid: {exc}")
         else:
+            signature["signed"] = proc.returncode == 0
             entitlements = proc.stdout or ""
-            metrics["opentui"]["entitlements_checked"] = True
-            if proc.returncode != 0:
-                problems.append(
-                    f"ldid -e failed on the OpenTUI renderer (rc={proc.returncode})"
-                )
-            elif "platform-application" not in entitlements:
-                problems.append(
-                    "OpenTUI renderer is not ldid-signed with platform-application"
-                )
-            elif "com.apple.private.security.no-sandbox" not in entitlements:
-                problems.append(
-                    "OpenTUI renderer is not ldid-signed with "
-                    "com.apple.private.security.no-sandbox"
-                )
+            signature["has_platform_application"] = "platform-application" in entitlements
+            signature["has_no_sandbox"] = (
+                "com.apple.private.security.no-sandbox" in entitlements
+            )
+            # ldid is not a valid signing method for executable renderer dylibs on
+            # this device, so this host cannot prove the required codesign signature.
+            check(checks, "cli.opentui-renderer-signature", "cli",
+                  "OpenTUI renderer is code-signed for executable mapping", "SKIP",
+                  "codesign is unavailable on this host (CI uses macOS codesign); "
+                  "ldid can only report the entitlements, and ldid-signed renderer "
+                  "dylibs are known to map non-executable on iOS 16.1.1")
     else:
-        metrics["opentui"]["entitlements_checked"] = False
-        check(checks, "cli.opentui-renderer-entitlements", "cli",
-              "OpenTUI renderer carries the 2-key ldid entitlement set", "SKIP",
-              "ldid is not available on this host (CI installs ldid; static Mach-O/"
-              "hash checks still ran)")
+        signature["checked"] = False
+        check(checks, "cli.opentui-renderer-signature", "cli",
+              "OpenTUI renderer is code-signed for executable mapping", "SKIP",
+              "neither codesign nor ldid is available on this host")
+    if signature["checked"] and signature["tool"] == "codesign":
+        ent = (
+            f"platform-application={signature['has_platform_application']}, "
+            f"no-sandbox={signature['has_no_sandbox']}"
+        )
+        if signature["signed"]:
+            check(checks, "cli.opentui-renderer-signature", "cli",
+                  "OpenTUI renderer is code-signed for executable mapping", "PASS",
+                  f"codesign-verified signature (adhoc={signature['adhoc']}); {ent}; "
+                  "ldid-signed renderer dylibs map non-executable on iOS 16.1.1 "
+                  "(device finding) — codesign is required for the executable renderer")
+        else:
+            check(checks, "cli.opentui-renderer-signature", "cli",
+                  "OpenTUI renderer is code-signed for executable mapping", "FAIL",
+                  "codesign reports no valid signature")
+    metrics["opentui"]["signature"] = signature
     if skip_native:
         metrics["opentui"]["dylibs"] = None
     else:
@@ -3291,14 +3320,23 @@ def _check_opentui(checks, ctx, extract_dir, variant=VARIANT_NODE22,
         check(checks, "cli.opentui-renderer", "cli", title, "FAIL",
               truncate("; ".join(problems), 1200))
     else:
-        ent = ("2-key ldid entitlements verified; "
-               if metrics["opentui"].get("entitlements_checked") else "")
+        sig = metrics["opentui"].get("signature", {})
+        sig_text = ""
+        if sig.get("checked") and sig.get("tool") == "codesign":
+            sig_text = (
+                f"codesign-signed (adhoc={sig.get('adhoc')}, "
+                f"platform-application={sig.get('has_platform_application')}, "
+                f"no-sandbox={sig.get('has_no_sandbox')}); "
+            )
+        elif sig.get("checked"):
+            sig_text = f"signature inspected with {sig.get('tool')} (codesign not available); "
         check(checks, "cli.opentui-renderer", "cli", title, "PASS",
               f"iPhoneOS arm64 MH_DYLIB minOS {info.get('minos') or '?'} mode 0755; "
-              f"sha256={metrics['opentui']['sha256'][:16]}...; {ent}"
-              "only iOS system frameworks/libraries; installed under /var/jb "
-              "(device-verified dlopen sandbox path); device TUI load is UNVERIFIED "
-              "ON DEVICE until the Lead's Phase D run")
+              f"sha256={metrics['opentui']['sha256'][:16]}...; {sig_text}"
+              "only iOS system frameworks/libraries; installed under "
+              f"{NODE26_ASSET_ROOT} (device-verified runtime asset root for a "
+              "codesign-signed renderer); device TUI load is UNVERIFIED ON DEVICE "
+              "until the Lead's Phase D run")
 
 
 def _check_assets_native(checks, ctx, cli_dir):
@@ -3497,7 +3535,13 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             "ripgrep": metrics.get("ripgrep", {"included": False}),
             "jitshim": metrics.get("jitshim", {"included": False}),
             "open_dylib": metrics.get("opentui", {"included": False}),
-            "runtime_assets_mobile": metrics.get("node26_runtime_assets", {"included": False}),
+            "runtime_assets_root": {
+                "path": NODE26_ASSET_ROOT,
+                "override": NODE26_RUNTIME_ASSETS_OVERRIDE,
+                "note": "runtime root is the packaged /var/jb CLI asset tree; "
+                        "/var/mobile roots are refused by the iOS sandbox for dylib "
+                        "mmap, and the renderer must be codesign-signed",
+            },
         },
         "cli": metrics.get("cli", {}),
         "host_smoke": metrics.get("host_smoke", {}),

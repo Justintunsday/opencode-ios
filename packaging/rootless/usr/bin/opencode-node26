@@ -24,20 +24,20 @@
 #
 # OpenTUI renderer: the CLI assets include
 #   cli/assets/@opentui/core-ios-arm64/libopentui.dylib
-# (Mach-O iPhoneOS arm64, 2-key ldid-signed). The deb ships it under /var/jb for
-# static validation, but the iOS sandbox maps executables only from non-/var/jb
-# paths: a renderer function called from the /var/jb copy SIGBUSes (dyld maps it
-# r--/rw-). postinst therefore mirrors the asset tree to
-#   /var/mobile/Library/OpenCode/assets
-# and the launcher points OPENCODE_NODE_ASSETS_DIR + OTUI_ASSET_ROOT there
-# (device-verified: this path executes the renderer correctly).
+# Runtime asset root: the packaged /var/jb/usr/lib/opencode/cli/assets tree.
+# Device finding (iOS 16.1.1): dyld maps ldid-signed dylibs non-executable and a
+# renderer function call from such a dylib SIGBUSes, while Apple `codesign`-signed
+# dylibs execute correctly from the same /var/jb path. The shipped renderer is
+# therefore codesign-adhoc-signed (the node executable keeps the ldid 2-key
+# signature); a /var/mobile asset tree is NOT usable because the sandbox refuses
+# the dylib mmap there.
 #
 # Optional environment overrides (documented in docs/INSTALL.md):
 #   OPENCODE_IOS_MAX_OLD_SPACE_MB  V8 old-space cap in MiB (default 1536)
 #   OPENCODE_IOS_NODE_FLAGS        extra Node flags (word-split)
 #   OPENCODE_IOS_PREFIX            install prefix (default /var/jb)
 #   OPENCODE_IOS_NODE              alternate node binary (host smoke/diagnostics)
-#   OPENCODE_IOS_RUNTIME_ASSETS    override the /var/mobile runtime asset tree
+#   OPENCODE_IOS_RUNTIME_ASSETS    override the asset root (diagnostics only)
 set -e
 
 PREFIX="${OPENCODE_IOS_PREFIX:-/var/jb}"
@@ -45,8 +45,9 @@ LIB="$PREFIX/usr/lib/opencode"
 NODE="${OPENCODE_IOS_NODE:-$LIB/runtime/node}"
 CLI="$LIB/cli/opencode.mjs"
 ASSETS="$LIB/cli/assets"
-# Runtime (exec-mapped) asset tree: must NOT be under /var/jb on iOS.
-RUNTIME_ASSETS="${OPENCODE_IOS_RUNTIME_ASSETS:-/var/mobile/Library/OpenCode/assets}"
+# Default runtime asset root is the packaged /var/jb tree; the override exists
+# for diagnostics only (there is no device-usable alternative root on iOS today).
+RUNTIME_ASSETS="${OPENCODE_IOS_RUNTIME_ASSETS:-$ASSETS}"
 
 if [ ! -x "$NODE" ]; then
     echo "opencode: native runtime not found or not executable: $NODE" >&2
@@ -61,16 +62,10 @@ if [ ! -f "$CLI" ]; then
 fi
 
 OPENCODE_IOS=1
-# The postinst mirrors the CLI asset tree to the /var/mobile runtime path; fall
-# back to the packaged /var/jb copy if the mirror is missing (headless commands
-# still work there; only the exec-mapped OpenTUI renderer cannot load).
-if [ ! -d "$RUNTIME_ASSETS" ]; then
-    RUNTIME_ASSETS="$ASSETS"
-fi
 # The OpenTUI loader resolves the renderer key
 # `@opentui/core-ios-arm64/libopentui.dylib` by joining it onto this absolute
-# directory. It MUST be the /var/mobile mirror: /var/jb paths do not map
-# executable on device.
+# directory; the packaged /var/jb CLI asset tree is the runtime root (the
+# renderer dylib is codesign-signed so dyld maps it executable there).
 OPENCODE_NODE_ASSETS_DIR="$RUNTIME_ASSETS"
 OTUI_ASSET_ROOT="$RUNTIME_ASSETS"
 # Rootless iOS has no /bin/sh, /bin/bash or /bin/zsh: the bootstrap shells live

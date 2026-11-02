@@ -526,27 +526,33 @@ class LauncherVariantTest(unittest.TestCase):
         self.assertIn("--single-threaded", text)
         self.assertIn("/var/jb", text)
 
-    def test_node26_launcher_uses_mobile_runtime_assets(self):
+    def test_node26_launcher_uses_packaged_jb_runtime_assets(self):
         code = self._code(self._launcher("opencode-node26"))
-        # iOS maps /var/jb executables non-executable: the renderer must be loaded
-        # from the /var/mobile mirror that postinst creates (device-verified).
-        self.assertIn("/var/mobile/Library/OpenCode/assets", code)
+        # Device finding (iOS 16.1.1): the runtime asset root is the packaged
+        # /var/jb CLI asset tree (codesign-signed renderer dylib); a /var/mobile
+        # dylib mmap is refused by the sandbox.
+        self.assertIn(
+            'RUNTIME_ASSETS="${OPENCODE_IOS_RUNTIME_ASSETS:-$ASSETS}"', code
+        )
         self.assertIn('OPENCODE_NODE_ASSETS_DIR="$RUNTIME_ASSETS"', code)
         self.assertIn('OTUI_ASSET_ROOT="$RUNTIME_ASSETS"', code)
-        self.assertNotIn('OTUI_ASSET_ROOT="$ASSETS"', code)
         self.assertIn("OPENCODE_IOS_RUNTIME_ASSETS", code)
+        self.assertNotIn("/var/mobile", code)
 
-    def test_node26_postinst_mirrors_assets_for_exec_mmap(self):
+    def test_node26_postinst_sets_renderer_dylib_executable(self):
         repo = Path(__file__).resolve().parent.parent
         postinst = (repo / "packaging/rootless/postinst").read_text(encoding="utf-8")
-        postrm = (repo / "packaging/rootless/postrm").read_text(encoding="utf-8")
-        self.assertIn("/var/mobile/Library/OpenCode/assets", postinst)
         self.assertIn("@opentui/core-ios-arm64/libopentui.dylib", postinst)
-        self.assertIn("cp -R", postinst)
         self.assertRegex(postinst, r"chmod\s+0755\s+\S*libopentui\.dylib")
-        self.assertRegex(postinst, r"chown\s+-R\s+root:mobile")
-        self.assertIn("/var/mobile/Library/OpenCode/assets", postrm)
-        self.assertRegex(postrm, r"rm\s+-rf\s+/var/mobile/Library/OpenCode/assets")
+        # The /var/mobile asset mirror was the wrong direction (sandbox refuses
+        # dylib mmap); no mirror copy may remain in postinst.
+        self.assertNotIn("/var/mobile/Library/OpenCode/assets", postinst)
+        self.assertNotIn("cp -R", postinst)
+
+    def test_node26_launcher_does_not_use_var_mobile_assets(self):
+        code = self._code(self._launcher("opencode-node26"))
+        self.assertNotIn("/var/mobile", code)
+        self.assertIn("codesign", self._launcher("opencode-node26").lower())
 
 
 class VariantInferenceTest(unittest.TestCase):
