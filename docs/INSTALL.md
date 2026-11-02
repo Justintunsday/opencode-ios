@@ -156,11 +156,16 @@ Device test steps (maintainer):
 
 ```sh
 # 1. install the experimental package (same package name/version as the stable
-#    build, so it REPLACES the installed opencode package)
+#    build, so it REPLACES the installed opencode package). postinst mirrors the
+#    CLI assets to /var/mobile/Library/OpenCode/assets (root:mobile, dirs 0755,
+#    renderer dylib 0755) because iOS maps /var/jb executables non-executable.
 sudo dpkg -i OpenCode-iOS-rootless-node26.deb
-# 2. identity + offline matrix
+# 2. identity + exec-mmap mirror + FFI preflight
+ls -l /var/mobile/Library/OpenCode/assets/@opentui/core-ios-arm64/libopentui.dylib  # 3,785,600 B, -rwxr-xr-x
 /var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 26.13.0
+/var/jb/usr/lib/opencode/runtime/node -p process.platform        # ios
 /var/jb/usr/lib/opencode/runtime/node -e "console.log(typeof require('node:ffi').dlopen)"  # function (FFI-enabled runtime)
+/var/jb/usr/lib/opencode/runtime/node -e "const m=new WebAssembly.Memory({initial:1}); console.log('wasm_ok')"  # wasm_ok (trap-handler fix)
 sudo ldid -e /var/jb/usr/lib/opencode/runtime/node | grep platform-application
 opencode --version; opencode --help; opencode models; opencode debug paths
 # 3. real TUI in a PTY (NewTerm 3 / SSH): expect the OpenTUI TUI, not the line REPL
@@ -168,13 +173,19 @@ opencode
 #    shell tool / agent turn with a mock provider should work; /exit to quit
 # 4. non-TTY must print clean guidance and exit 1
 opencode < /dev/null; echo "rc=$?"
-# 5. rollback to the stable device-verified release
+# 5. headless standalone E2E (wasm/undici fetch + server child --single-threaded)
+opencode run --standalone "say hi"   # with the mock provider configured
+# 6. rollback to the stable device-verified release
 sudo dpkg -i OpenCode-iOS-rootless.deb          # v2.2.5-ios.5 artifact
 ```
 
 The launcher always passes `--single-threaded` (mandatory: the V8 14.6 iOS W^X
-toggle is process-wide; background V8 threads race it → SIGBUS). Do not install
-this experimental build on a device you rely on. See
+toggle is process-wide; background V8 threads race it → SIGBUS). It points
+`OPENCODE_NODE_ASSETS_DIR` and `OTUI_ASSET_ROOT` at the `/var/mobile` asset
+mirror; the `/var/jb` copy is kept for static validation only (the iOS sandbox
+maps it non-executable, so a renderer function call from there SIGBUSes).
+`OPENCODE_IOS_RUNTIME_ASSETS` overrides the mirror path for diagnostics. Do not
+install this experimental build on a device you rely on. See
 [`VERIFICATION.md`](VERIFICATION.md) (node26 experimental section) and
 [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) for the honest status.
 
