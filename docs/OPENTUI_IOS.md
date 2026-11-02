@@ -1,9 +1,13 @@
 # OpenTUI iPhoneOS renderer build (Phase C prep)
 
-Status: **build feasibility only — NOT device-verified.** This workflow cross-compiles the
-native Zig core of OpenTUI for iPhoneOS arm64 so the real TUI has a renderer to load once the
-iPhoneOS Node.js runtime can execute `node:ffi` (Node >= 26.4). Loading the library, shipping it
-as a CLI asset and the device test are Phase D work.
+Status: **renderer built, codesign-signed and statically validated; loading into the Node
+runtime on the device is pending.** This workflow cross-compiles the native Zig core of OpenTUI for
+iPhoneOS arm64 so the real TUI has a renderer to load once the iPhoneOS Node.js runtime can execute
+`node:ffi` (Node >= 26.4). It is now shipped as a CLI asset in the Node 26 bundle (Phase D) and the
+fix for the device-reported exec-mapping failure is Apple `codesign` (ad-hoc) signing: **ldid-signed
+dylibs are mapped non-executable by dyld on iOS 16.1.1** (calling into them SIGBUSes; crash `.ips`
+shows `__TEXT` `r--/rw-`), while codesign-ad-hoc dylibs execute under `node:ffi` (device-verified
+with a minimal probe: `CALL_OK add=5/13`). See "Signing: device-reported root cause" below.
 
 ## Why this exists
 
@@ -27,7 +31,7 @@ mprotect RX`, no `MAP_JIT`), which is what makes a Zig-built dylib viable on thi
 | iOS target | `aarch64-ios.15.0`, deployment target minOS 15.0 (validation gate: minOS <= 16.1.1) |
 | Xcode | `macos-15` runner image, iPhoneOS SDK from `xcrun --sdk iphoneos --show-sdk-path` |
 | uucode tables | pre-generated `uucode-tables.zig` (vendored gzipped in `patches/opentui-ios/files/uucode-tables.zig.gz`; generated once with Zig 0.16.0 for the exact fields OpenTUI requests) |
-| Signing | `ldid -S` with the device-verified 2-key node entitlements (`scripts/ios-runtime/entitlements.plist`) |
+| Signing | Apple `codesign` **ad-hoc** (`xcrun codesign --force --sign - --timestamp=none`), verified with `codesign --verify` / `codesign -dvv` (`Signature=adhoc`). **Not ldid**: ldid signatures make the dylib non-executable on the device (device-reported root cause). |
 
 OpenTUI's Zig dependencies (yoga, uucode, ghostty) are vendored in
 `packages/native/src/vendor/zig-deps.tar.gz` and unpacked by the upstream
@@ -45,13 +49,13 @@ Apply with `git apply` from the OpenTUI checkout root (the script does this).
 
 ```bash
 # on a macOS host with Xcode:
-bash scripts/build-opentui-ios.sh all        # fetch + install Zig + build + sign/validate/package
+bash scripts/build-opentui-ios.sh all        # fetch + install Zig + build + codesign/validate/package
 # individual phases:
 bash scripts/build-opentui-ios.sh zig
 bash scripts/build-opentui-ios.sh fetch
 bash scripts/build-opentui-ios.sh build      # FULL log: dist/opentui-build/zig-build.log
-bash scripts/build-opentui-ios.sh package
-bash scripts/build-opentui-ios.sh validate   # static audit of the packaged dylib
+bash scripts/build-opentui-ios.sh package    # stage + codesign(ad-hoc) + manifest/SHA256SUMS
+bash scripts/build-opentui-ios.sh validate   # static audit of the packaged dylib (incl. codesign)
 ```
 
 The script extracts the vendored uucode tables and the build is:
@@ -81,9 +85,10 @@ from `dist/opentui-build/opentui/packages/native`; the dylib lands in
 
 ```
 opentui-ios-renderer/
-  libopentui.dylib            # iPhoneOS arm64 dylib, ldid-signed (2-key node entitlements)
-  opentui-ios-manifest.txt    # upstream/zig/SDK/patch pins, sha256/size, status caveat
-  entitlements-signed.xml     # ldid -e output
+  libopentui.dylib            # iPhoneOS arm64 dylib, Apple codesign AD-HOC signed
+  opentui-ios-manifest.txt    # upstream/zig/SDK/patch pins, sha256/size, signing tool, status caveat
+  codesign.txt                # codesign -dvv output (Signature=adhoc, flags=0x2(adhoc))
+  codesign-verify.txt         # codesign --verify output (valid on disk / satisfies Designated Requirement)
   file.txt / otool-L.txt / vtool.txt
   SHA256SUMS
 ```
@@ -94,23 +99,26 @@ Static validation (hard gates in the script, so a green run means all of these p
    **iOS=2**, exactly one platform command, **minOS <= 16.1.1**.
 2. `otool -L`: every dependency is `/usr/lib/*` or `/System/Library/Frameworks/*`.
 3. `vtool -show-build` reports `platform IOS`.
-4. `ldid -e` returns an embedded signature blob (signed).
+4. `codesign --verify --verbose=2` passes and `codesign -dvv` reports `Signature=adhoc`
+   (Apple codesign ad-hoc signature; `ldid` signatures are explicitly NOT accepted any more).
 
 ## Result (green CI run)
 
 | Field | Value |
 | --- | --- |
-| Run | [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358) (success; commit `3392dcb`; earlier green run [41313516105](https://github.com/Justintunsday/opencode-ios/actions/runs/41313516105)) |
-| Artifact | `opentui-ios-renderer` (zip 1,585,492 bytes) |
-| Library | `libopentui.dylib`, **3,785,600 bytes**, sha256 **`954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`** |
-| Mach-O | thin arm64 `MH_DYLIB`, `LC_BUILD_VERSION` platform **iOS**, minOS **15.0.0** (gate <= 16.1.1), ldid-signed with the device-verified 2-key node entitlements |
+| Run | [41487998437](https://github.com/Justintunsday/opencode-ios/actions/runs/41487998437) (success; workflow_dispatch from `main` `bd3fbac`; codesign commit `54e0eab`; earlier ldid-signed green run [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358)) |
+| Artifact | `opentui-ios-renderer`, artifact id `13163002781` (zip 1,567,284 bytes) |
+| Library | `libopentui.dylib`, **3,784,448 bytes**, sha256 **`c2123919402a3ab418f6e431d3c21bec4c33e130bb439c657a8ac17479da62a9`** |
+| Mach-O | thin arm64 `MH_DYLIB`, `LC_BUILD_VERSION` platform **iOS**, minOS **15.0.0** (gate <= 16.1.1), **Apple codesign ad-hoc signed** (`Signature=adhoc`, `flags=0x2(adhoc)`, `codesign --verify` valid; no entitlements) |
 | Dependencies (`otool -L`) | own `@rpath/libopentui.dylib` id + `/usr/lib/libc++.1.dylib`, `/usr/lib/libc++abi.dylib`, `/usr/lib/libSystem.B.dylib`, `/usr/lib/libobjc.A.dylib`, `CoreFoundation`, `CoreAudio`, `AudioToolbox`, `Foundation`, `AVFoundation`, `AVFAudio` (all iOS system libs) |
 | Build time | ~2.5 min (Zig build step; full job ~3 min warm) |
 | Patch | `0001-ios-target-and-sdk.patch` (sha256 `3e52a956…`; the patch header records the first green run) |
 
-The `dylib` sha256 is **not reproducible across runs** because the `ldid` signature blob is not
-deterministic; the compiled renderer payload itself is reproducible, and each artifact ZIPs own
+The `dylib` sha256 can change between builds because the ad-hoc code signature/identifier is part
+of the file; the compiled renderer payload itself is reproducible. Each artifact ZIP's own
 `SHA256SUMS` is authoritative for that run. The CLI bundle artifacts have the same property.
+Changing the signing tool (ldid -> codesign) **changes the dylib sha256** — the CLI bundle pins the
+codesign-adhoc artifact (run 41487998437) and was rebuilt with it.
 
 ## Phase D device precondition (dlopen, device-verified)
 
@@ -136,9 +144,9 @@ directory already lives under `/var/jb/usr/lib/opencode/cli/`, so the renderer b
 normal asset tree. Do **not** load it from `/var/mobile` or `/tmp` (sandbox blocks executable
 `mmap` there). The asset path must be derived from the installed CLI asset root, not from the
 bundled module's original location. No JIT/extra entitlements are needed for `dlopen` itself:
-2-key signatures on both the dylib and the loading binary are sufficient. `node:ffi`'s own
-`dlopen` should follow the same sandbox rules; that is the remaining device unknown, blocked on
-the Node 26 runtime (Phase A/B).
+a 2-key signature on the loading binary is sufficient; the dylib needs an Apple codesign
+signature (ad-hoc) for executable mappings. `node:ffi`'s own `dlopen` follows the same sandbox
+rules (device-verified from `/var/jb`).
 
 ### Launch flags and node:ffi API (validated on stock Node 26.13.0 host)
 
@@ -156,13 +164,32 @@ the Node 26 runtime (Phase A/B).
   `--single-threaded` requirement (the V8 W^X toggle is process-wide) and the `/var/jb` asset-path
   rule from the dlopen evidence above.
 
+## Signing: device-reported root cause (renderer exec mapping)
+
+The first end-to-end TUI attempt failed with a `SIGBUS` when executing renderer code. The Lead built
+a minimal probe (`libocprobe.dylib`: `int add(int,int)` compiled with `xcrun clang` for
+`arm64-apple-ios`) and ran it on the target iPhone SE 2 / iOS 16.1.1 under `node:ffi`:
+
+- signed with **Apple `xcrun codesign --force --sign -`** (ad-hoc; with or without the 2-key
+  entitlements) -> `dlopen` + call -> **`CALL_OK add=5/13`** (execution works from `/var/jb/tmp`);
+- the same source signed with **`ldid -S` / `-S<entitlements>` / `-M`** -> `dlopen` succeeds but
+  calling the function **SIGBUSes**; the crash `.ips` shows the dylib `__TEXT` mapped `r--/rw-`
+  (non-executable).
+
+Conclusion: the runtime, the `/var/jb` path and the OpenTUI build were fine; **ldid's code signature
+is not sufficient for executable mappings on this device**. The renderer is therefore signed with
+Apple `codesign` ad-hoc (`scripts/build-opentui-ios.sh package`), the artifact ships `codesign.txt` /
+`codesign-verify.txt`, and the static gate requires `codesign --verify` + `Signature=adhoc`. The
+`ldid`-signed dylib from run 41313921358 remains in the docs only as history; the CLI Node 26 bundle
+is pinned to the codesign-adhoc dylib.
+
 ## Known limitations / remaining Phase D work
 
 
-- **Not verified inside the Node runtime.** CI proves it is a correctly built/signed iPhoneOS dylib,
-  and a 2-key-signed `dlopen` probe loaded it successfully on the device from `/var/jb` paths (see
-  the Phase D device precondition above). Loading it from `node:ffi` inside the Node 26 runtime is
-  still untested (blocked on the Node 26 Phase A/B runtime).
+- **Loading into the Node runtime is the remaining device check.** CI proves the codesign-adhoc
+  Mach-O/loader/linkage gates, a `dlopen` probe proved `/var/jb` paths work, and the ldid-vs-codesign
+  exec-mapping root cause is device-verified; the full `node:ffi` load + renderer call inside the Node
+  26 runtime is the Lead's pending device test.
 - **Hybrid C++ ABI (Zig 0.16.0 workaround).** The C++ translation units are compiled with Zig's
   bundled libc++/libc++abi headers (ABI version 1, hardening mode none, Zig's feature defines) but
   linked against the iPhoneOS SDK's libc++/libc++abi stubs. Both are LLVM libc++ (ABI 1) so this is
@@ -179,8 +206,9 @@ the Node 26 runtime (Phase A/B).
   linux/macos/windows); the embedded-terminal feature is therefore unavailable in v1.
 - **Audio**: miniaudio is compiled with its CoreAudio backend (CoreAudio/AudioToolbox/Foundation/AVFoundation
   linked); iOS AVAudioSession behaviour is untested on device.
-- Phase D (CLI side, to be tracked separately): accept `ios-arm64` in the OpenTUI asset resolver,
-  ship `libopentui.dylib` in the CLI assets bundle under the `/var/jb` deb root prefix (see the
-  Phase D device precondition above; never load from `/var/mobile`/`/tmp`), pass
-  `--experimental-ffi` in the launcher, and replace the iOS REPL fallback with the real TUI once
-  the Node 26 runtime + FFI + renderer all pass on device.
+- Phase D (CLI side): DONE in the Node 26 bundle — `ios-arm64` accepted by the OpenTUI asset
+  resolver, `libopentui.dylib` staged at `@opentui/core-ios-arm64/` and installed under the
+  `/var/jb/usr/lib/opencode/cli/assets` deb root (never `/var/mobile` or `/tmp`), node:ffi default-on
+  (no `--experimental-ffi` needed on 26.13) and the handlers only use the line-REPL fallback when
+  `node:ffi` is unavailable (patch 0016). Remaining item: device TUI acceptance with the
+  FFI-enabled runtime + codesign-adhoc renderer.
