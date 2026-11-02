@@ -6,10 +6,15 @@ name: Build OpenTUI iOS native renderer (Phase C prep)
 # CI can only validate the library statically; actual loading via node:ffi, shipping it as a CLI
 # asset and the device run belong to Phase D (see docs/OPENTUI_IOS.md).
 #
-# Artifact contract: `opentui-ios-renderer` = libopentui.dylib, opentui-ios-manifest.txt,
-# codesign.txt, codesign-verify.txt, file.txt, otool-L.txt, vtool.txt, SHA256SUMS.
-# The dylib is signed with Apple `codesign` ad-hoc (NOT ldid: ldid-signed dylibs are mapped
-# non-executable by dyld on the device; codesign-ad-hoc dylibs execute under node:ffi).
+# Artifact contract: `opentui-ios-renderer` = libopentui.dylib (Mach-O flags normalized to
+# 0x100085 + codesign ad-hoc), libopentui-unmodified.dylib (unmodified Zig Mach-O + codesign
+# ad-hoc, A/B device-test variant), opentui-ios-manifest.txt, codesign*.txt, macho-flags-normalize.txt,
+# file.txt, otool-L.txt, vtool.txt, SHA256SUMS.
+# Signing: Apple `codesign` ad-hoc (NOT ldid: ldid-signed dylibs are mapped non-executable by dyld
+# on the device). The flags-normalized primary is an experiment for the Zig-dylib exec mapping:
+# clang-built dylibs execute on the device while the Zig-built one is mapped non-executable even
+# when codesign signed; the header flags differ (see the manifest). Both variants are shipped so
+# the device can A/B test them in one cycle.
 
 on:
   workflow_dispatch:
@@ -70,10 +75,14 @@ jobs:
           cat dist/opentui-ios-renderer/SHA256SUMS
           echo '--- file ---'
           file dist/opentui-ios-renderer/libopentui.dylib
-          echo '--- codesign ---'
+          echo '--- codesign (normalized primary) ---'
           cat dist/opentui-ios-renderer/codesign.txt
-          echo '--- codesign verify ---'
+          echo '--- codesign verify (normalized primary) ---'
           cat dist/opentui-ios-renderer/codesign-verify.txt
+          echo '--- codesign (unmodified A/B variant) ---'
+          cat dist/opentui-ios-renderer/codesign-unmodified.txt
+          echo '--- flags normalization ---'
+          cat dist/opentui-ios-renderer/macho-flags-normalize.txt
 
       - name: Upload opentui-ios-renderer artifact
         uses: actions/upload-artifact@v4

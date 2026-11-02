@@ -276,6 +276,49 @@ print(f"Mach-O OK: arm64 dylib platform iOS minOS {minos[0]}.{minos[1]}.{minos[2
 PY
 }
 
+# Print the Mach-O mach_header_64.flags field (64-bit little-endian Mach-O only).
+macho_flags() {
+  python3 - "$1" <<'PY'
+import struct
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    header = handle.read(32)
+if len(header) != 32:
+    raise SystemExit("Mach-O header truncated")
+magic, _cpu, _subtype, _filetype, _ncmds, _sizeofcmds, flags, _reserved = struct.unpack("<8I", header)
+if magic != 0xFEEDFACF:
+    raise SystemExit(f"not a 64-bit little-endian Mach-O: magic={magic:#x}")
+print(f"{flags:#x}")
+PY
+}
+
+# Rewrite mach_header_64.flags to the target value (u32 at file offset 24). Used by the renderer
+# A/B experiment: the Zig-linked dylib carries MH_HAS_TLV_DESCRIPTORS (0x800000) and
+# MH_BINDS_TO_WEAK (0x10000) which the clang-linked (device-executable) dylib does not; dyld maps
+# the Zig dylib non-executable on iOS 16.1.1 even with a valid codesign ad-hoc signature.
+normalize_macho_flags() {
+  python3 - "$1" "$2" <<'PY'
+import struct
+import sys
+
+path = sys.argv[1]
+target = int(sys.argv[2], 0)
+with open(path, "r+b") as handle:
+    header = handle.read(32)
+    if len(header) != 32:
+        raise SystemExit("Mach-O header truncated")
+    magic, _cpu, _subtype, _filetype, _ncmds, _sizeofcmds, flags, _reserved = struct.unpack("<8I", header)
+    if magic != 0xFEEDFACF:
+        raise SystemExit(f"not a 64-bit little-endian Mach-O: magic={magic:#x}")
+    handle.seek(24)
+    handle.write(struct.pack("<I", target))
+    handle.flush()
+print(f"normalized mach_header_64.flags {flags:#x} -> {target:#x}")
+PY
+}
+
 cmd_validate() {
   require_macos
   local lib
@@ -309,28 +352,51 @@ cmd_validate() {
 
 cmd_package() {
   require_macos
-  local src_lib lib
+  local src_lib
   src_lib="$(find_dylib)"
   mkdir -p "$DIST"
-  log "staging $src_lib -> $DIST/$DYLIB_NAME"
+  local unmodified="$DIST/libopentui-unmodified.dylib"
+  log "staging $src_lib -> $DIST/$DYLIB_NAME (+ $unmodified A/B variant)"
   cp -f "$src_lib" "$DIST/$DYLIB_NAME"
-  chmod 0644 "$DIST/$DYLIB_NAME"
+  cp -f "$src_lib" "$unmodified"
+  chmod 0644 "$DIST/$DYLIB_NAME" "$unmodified"
 
-  # Apple codesign (ad-hoc). Device-reported root cause for the renderer exec-mapping failure:
-  # ldid-signed dylibs are mapped non-executable by dyld on iOS, so calling into them SIGBUSes;
-  # codesign-ad-hoc dylibs execute fine under node:ffi (verified with a minimal probe on iOS 16.1.1).
-  log "codesign (ad-hoc) signing the renderer dylib"
+  # A/B experiment for the device-reported exec-mapping failure. Apple codesign(ad-hoc) alone is
+  # not sufficient for the Zig-linked dylib: dyld still maps its __TEXT non-executable (SIGBUS,
+  # r--/rw- crash report), while a clang-linked dylib with the same signature executes. The
+  # Mach-O header flags differ (Zig: 0x910085 = +MH_HAS_TLV_DESCRIPTORS 0x800000 and
+  # +MH_BINDS_TO_WEAK 0x10000; clang: 0x100085). The primary artifact is therefore
+  # flags-normalized (0x100085) + codesign; the unmodified Zig Mach-O is shipped alongside so the
+  # device can A/B test both without another CI cycle.
+  local flags_original flags_unmodified
+  flags_original="$(macho_flags "$DIST/$DYLIB_NAME")"
+  flags_unmodified="$(macho_flags "$unmodified")"
+  log "mach_header_64.flags: original=$flags_original unmodified=$flags_unmodified -> normalizing primary to 0x100085"
+  normalize_macho_flags "$DIST/$DYLIB_NAME" "0x100085" | tee "$DIST/macho-flags-normalize.txt"
+  local flags_normalized
+  flags_normalized="$(macho_flags "$DIST/$DYLIB_NAME")"
+
+  log "codesign (ad-hoc) signing both renderer variants"
   xcrun codesign --force --sign - --timestamp=none "$DIST/$DYLIB_NAME" ||
     die "codesign ad-hoc signing failed"
   xcrun codesign --verify --verbose=2 "$DIST/$DYLIB_NAME" >"$DIST/codesign-verify.txt" 2>&1 ||
     die "codesign verification failed after signing (see $DIST/codesign-verify.txt)"
   xcrun codesign -dvv "$DIST/$DYLIB_NAME" >"$DIST/codesign.txt" 2>&1 || true
 
+  # Experiment variant B: the unmodified Zig Mach-O with the current codesign pipeline.
+  xcrun codesign --force --sign - --timestamp=none "$unmodified" ||
+    die "codesign ad-hoc signing failed for $unmodified"
+  xcrun codesign --verify --verbose=2 "$unmodified" >"$DIST/codesign-verify-unmodified.txt" 2>&1 ||
+    die "codesign verification failed for $unmodified (see $DIST/codesign-verify-unmodified.txt)"
+  xcrun codesign -dvv "$unmodified" >"$DIST/codesign-unmodified.txt" 2>&1 || true
+
   cmd_validate "$DIST/$DYLIB_NAME"
 
-  local sha size sdk_version zig_version
+  local sha size sha_unmodified size_unmodified sdk_version zig_version
   sha="$(sha256_file "$DIST/$DYLIB_NAME")"
   size="$(wc -c <"$DIST/$DYLIB_NAME" | tr -d ' ')"
+  sha_unmodified="$(sha256_file "$unmodified")"
+  size_unmodified="$(wc -c <"$unmodified" | tr -d ' ')"
   sdk_version="$(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || echo unknown)"
   zig_version="$("$(zig_bin)" version 2>/dev/null || echo "$ZIG_VERSION")"
 
@@ -348,7 +414,14 @@ cmd_package() {
     echo "ios_sdk_version=$sdk_version"
     echo "ios_sdk_path=$IOS_SDK"
     echo "signed_with=codesign ad-hoc (xcrun codesign --force --sign - --timestamp=none)"
-    echo "signing_scheme=ad-hoc (no Team ID, no entitlements; codesign-verified; executes under node:ffi)"
+    echo "signing_scheme=ad-hoc (no Team ID, no entitlements; codesign-verified)"
+    echo "mach_header_flags_original=$flags_original"
+    echo "mach_header_flags_normalized=$flags_normalized"
+    echo "mach_header_flags_normalized_target=0x100085"
+    echo "library_unmodified=libopentui-unmodified.dylib"
+    echo "library_unmodified_size=$size_unmodified"
+    echo "library_unmodified_sha256=$sha_unmodified"
+    echo "experiment=flags-normalized-vs-unmodified (A/B device test for the dyld exec-mapping failure)"
     echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [ -n "${GITHUB_RUN_ID:-}" ]; then
       echo "github_repository=$GITHUB_REPOSITORY"
@@ -372,8 +445,9 @@ cmd_package() {
     echo "=== otool -hv ==="; xcrun otool -hv "$DIST/$DYLIB_NAME"
   } >"$DIST/file.txt" 2>&1 || true
 
-  (cd "$DIST" && shasum -a 256 "$DYLIB_NAME" opentui-ios-manifest.txt codesign.txt codesign-verify.txt \
-    otool-L.txt vtool.txt file.txt > SHA256SUMS)
+  (cd "$DIST" && shasum -a 256 "$DYLIB_NAME" libopentui-unmodified.dylib opentui-ios-manifest.txt \
+    codesign.txt codesign-verify.txt codesign-unmodified.txt codesign-verify-unmodified.txt \
+    macho-flags-normalize.txt otool-L.txt vtool.txt file.txt > SHA256SUMS)
 
   log "artifact: $DIST ($size bytes dylib)"
   log "dylib sha256: $sha"
