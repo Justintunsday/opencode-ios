@@ -732,6 +732,7 @@ Status (honest):
 | OpenTUI renderer dylib `dlopen` on the device | device-verified from `/var/jb` paths (probe run 41315221320); `/var/mobile` and `/tmp` are sandbox-blocked (`file system sandbox blocked mmap()`) |
 | OpenTUI renderer build (iPhoneOS arm64 dylib) | CI green (opencode-ios run 41313921358; dylib sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`) |
 | CLI bundle + renderer asset staged and host-verified | this workflow (`bundle-node26` job); see artifact below |
+| Packaged as `node26test.2` with the FFI-enabled runtime | packager run 41447424080: CLI pin enforced, `ffi_support=enabled`; device TUI run pending |
 | FFI-enabled Node 26 iPhoneOS runtime | pending (Phase A/B artifact is `--without-ffi`; follow-up FFI build required) |
 | **End-to-end real TUI on the device** | **NOT verified** — needs the FFI-enabled runtime + this bundle |
 
@@ -824,6 +825,14 @@ Two CI-only fixes this run needed: bun 1.4 installs `@opentui/core` in the **iso
 script now locates it via `find` and applies the dependency patch with
 `git apply --directory`), and `OPENCODE_OPENTUI_IOS_DYLIB` must be absolute because the
 upstream build runs with cwd `packages/cli` (the script normalizes it).
+
+**Packaged chain (final node26 test package):** the packager's deb is opencode-ios run
+[41447424080](https://github.com/Justintunsday/opencode-ios/actions/runs/41447424080)
+(`node26test.2`), built from this CLI artifact with the pin enforced
+(`opencode.mjs` sha256 `d031509c…`) and against the FFI-enabled Node 26.13.0 runtime
+(`ffi_support=enabled`, runtime node sha256 prefix `f4b75cc8…`); the `.deb` is sha256
+`ef188de4…`, 56,790,908 bytes. The real-TUI device acceptance (Lead-executed PTY run) is the
+remaining item; the CI/package evidence above proves only the static/host chain.
 
 ### Device verification checklist (human-executed; CI cannot do this)
 
