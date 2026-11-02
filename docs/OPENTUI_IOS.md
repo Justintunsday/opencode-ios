@@ -85,10 +85,14 @@ from `dist/opentui-build/opentui/packages/native`; the dylib lands in
 
 ```
 opentui-ios-renderer/
-  libopentui.dylib            # iPhoneOS arm64 dylib, Apple codesign AD-HOC signed
-  opentui-ios-manifest.txt    # upstream/zig/SDK/patch pins, sha256/size, signing tool, status caveat
-  codesign.txt                # codesign -dvv output (Signature=adhoc, flags=0x2(adhoc))
-  codesign-verify.txt         # codesign --verify output (valid on disk / satisfies Designated Requirement)
+  libopentui.dylib             # iPhoneOS arm64 dylib; mach_header flags normalized to 0x100085
+                               # (clang-dylib shape) + Apple codesign AD-HOC
+  libopentui-unmodified.dylib  # A/B control variant: unmodified Zig Mach-O (flags 0x910085)
+                               # + Apple codesign AD-HOC
+  opentui-ios-manifest.txt     # pins, sha256/size, signing tool, original/normalized Mach-O flags
+  codesign.txt / codesign-verify.txt                          # primary variant
+  codesign-unmodified.txt / codesign-verify-unmodified.txt    # A/B control variant
+  macho-flags-normalize.txt    # flags rewrite log (0x910085 -> 0x100085)
   file.txt / otool-L.txt / vtool.txt
   SHA256SUMS
 ```
@@ -106,7 +110,9 @@ Static validation (hard gates in the script, so a green run means all of these p
 
 | Field | Value |
 | --- | --- |
-| Run | [41487998437](https://github.com/Justintunsday/opencode-ios/actions/runs/41487998437) (success; workflow_dispatch from `main` `bd3fbac`; codesign commit `54e0eab`; earlier ldid-signed green run [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358)) |
+| Latest run (A/B experiment) | [41491573878](https://github.com/Justintunsday/opencode-ios/actions/runs/41491573878) (success): primary flags-normalized `libopentui.dylib` sha256 `5301c35f…` + unmodified control `libopentui-unmodified.dylib` sha256 `761dd065…`; see the A/B table under "Signing: device-reported root cause" |
+| Previous codesign run | [41487998437](https://github.com/Justintunsday/opencode-ios/actions/runs/41487998437) (success; workflow_dispatch from `main` `bd3fbac`; codesign commit `54e0eab`; this codesign-only Zig dylib still mapped non-executable on device — superseded by the A/B run) |
+| Earlier ldid run (history) | [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358) (success; ldid signature maps non-executable on device) |
 | Artifact | `opentui-ios-renderer`, artifact id `13163002781` (zip 1,567,284 bytes) |
 | Library | `libopentui.dylib`, **3,784,448 bytes**, sha256 **`c2123919402a3ab418f6e431d3c21bec4c33e130bb439c657a8ac17479da62a9`** |
 | Mach-O | thin arm64 `MH_DYLIB`, `LC_BUILD_VERSION` platform **iOS**, minOS **15.0.0** (gate <= 16.1.1), **Apple codesign ad-hoc signed** (`Signature=adhoc`, `flags=0x2(adhoc)`, `codesign --verify` valid; no entitlements) |
@@ -180,8 +186,35 @@ Conclusion: the runtime, the `/var/jb` path and the OpenTUI build were fine; **l
 is not sufficient for executable mappings on this device**. The renderer is therefore signed with
 Apple `codesign` ad-hoc (`scripts/build-opentui-ios.sh package`), the artifact ships `codesign.txt` /
 `codesign-verify.txt`, and the static gate requires `codesign --verify` + `Signature=adhoc`. The
-`ldid`-signed dylib from run 41313921358 remains in the docs only as history; the CLI Node 26 bundle
-is pinned to the codesign-adhoc dylib.
+`ldid`-signed dylib from run 41313921358 remains in the docs only as history.
+
+**Second device finding: codesign alone is still not sufficient for the Zig-produced dylib.** The
+codesign-adhoc Zig dylib (run 41487998437, sha256 `c2123919…`) still SIGBUSed on the device with the
+same `__TEXT r--/rw-` mapping, while the clang-built minimal probe dylib with the identical
+`codesign --force --sign -` signature executed (`add(2,3)=5`). Mach-O diff of the two:
+
+| Field | clang minimal (executes) | Zig renderer (mapped non-exec) |
+| --- | --- | --- |
+| `mach_header_64.flags` | `0x100085` | `0x910085` (extra `0x800000` MH_HAS_TLV_DESCRIPTORS, `0x10000` MH_BINDS_TO_WEAK) |
+| `__TEXT` maxprot/initprot | 5 / 5 | 5 / 5 |
+| LC_CODE_SIGNATURE | valid | valid (codesign verifies) |
+
+### A/B experiment (run 41491573878)
+
+`scripts/build-opentui-ios.sh package` now rewrites `mach_header_64.flags` at file offset 24 to
+`0x100085` on the primary artifact (after `zig build`, before codesign; log in
+`macho-flags-normalize.txt`) and ships an unmodified control so both can be device-probed in one
+cycle. Artifact `opentui-ios-renderer` run 41491573878 (artifact id 13164658134, zip 3,132,730 B):
+
+| Variant | File | Size | sha256 | flags | codesign |
+| --- | --- | --- | --- | --- | --- |
+| A: normalized + codesign (primary) | `libopentui.dylib` | 3,784,448 B | `5301c35fe237969a9c13ef6d16f468d95bc05b2a1c638aa7d26d50fa13b40730` | `0x100085` | adhoc, verify PASS |
+| B: unmodified + codesign (control) | `libopentui-unmodified.dylib` | 3,784,448 B | `761dd0653312d0ca5288e5db5ae5ff17682610df1424ecf1e0895ff7aab88a6d` | `0x910085` | adhoc, verify PASS |
+
+Device outcome of the A/B probe is pending (Lead). If A executes, the Zig output is rebuilt/pinned
+with flags normalization and the CLI bundle + package are rebuilt from it. If both fail, the fallback
+is to link the final dylib with `xcrun clang -dynamiclib -target arm64-apple-ios15.0` from Zig objects
+instead of using Zig's linker (same Mach-O shape as the working clang probe).
 
 ## Known limitations / remaining Phase D work
 
