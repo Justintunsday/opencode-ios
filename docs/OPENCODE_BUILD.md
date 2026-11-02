@@ -11,6 +11,13 @@ This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
 the native iPhoneOS Node.js **22.9.0** runtime shipped in the `.deb`.
 
+Since Phase D the workflow also builds a **Node 26.13.0 real-TUI variant**
+(`opencode-cli-node26-ios`) that ships the prebuilt OpenTUI iPhoneOS renderer
+(`libopentui.dylib`) so `opencode` can start the real TUI through `node:ffi` instead of the
+iOS line REPL. It is conditional and does not change the default Node 22 artifact; see §14.
+Its end-to-end TUI is **UNVERIFIED ON DEVICE** (the dlopen precondition and the Node 26
+JIT/WASM runtime are device-verified; the FFI-enabled runtime and the full TUI are not yet).
+
 ## 1. What the workload produces
 
 Upstream OpenCode v2 ships two build paths (`docs/ARCHITECTURE.md`): a Bun-compiled
@@ -28,9 +35,11 @@ opencode-cli-node-ios/
   SHA256SUMS              # sha256 of every payload file incl. bundle-manifest.json
 ```
 
-A conditional fallback variant produces the same layout under a different artifact name:
+Conditional variants produce the same layout under different artifact names:
 `opencode-cli-node18-ios` (bundle for the device-proven Node 18.20.4 iPhoneOS runtime,
-extra `assets/node18-sqlite/` payload; see §13). The default Node 22 artifact is unchanged.
+extra `assets/node18-sqlite/` payload; see §13) and `opencode-cli-node26-ios` (Node 26.13.0
++ `node:ffi` real-TUI bundle, extra `assets/@opentui/core-ios-arm64/libopentui.dylib`
+renderer, see §14). The default Node 22 artifact is unchanged.
 
 Pinned inputs (single source of truth: `UPSTREAM.lock`):
 
@@ -50,6 +59,8 @@ Download the artifact of a green run:
 gh run download <run-id> -n opencode-cli-node-ios -D dist/opencode-cli-node-ios
 # Node 18 fallback hedge variant (§13)
 gh run download <run-id> -n opencode-cli-node18-ios -D dist/opencode-cli-node18-ios
+# Node 26 real-TUI variant (§14; needs the FFI-enabled Node 26 iPhoneOS runtime)
+gh run download <run-id> -n opencode-cli-node26-ios -D dist/opencode-cli-node26-ios
 # latest green build of this workflow:
 gh run list --workflow build-opencode.yml -L 1 --json databaseId,conclusion
 ```
@@ -59,13 +70,17 @@ gh run list --workflow build-opencode.yml -L 1 --json databaseId,conclusion
 Workflow: `.github/workflows/build-opencode.yml` (`workflow_dispatch` + push paths
 `patches/opencode/**`, `scripts/build-opencode-bundle.sh`, `src/opencode-ios/**`,
 `UPSTREAM.lock`, the workflow itself). All steps delegate to
-`scripts/build-opencode-bundle.sh` so the same commands run locally. Two jobs build two
+`scripts/build-opencode-bundle.sh` so the same commands run locally. Three jobs build three
 artifacts from the same patch series:
 
 - `bundle` → `opencode-cli-node-ios` (default Node 22.9 runtime bundle, primary deliverable);
 - `bundle-node18` → `opencode-cli-node18-ios` (conditional Node 18.20.4 fallback hedge,
   `OPENCODE_IOS_NODE18=1`, extra sql.js payload; §13). It is independent and does not change
-  the default artifact.
+  the default artifact;
+- `bundle-node26` → `opencode-cli-node26-ios` (conditional Node 26.13.0 real-TUI bundle,
+  `OPENCODE_IOS_NODE26=1`, ships the prebuilt OpenTUI iPhoneOS renderer and needs the
+  FFI-enabled Node 26 runtime; §14). It is independent and does not change the default
+  artifact.
 
 1. **fetch** — shallow-fetch the pinned upstream commit into `upstream-src/opencode`
    (gitignored; codeload tarball fallback if the shallow fetch fails). The checkout must
@@ -80,7 +95,11 @@ artifacts from the same patch series:
    (`packages/app` Vite build) that is embedded as `assets/app-archive.bin`.
 5. **stage** — copy `packages/cli/dist-node/{opencode.mjs,assets}` into the artifact dir
    exactly as the patched build produced them (no post-hoc filtering that could make the
-   manifest lie).
+   manifest lie). For the Node 26 variant `stage` also re-verifies the sha256 of the staged
+   `assets/@opentui/core-ios-arm64/libopentui.dylib` renderer.
+   Node 26-only extra steps: **deps-patches** (apply `patches/opencode/node-modules/*.patch`
+   to the installed `@opentui/core` package after `bun install`) and **assetcheck** (host-Node
+   unit check that the OpenTUI iOS asset key resolves to the staged renderer; §14).
 6. **smoke** — download stock Node.js releases from nodejs.org (SHA-256 verified against
    `SHASUMS256.txt`) and run the bundle with a throw-away `HOME`:
    - required: `--version`, `--help` on **Node 22.9.0** (the shipped runtime version);
@@ -132,7 +151,18 @@ change surface — upstream itself is never modified.
 | 0013 | `ios-repl-turn-lifecycle` | `packages/cli/src/ios-repl.ts`, `packages/cli/src/commands/handlers/default.ts`, `packages/cli/src/commands/handlers/mini.ts`, `packages/cli/src/run/run.ts`, `packages/cli/src/services/standalone.ts` | **iOS path (device-reported).** The patch-0012 REPL resolved its server once and reused that connection for every turn; after the first device turn the transport died (`Transport: terminated`) and later turns failed with `Transport: fetch failed` without reaching the provider. The REPL now takes a `resolveServer()` closure and resolves a **fresh connection per turn/attempt**, exactly like separate `opencode run` processes: with `--standalone` each turn gets its own private stdio server (disposed through a new `close()` on the owned endpoint); with the managed service it re-discovers/reconnects per turn. One automatic retry per turn on transport-class failures (caught through the new internal `onError` hook plus captured pipeline stderr: transport/fetch failed/terminated/socket/ECONNRESET/EPIPE/network), with a short `Retrying turn...` line. The first prompt waits for a healthy resolution because resolution happens inside the turn. Headless behavior is unchanged. |
 | 0014 | `ios-repl-retry-budget` | `packages/cli/src/ios-repl.ts` | **iOS path (device-reported).** The patch-0013 REPL retried a failed turn only once (2 attempts), but device turn 1 (and occasionally turn 3) still failed both attempts (`Transport: fetch failed` then `Transport: terminated`), losing that prompt. The transport retry budget is now **2 retries per turn (3 attempts)** with a 1 s delay between attempts (each attempt resolves a fresh server connection); the first turn also waits a short 300 ms warm-up after the first private server resolves (device evidence: turn 1 is the flakiest). The `Transport error: …` / `Retrying turn...` lines are unchanged and the reason text prefers the real transport/error line. Failures that persist across all attempts still return to the prompt cleanly. |
 
-Patch series SHA-256 is recorded in `bundle-manifest.json` (`patches.series_sha256`), so a
+| 0015 | `ios-opentui-native-asset` | `packages/cli/script/node-assets.ts` | **Phase D Node 26 variant.** The iOS asset collector stages the prebuilt OpenTUI iPhoneOS renderer dylib (path supplied via `OPENCODE_OPENTUI_IOS_DYLIB` from the `opentui-ios-renderer` artifact) under the asset key `@opentui/core-ios-arm64/libopentui.dylib`, and requires the variable when `OPENCODE_IOS_NODE26=1`. Node 22/18 builds do not set the variable, so their asset set is unchanged (no macOS/iPhoneOS dylib is shipped for them). |
+
+A second, post-install patch group lives in `patches/opencode/node-modules/` (applied by
+`scripts/build-opencode-bundle.sh deps-patches` after `bun install`, Node 26 variant only,
+because it patches the *published* `@opentui/core` package rather than the upstream source):
+`0001-opentui-core-ios-native-asset.patch` adds the `ios` native-asset platform to the
+OpenTUI 0.8.0 compiled JS (`NATIVE_FILE_NAMES.ios = "libopentui.dylib"`), reads the renderer
+source from `OPENCODE_OPENTUI_IOS_DYLIB` at build time, and adds a defensive
+`darwin -> ios` platform fallback in the runtime FFI loader for a Node 26 iOS runtime that
+still reports `process.platform === "darwin"` (known regression; an FFI rebuild will report
+`ios` directly). Patch series/dependency-group SHA-256 values are recorded in
+`bundle-manifest.json` (`patches.series_sha256`, `patches.dependency_series_sha256`), so a
 consumer can tell exactly which series produced the artifact.
 
 ## 4. CI runs (honest log)
@@ -247,7 +277,15 @@ Key fields (all values are computed from the real build/stage output):
   `node:sea` asset-API import (both would make Node 22.9 throw at module link time), and
   whether the prelude shebang passes `--experimental-ffi`. These are the cheapest static
   guards against regressing the iOS prelude.
-- `env_contract` — exactly what the `.deb` launcher must provide (see §7).
+- `env_contract` — exactly what the `.deb` launcher must provide (see §7; the Node 26
+  variant's contract is in §14: `--single-threaded`, no `--experimental-sqlite`, node:ffi
+  default-on, `OTUI_ASSET_ROOT`).
+- Node 26 variant only: `build.runtime_node_version = 26.13.0`, `build.ffi`
+  (`node:ffi` default-on, renderer loaded via dlopen), `patches.dependency_*` (the
+  post-install `@opentui/core` patch group), and a top-level `opentui_renderer` block with
+  the `asset_key`, bytes, sha256, expected sha256 and `sha256_matches_expected` for
+  `assets/@opentui/core-ios-arm64/libopentui.dylib`; the asset is categorized
+  `ios-native-library` (not `native-binary`).
 - `smoke` — the full host smoke report embedded verbatim (required + informational
   commands, flags, exit codes, captured output, sqlite probes).
 - `verification_status` — `host_smoke_required_passed`, required Node version,
@@ -284,6 +322,12 @@ exec /var/jb/usr/lib/opencode/runtime/node \
   no `node:sqlite`; the bundle ships a sql.js shim). The variant's exact argv is recorded in
   its `bundle-manifest.json.env_contract`; `--single-threaded` is forwarded if supplied but is
   not required by that runtime.
+- For the **Node 26 real-TUI variant** (§14) the launcher must pass `--single-threaded`
+  (same V8 W^X requirement) and must not pass `--experimental-sqlite`. `node:ffi` is
+  default-on in Node 26.13.0, and the shipped runtime must be the **FFI-enabled** Node 26
+  build (not the `--without-ffi` Phase A/B fallback). The renderer asset must be installed
+  under the rootless `/var/jb` prefix; its exact argv and asset key are in §14 / the
+  variant's `bundle-manifest.json.env_contract`.
 - The runtime **must be built with ICU** (`--with-intl=full-icu`, used by `build-runtime.yml`;
   `small-icu` would also work). A runtime built `--with-intl=none` cannot run the bundle at
   all: V8 without ICU rejects `\p{...}` regex property escapes at parse time and `Intl` is
@@ -668,3 +712,121 @@ artifact offered for the final device matrix / `.deb`.
 Implementation effort for this variant: ≈2 h from the device finding (analysis + patches
 0007/0008 + shim + build/smoke/manifest/workflow wiring), plus CI runtime. It is a hedge
 only; the primary path remains fixing the Node 22.9 runtime's V8 W^X/JIT issue.
+
+## 14. Node 26 real-TUI variant (Phase D) — conditional variant
+
+The default Node 22 bundle cannot start the real OpenTUI TUI: OpenTUI's Node binding needs
+`node:ffi` (and loads its native Zig core `libopentui.dylib` through it), which exists only in
+Node >= 26.4. This variant targets the native iPhoneOS **Node 26.13.0** runtime and ships the
+prebuilt OpenTUI iPhoneOS renderer as a CLI asset, so `opencode` in a TTY can start the real
+TUI instead of the line REPL (patches 0011–0014 remain the fallback for the Node 22 variant).
+
+Status (honest):
+
+| Check | Status |
+| --- | --- |
+| Node 26.13.0 iPhoneOS runtime builds and runs JIT-dependent JS (`--single-threaded`) | device-verified (Phase A/B runtime; WebAssembly runtime patch pending) |
+| `node:ffi` availability + API compatibility on stock Node 26.13.0 | host-verified (`require('node:ffi')` default-on; `ffi.dlopen(path, defs)` → `{lib, functions}`; OpenTUI destructures exactly that) |
+| OpenTUI renderer dylib `dlopen` on the device | device-verified from `/var/jb` paths (probe run 41315221320); `/var/mobile` and `/tmp` are sandbox-blocked (`file system sandbox blocked mmap()`) |
+| OpenTUI renderer build (iPhoneOS arm64 dylib) | CI green (opencode-ios run 41313921358; dylib sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`) |
+| CLI bundle + renderer asset staged and host-verified | this workflow (`bundle-node26` job); see artifact below |
+| FFI-enabled Node 26 iPhoneOS runtime | pending (Phase A/B artifact is `--without-ffi`; follow-up FFI build required) |
+| **End-to-end real TUI on the device** | **NOT verified** — needs the FFI-enabled runtime + this bundle |
+
+### Build
+
+```bash
+# download the renderer artifact (Phase C green run) and the CLI bundle is built against it:
+gh run download 41313921358 -R Justintunsday/opencode-ios -n opentui-ios-renderer -D dist/opentui-ios-renderer
+export OPENCODE_OPENTUI_IOS_DYLIB="$PWD/dist/opentui-ios-renderer/libopentui.dylib"
+export OPENCODE_OPENTUI_IOS_DYLIB_SHA256=954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638
+
+# everything the workflow does, locally (macOS or POSIX host with bun + python3 + node):
+export OPENCODE_IOS_NODE26=1 OPENCODE_IOS=1 OPENCODE_TARGET=ios-arm64
+bash scripts/build-opencode-bundle.sh fetch
+bash scripts/build-opencode-bundle.sh patches
+bash scripts/build-opencode-bundle.sh install
+bash scripts/build-opencode-bundle.sh deps-patches      # patch installed @opentui/core
+bash scripts/build-opencode-bundle.sh build
+bash scripts/build-opencode-bundle.sh stage             # verifies staged renderer sha256
+bash scripts/build-opencode-bundle.sh assetcheck        # OpenTUI iOS asset/resolver check
+OPENCODE_NODE_MATRIX='26.13.0 24.22.2' OPENCODE_SMOKE_REQUIRED=26.13.0 \
+  bash scripts/build-opencode-bundle.sh smoke
+bash scripts/build-opencode-bundle.sh manifest
+bash scripts/build-opencode-bundle.sh verify
+```
+
+The build script verifies the dylib sha256 against the pin and runs
+`scripts/check_macho.py <dylib> --kind dylib --max-minos 16.1.1` before staging. The
+workflow (`bundle-node26` job) downloads the pinned `opentui-ios-renderer` artifact from
+run 41313921358 directly (same repository, `actions: read` permission), re-verifies it, then
+runs the same commands. The `assetcheck` step is a host-Node unit check:
+`src/opencode-ios/opentui_ios_asset_check.mjs` imports the patched build-time resolver with
+`process.platform` stubbed to `"ios"`, asserts the descriptor/key/source, and checks the staged
+asset + runtime FFI chunk + bundle contain the expected strings.
+
+Artifact contract: same layout as §1 plus
+`assets/@opentui/core-ios-arm64/libopentui.dylib` (3,785,600 bytes renderer at the pinned
+Phase C build), artifact name `opencode-cli-node26-ios`, manifest `variant=node26`,
+`build.runtime_node_version=26.13.0`, `verification_status.host_smoke_required_node_version`
+= `26.13.0`, `verification_status.device_verified = false`.
+
+### Launcher contract (node26 variant)
+
+```sh
+exec /var/jb/usr/lib/opencode/runtime/node \
+  --single-threaded \
+  --no-warnings \
+  --max-old-space-size=1536 \
+  /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
+```
+
+Environment (the CLI iOS prelude also sets most of these; the wrapper should provide the
+absolute rootless paths):
+
+- `OPENCODE_IOS=1`
+- `OPENCODE_NODE_ASSETS_DIR=/var/jb/usr/lib/opencode/cli/assets`
+- `OTUI_ASSET_ROOT=/var/jb/usr/lib/opencode/cli/assets` (the OpenTUI loader joins the native
+  asset key `@opentui/core-ios-arm64/libopentui.dylib` onto it; the asset must exist at that
+  absolute path)
+- `HOME` writable (device: `/var/jb/var/mobile`); `TMPDIR` writable (prelude falls back to
+  `$HOME/.cache/opencode/tmp` when unset)
+- `PATH` should start with `/var/jb/bin:/var/jb/usr/bin:/var/jb/usr/sbin:/var/jb/sbin`
+  (the prelude only prepends them when `process.platform === "ios"`; the Node 26 runtime may
+  report `darwin` until the FFI rebuild, so the wrapper should set PATH itself)
+
+Flags: `--single-threaded` is **required** (same process-wide V8 W^X constraint as Node 22);
+do **not** pass `--experimental-sqlite` (not needed; Node 26 has `node:sqlite`) or
+`--no-experimental-ffi` (would disable the renderer). `--experimental-ffi` is accepted but
+redundant on 26.13; `--allow-ffi` is only for the permission model.
+
+### Device verification checklist (human-executed; CI cannot do this)
+
+1. Build/obtain the **FFI-enabled** Node 26.13.0 iPhoneOS runtime (not `--without-ffi`) and
+   confirm on the device: `node -e "console.log(typeof require('node:ffi').dlopen)"`.
+2. Install this bundle + the renderer dylib under `/var/jb/usr/lib/opencode/cli/assets/...`
+   (root-owned, 0755 for the dylib), then run the launcher in a real PTY.
+3. Expect: no `Unsupported OpenTUI Node asset target`, no stack trace; the full TUI renders
+   and accepts a prompt.
+4. Capture evidence (run id/build sha, runtime sha, exact argv/env, screenshot/transcript,
+   exit codes); if it crashes, capture the crash type/symbol before reporting failure.
+
+### Risks / open questions
+
+- **FFI runtime provenance:** the Phase A/B Node 26 runtime is built `--without-ffi`. Loading
+  the renderer requires the FFI-enabled build (`deps/libffi` iOS cross-build risk noted by the
+  runtime workstream). Without it the TUI cannot start.
+- **WebAssembly runtime patch pending:** Node 26's `fetch` (llhttp wasm) needs WebAssembly;
+  the runtime patch is in flight. Without it provider network calls fail even though the TUI
+  renders.
+- **Hybrid C++ ABI in the renderer:** the dylib is compiled with Zig 0.16 bundled libc++
+  headers but links the iPhoneOS SDK libc++ stubs (Zig 0.16 cannot build its bundled libc++ for
+  `aarch64-ios`). Both are libc++ ABI v1; the device TUI load is the final confirmation.
+- **Renderer asset versioning:** the dylib is ldid-signed (2-key entitlements); its hash is not
+  reproducible across builds because the signature blob is nondeterministic. The CLI build pins
+  the Phase C artifact hash and the manifest records the staged hash; when the renderer is
+  rebuilt, update the pin in `build-opencode.yml`/build script together.
+- **Device UX:** real TUI keyboard/PTY limitations on iPhone (no hardware keyboard assumptions,
+  PTY only, no clipboard until an iOS clipboard port, performance) are tracked in
+  `docs/KNOWN_LIMITATIONS.md` by the packaging workstream.
+

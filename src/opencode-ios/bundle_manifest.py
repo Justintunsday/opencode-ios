@@ -37,9 +37,11 @@ MANIFEST_SCHEMA = "opencode-ios/bundle-manifest/v1"
 # relative to the rootless install prefix and are also documented in
 # docs/OPENCODE_BUILD.md. `package-rootless.yml` must match this contract.
 #
-# Two conditional variants share this generator:
+# Three conditional variants share this generator:
 #   opencode-cli-node-ios       Node 22.9 runtime bundle (default)
 #   opencode-cli-node18-ios     Node 18 runtime fallback (sql.js-backed node:sqlite shim)
+#   opencode-cli-node26-ios     Node 26.13.0 node:ffi real-TUI bundle (ships the OpenTUI
+#                               iPhoneOS libopentui.dylib renderer asset; Phase D)
 INSTALL_PREFIX = "/var/jb"
 ENV_CONTRACT = {
     "artifact_layout": {
@@ -104,7 +106,43 @@ ENV_CONTRACT_NODE18 = {
     ],
 }
 
+ENV_CONTRACT_NODE26 = {
+    "artifact_layout": ENV_CONTRACT["artifact_layout"],
+    "launcher_argv": [
+        f"{INSTALL_PREFIX}/usr/lib/opencode/runtime/node",
+        "--single-threaded",
+        "--no-warnings",
+        f"{INSTALL_PREFIX}/usr/lib/opencode/cli/opencode.mjs",
+        '"$@"',
+    ],
+    "launcher_env": {
+        "OPENCODE_IOS": "1",
+        "OPENCODE_NODE_ASSETS_DIR": f"{INSTALL_PREFIX}/usr/lib/opencode/cli/assets",
+        "OTUI_ASSET_ROOT": f"{INSTALL_PREFIX}/usr/lib/opencode/cli/assets",
+        "HOME": "device user home (writable)",
+        "TMPDIR": "writable temporary directory (home-rooted fallback is provided by the prelude)",
+        "PATH": f"{INSTALL_PREFIX}/usr/bin:{INSTALL_PREFIX}/bin:... (rootless prefix first)",
+    },
+    "node_flags": {
+        "required": ["--single-threaded"],
+        "forbidden": ["--experimental-sqlite"],
+        "notes": [
+            "--single-threaded is REQUIRED (same V8 W^X constraint as the Node 22 runtime): the runtime's code-memory protection toggle is process-wide and background V8 threads race it. The CLI forwards --single-threaded (and --max-old-space-size=...) to spawned server children (patches/opencode/0010), so passing it once on the launcher is enough.",
+            "node:ffi is enabled by default in Node 26.13.0 (validated on the stock host binary): --experimental-ffi is accepted but redundant, and --no-experimental-ffi would disable the renderer; do not pass --allow-ffi (permission-model only).",
+            "The shipped Node 26 iPhoneOS runtime must be the FFI-enabled build (not the --without-ffi Phase A/B fallback): OpenTUI's renderer is loaded via node:ffi->dlopen.",
+            "--experimental-sqlite is not needed on Node 26 (node:sqlite is available); do not pass it.",
+            "Renderer asset: the bundle ships libopentui.dylib under assets/@opentui/core-ios-arm64/; the OpenTUI loader resolves it from OTUI_ASSET_ROOT (absolute) and dlopen() succeeds only from the /var/jb rootless prefix on the device (device-verified: real user-data paths are sandbox-blocked).",
+        ],
+    },
+    "notes": [
+        "Phase D real-TUI variant: Node 26.13.0 + node:ffi + the prebuilt OpenTUI iPhoneOS renderer.",
+        "The renderer dylib is Mach-O iPhoneOS arm64, minOS 15.0.0, 2-key ldid-signed (opencode-ios artifact opentui-ios-renderer).",
+        "Device execution has NOT been verified by CI; the dlopen precondition is device-verified but the end-to-end TUI is not.",
+    ],
+}
+
 ASSET_CATEGORY_NOTES = {
+    "ios-native-library": "iPhoneOS native renderer (libopentui.dylib) loaded by node:ffi on the device; Mach-O iPhoneOS arm64, not a desktop binary.",
     "app-archive": "Web/TUI app archive embedded by the Node build (read by the server).",
     "audio": "attention sound assets used by the interface.",
     "wasm": "WebAssembly payload (photon image processing / tree-sitter syntax parsing / the Node 18 sql.js sqlite shim); included but optional — the CLI does not require WebAssembly at startup and degrades gracefully when it is unavailable or when the matching JS glue is not shipped.",
@@ -153,6 +191,8 @@ def read_lock(path: str) -> dict[str, str]:
 
 def classify_asset(relative: str) -> str:
     normalized = relative.replace(os.sep, "/")
+    if normalized.startswith("@opentui/core-ios-arm64/"):
+        return "ios-native-library"
     if normalized == "app-archive.bin":
         return "app-archive"
     if normalized.endswith(".wasm"):
@@ -235,7 +275,7 @@ def collect_artifact(artifact_dir: str) -> tuple[dict[str, object], dict[str, st
     return bundle, checksums
 
 
-def collect_patches(patches_dir: str) -> dict[str, object]:
+def collect_patch_group(patches_dir: str) -> dict[str, object]:
     files: list[dict[str, object]] = []
     series = hashlib.sha256()
     if os.path.isdir(patches_dir):
@@ -250,7 +290,23 @@ def collect_patches(patches_dir: str) -> dict[str, object]:
             file_hash = hashlib.sha256(content).hexdigest()
             series.update(name.encode("utf-8") + b"\0" + content + b"\n")
             files.append({"name": name, "sha256": file_hash, "bytes": len(content)})
-    return {"directory": "patches/opencode", "count": len(files), "series_sha256": series.hexdigest(), "files": files}
+    return {"count": len(files), "series_sha256": series.hexdigest(), "files": files}
+
+
+def collect_patches(patches_dir: str) -> dict[str, object]:
+    """Upstream-source patch series plus the post-install node_modules dependency patch group."""
+    source = collect_patch_group(patches_dir)
+    deps = collect_patch_group(os.path.join(patches_dir, "node-modules"))
+    return {
+        "directory": "patches/opencode",
+        "count": source["count"],
+        "series_sha256": source["series_sha256"],
+        "files": source["files"],
+        "dependency_directory": "patches/opencode/node-modules",
+        "dependency_count": deps["count"],
+        "dependency_series_sha256": deps["series_sha256"],
+        "dependency_files": deps["files"],
+    }
 
 
 def collect_signatures(artifact_dir: str) -> dict[str, object]:
@@ -311,12 +367,54 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
         required_passed = bool(smoke.get("summary", {}).get("required_passed"))
 
     node18 = info.get("NODE18_VARIANT", "0") == "1"
-    artifact_name = info.get("ARTIFACT_NAME") or ("opencode-cli-node18-ios" if node18 else "opencode-cli-node-ios")
-    variant = "node18-fallback" if node18 else "node22"
-    env_contract = ENV_CONTRACT_NODE18 if node18 else ENV_CONTRACT
+    node26 = info.get("NODE26_VARIANT", "0") == "1"
+    if node18 and node26:
+        raise SystemExit("bundle build info marks both the Node 18 and Node 26 variants")
+    if node18:
+        default_artifact = "opencode-cli-node18-ios"
+    elif node26:
+        default_artifact = "opencode-cli-node26-ios"
+    else:
+        default_artifact = "opencode-cli-node-ios"
+    artifact_name = info.get("ARTIFACT_NAME") or default_artifact
+    variant = "node18-fallback" if node18 else "node26" if node26 else "node22"
+    env_contract = ENV_CONTRACT_NODE18 if node18 else ENV_CONTRACT_NODE26 if node26 else ENV_CONTRACT
+    runtime_node_version = (
+        "18.20.4" if node18 else (info.get("RUNTIME_NODE_VERSION") or "26.13.0") if node26 else "22.9.0"
+    )
     ios_prelude = bool(signatures.get("ios_prelude_marker") or signatures.get("node18_prelude_marker"))
     if node18 and not signatures.get("node18_prelude_marker"):
         raise SystemExit("Node 18 variant bundle is missing the node18 prelude marker (build target mismatch?)")
+    if node26 and not signatures.get("ios_prelude_marker"):
+        raise SystemExit("Node 26 variant bundle is missing the iOS prelude marker (build target mismatch?)")
+
+    # Phase D: the Node 26 bundle must ship the prebuilt OpenTUI iPhoneOS renderer under the exact
+    # asset key the patched OpenTUI FFI loader resolves from OTUI_ASSET_ROOT.
+    opentui_renderer = None
+    if node26:
+        asset_key = info.get("OPENCODE_OPENTUI_IOS_ASSET_KEY") or "@opentui/core-ios-arm64/libopentui.dylib"
+        expected_sha = (info.get("OPENCODE_OPENTUI_IOS_DYLIB_SHA256") or "").lower()
+        if not expected_sha:
+            raise SystemExit("Node 26 variant build info is missing OPENCODE_OPENTUI_IOS_DYLIB_SHA256")
+        match = next((item for item in bundle["assets"]["files"] if item["path"] == asset_key), None)
+        if match is None:
+            raise SystemExit(f"Node 26 variant bundle is missing the OpenTUI renderer asset: {asset_key}")
+        actual_sha = str(match["sha256"]).lower()
+        if actual_sha != expected_sha:
+            raise SystemExit(
+                f"OpenTUI renderer asset sha256 mismatch: expected {expected_sha}, got {actual_sha}"
+            )
+        opentui_renderer = {
+            "asset_key": asset_key,
+            "path": f"assets/{asset_key}",
+            "bytes": match["bytes"],
+            "sha256": actual_sha,
+            "expected_sha256": expected_sha,
+            "sha256_matches_expected": True,
+            "format": "Mach-O iPhoneOS arm64 dylib (minOS 15.0.0), 2-key ldid-signed; "
+            "validated by scripts/check_macho.py --kind dylib and the OpenTUI iOS asset check",
+            "loader": "node:ffi dlopen via the patched OpenTUI FFI backend; OTUI_ASSET_ROOT + asset key",
+        }
 
     native = int(bundle["assets"].get("categories", {}).get("native-binary", 0))
     notes: list[str] = []
@@ -335,6 +433,14 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
         notes.append(
             f"{native} native-binary asset file(s) are staged (Darwin/Linux addons). They are NOT loadable on iPhoneOS; "
             "the iOS patch series removes them, and this manifest records what was actually present."
+        )
+    if node26:
+        notes.append(
+            "Phase D Node 26 real-TUI variant: ships the prebuilt OpenTUI iPhoneOS renderer dylib "
+            "(assets/@opentui/core-ios-arm64/libopentui.dylib) loaded through node:ffi. It requires the "
+            "FFI-enabled Node 26.13.0 iPhoneOS runtime; the --without-ffi Phase A/B runtime cannot load it. "
+            "Device execution is not verified by CI: the dlopen precondition is device-verified, the "
+            "end-to-end TUI is not."
         )
     if required_passed is False:
         notes.append(
@@ -356,11 +462,13 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
         "build": {
             "target": info.get("TARGET", "darwin-arm64"),
             "variant": variant,
-            "runtime_node_version": "18.20.4" if node18 else "22.9.0",
+            "runtime_node_version": runtime_node_version,
             "sqlite": {
                 "module": "node:sqlite",
                 "provider": "bundled sql.js shim (WebAssembly)"
                 if node18
+                else "runtime node:sqlite (no flag; Node 26)"
+                if node26
                 else "runtime node:sqlite (--experimental-sqlite)",
             },
             "ios_prelude": ios_prelude,
@@ -379,6 +487,18 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
                 if node18
                 else {}
             ),
+            **(
+                {
+                    "ffi": {
+                        "module": "node:ffi",
+                        "enabled": "default-on in Node 26.13.0 (no flag required)",
+                        "renderer": "OpenTUI libopentui.dylib via node:ffi dlopen",
+                    },
+                    "single_threaded": True,
+                }
+                if node26
+                else {}
+            ),
         },
         "bundle": bundle,
         "runtime_bootstrap_signatures": signatures,
@@ -395,9 +515,20 @@ def build_manifest(args: argparse.Namespace, bundle: dict[str, object], checksum
                 ]
                 if node18
                 else []
+            )
+            + (
+                [
+                    "assets/@opentui/core-ios-arm64/libopentui.dylib is the prebuilt OpenTUI iPhoneOS renderer "
+                    "loaded through node:ffi on the Node 26 variant; it is categorized ios-native-library, not "
+                    "native-binary. It must be installed under the rootless /var/jb prefix on the device (the iOS "
+                    "sandbox blocks executable mmap from user-data paths)."
+                ]
+                if node26
+                else []
             ),
         },
         "env_contract": env_contract,
+        **({"opentui_renderer": opentui_renderer} if opentui_renderer else {}),
         "smoke": smoke,
         "verification_status": {
             "host_smoke_required_passed": required_passed,

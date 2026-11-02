@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Verify thin 64-bit little-endian ARM64 Mach-O targets iPhoneOS, not macOS.
 
-Checks build platform and deployment target; does NOT prove device runtime compatibility.
+Checks the file type (executable or dylib), build platform and deployment target; does NOT
+prove device runtime compatibility.
 """
 import argparse
 import struct
 from pathlib import Path
 
 MH_MAGIC_64 = 0xFEEDFACF
+MH_EXECUTE = 0x2
+MH_DYLIB = 0x6
 CPU_TYPE_ARM64 = 0x0100000C
 LC_BUILD_VERSION = 0x32
 LC_VERSION_MIN_IPHONEOS = 0x25
@@ -18,7 +21,7 @@ def unpack_version(value):
     return ((value >> 16) & 0xFFFF, (value >> 8) & 0xFF, value & 0xFF)
 
 
-def audit(path, max_minos=(16, 1, 1)):
+def audit(path, max_minos=(16, 1, 1), filetypes=(MH_EXECUTE,)):
     with open(path, "rb") as f:
         hdr = f.read(32)
         if len(hdr) != 32:
@@ -26,8 +29,9 @@ def audit(path, max_minos=(16, 1, 1)):
         magic, cpu, subtype, filetype, commands, sizeofcmds, flags, reserved = struct.unpack("<8I", hdr)
         if magic != MH_MAGIC_64 or cpu != CPU_TYPE_ARM64:
             raise ValueError("Not a thin little-endian arm64 Mach-O executable")
-        if filetype != 2:
-            raise ValueError(f"Not MH_EXECUTE (filetype={filetype})")
+        if filetype not in filetypes:
+            allowed = ", ".join(("MH_EXECUTE" if item == MH_EXECUTE else "MH_DYLIB" if item == MH_DYLIB else str(item)) for item in filetypes)
+            raise ValueError(f"Not a supported Mach-O file type (filetype={filetype}, expected {allowed})")
         if commands > 10000 or sizeofcmds > 16 * 1024 * 1024:
             raise ValueError("Unreasonable Mach-O load command size")
         buf = f.read(sizeofcmds)
@@ -69,8 +73,19 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("binary", type=Path)
     p.add_argument("--max-minos", default="16.1.1")
+    p.add_argument(
+        "--kind",
+        choices=("execute", "dylib", "any"),
+        default="execute",
+        help="expected Mach-O file type: executable (default), dylib, or any",
+    )
     a = p.parse_args()
-    audit(a.binary, tuple(map(int, a.max_minos.split("."))))
+    filetypes = {
+        "execute": (MH_EXECUTE,),
+        "dylib": (MH_DYLIB,),
+        "any": (MH_EXECUTE, MH_DYLIB),
+    }[a.kind]
+    audit(a.binary, tuple(map(int, a.max_minos.split("."))), filetypes)
 
 if __name__ == "__main__":
     main()

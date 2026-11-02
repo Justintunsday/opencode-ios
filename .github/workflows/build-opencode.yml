@@ -37,6 +37,9 @@ on:
 
 permissions:
   contents: read
+  # Required to download the pinned `opentui-ios-renderer` artifact from an earlier run of
+  # build-opentui-ios.yml in this repository (actions/download-artifact with run-id).
+  actions: read
 
 concurrency:
   group: build-opencode-${{ github.ref }}
@@ -253,6 +256,156 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: opencode-node18-build-metadata
+          path: |
+            dist/opencode-build/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Phase D: Node 26.13.0 + node:ffi real-TUI bundle. It ships the prebuilt OpenTUI iPhoneOS
+  # renderer (`opentui-ios-renderer` artifact from run 41313921358) as a CLI asset under the key
+  # the patched OpenTUI FFI loader resolves: @opentui/core-ios-arm64/libopentui.dylib.
+  # This job is static/host verification only: the end-to-end TUI is device-verified separately
+  # with the FFI-enabled Node 26 iPhoneOS runtime (the current --without-ffi Phase A/B runtime
+  # cannot load node:ffi and therefore cannot run the real TUI).
+  bundle-node26:
+    name: CLI Node 26 real-TUI bundle (host smoke only, not device verification)
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      OPENCODE_TARGET: ios-arm64
+      OPENCODE_IOS: '1'
+      OPENCODE_IOS_NODE26: '1'
+      OPENCODE_ARTIFACT_DIR: dist/opencode-cli-node26-ios
+      OPENCODE_ARTIFACT_NAME: opencode-cli-node26-ios
+      # 26.13.0 is the shipped runtime version and the required smoke version; 24.22.2 is
+      # informational (the bundle must not hard-crash on a supported previous LTS either).
+      OPENCODE_NODE_MATRIX: '26.13.0 24.22.2'
+      OPENCODE_SMOKE_REQUIRED: '26.13.0'
+      # Phase C green renderer artifact (opencode-ios run 41313921358). The sha256 is pinned and
+      # scripts/build-opencode-bundle.sh re-verifies it plus the Mach-O before staging; the
+      # manifest records the actual staged hash.
+      OPENCODE_OPENTUI_IOS_DYLIB: dist/opentui-ios-renderer/libopentui.dylib
+      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: 954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638
+    steps:
+      - name: Checkout port repository
+        uses: actions/checkout@v4
+
+      - name: Show pinned upstream versions
+        run: |
+          grep -E '^OPENCODE_(REPO|REF|VERSION)=' UPSTREAM.lock
+          uname -a
+          echo "OpenTUI renderer dylib pinned sha256: $OPENCODE_OPENTUI_IOS_DYLIB_SHA256"
+
+      - name: Fetch pinned upstream OpenCode
+        run: bash scripts/build-opencode-bundle.sh fetch
+
+      - name: Apply iOS patch series
+        run: bash scripts/build-opencode-bundle.sh patches
+
+      - name: Download OpenTUI iOS renderer artifact (Phase C, pinned run)
+        uses: actions/download-artifact@v4
+        with:
+          name: opentui-ios-renderer
+          run-id: '41313921358'
+          github-token: ${{ github.token }}
+          path: dist/opentui-ios-renderer
+
+      - name: Verify OpenTUI renderer artifact (sha256 + Mach-O iPhoneOS dylib)
+        run: |
+          set -euo pipefail
+          dylib="dist/opentui-ios-renderer/libopentui.dylib"
+          test -f "$dylib"
+          actual="$(sha256sum "$dylib" | awk '{print $1}')"
+          echo "renderer dylib sha256: $actual"
+          test "$actual" = "$OPENCODE_OPENTUI_IOS_DYLIB_SHA256"
+          python3 scripts/check_macho.py "$dylib" --kind dylib --max-minos 16.1.1
+
+      - name: Set up Bun (upstream build tool only, not the iOS runtime)
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+
+      - name: Cache bun downloads, stock Node runtimes and upstream node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            dist/node-runtimes
+            upstream-src/opencode/node_modules
+            upstream-src/opencode/packages/cli/node_modules
+          key: opencode-bundle-node26-${{ runner.os }}-${{ hashFiles('UPSTREAM.lock') }}-${{ hashFiles('upstream-src/opencode/bun.lock') }}-${{ env.OPENCODE_OPENTUI_IOS_DYLIB_SHA256 }}
+
+      - name: Install upstream dependencies
+        run: bash scripts/build-opencode-bundle.sh install
+
+      - name: Apply @opentui/core iOS native-asset dependency patch
+        run: bash scripts/build-opencode-bundle.sh deps-patches
+
+      - name: Build Node 26 Vite bundle (--bundle-only, no SEA)
+        run: bash scripts/build-opencode-bundle.sh build
+
+      - name: Stage Node 26 real-TUI artifact
+        run: bash scripts/build-opencode-bundle.sh stage
+
+      - name: OpenTUI iOS renderer asset/resolver host check (not device verification)
+        run: bash scripts/build-opencode-bundle.sh assetcheck
+
+      - name: Host-Node smoke matrix Node 26.13.0 (not device verification)
+        run: bash scripts/build-opencode-bundle.sh smoke
+
+      - name: Write bundle-manifest.json and SHA256SUMS
+        run: bash scripts/build-opencode-bundle.sh manifest
+
+      - name: Verify artifact checksums
+        run: bash scripts/build-opencode-bundle.sh verify
+
+      - name: Show artifact summary
+        run: |
+          set -euo pipefail
+          du -sh dist/opencode-cli-node26-ios
+          ls -l dist/opencode-cli-node26-ios/assets/@opentui/core-ios-arm64/libopentui.dylib
+          cat dist/opencode-cli-node26-ios/SHA256SUMS
+          python3 - <<'PY'
+          import json
+          with open('dist/opencode-cli-node26-ios/bundle-manifest.json') as f:
+              m = json.load(f)
+          print(json.dumps({
+              'artifact': m['artifact'],
+              'variant': m['variant'],
+              'patches': {
+                  'count': m['patches']['count'],
+                  'series_sha256': m['patches']['series_sha256'],
+                  'dependency_count': m['patches']['dependency_count'],
+                  'dependency_series_sha256': m['patches']['dependency_series_sha256'],
+              },
+              'build': {k: m['build'][k] for k in ('target', 'variant', 'runtime_node_version', 'ios_prelude', 'ffi')},
+              'opentui_renderer': {
+                  'asset_key': m['opentui_renderer']['asset_key'],
+                  'bytes': m['opentui_renderer']['bytes'],
+                  'sha256': m['opentui_renderer']['sha256'],
+                  'sha256_matches_expected': m['opentui_renderer']['sha256_matches_expected'],
+              },
+              'opencode_mjs_sha256': m['bundle']['opencode_mjs']['sha256'],
+              'assets_count': m['bundle']['assets']['count'],
+              'smoke_required_passed': m['verification_status']['host_smoke_required_passed'],
+              'smoke_required_node_version': m['verification_status']['host_smoke_required_node_version'],
+              'device_verified': m['verification_status']['device_verified'],
+          }, indent=2))
+          PY
+
+      - name: Upload opencode-cli-node26-ios artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-cli-node26-ios
+          path: dist/opencode-cli-node26-ios/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload Node 26 build metadata (not part of the artifact contract)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-node26-build-metadata
           path: |
             dist/opencode-build/
           if-no-files-found: warn

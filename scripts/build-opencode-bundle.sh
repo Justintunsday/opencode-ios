@@ -22,6 +22,8 @@
 #   scripts/build-opencode-bundle.sh install    # bun install --os=* --cpu=*
 #   scripts/build-opencode-bundle.sh build      # Vite node bundle (--bundle-only)
 #   scripts/build-opencode-bundle.sh stage      # stage dist/opencode-cli-node-ios
+#   scripts/build-opencode-bundle.sh deps-patches  # patch installed @opentui/core (node26 only)
+#   scripts/build-opencode-bundle.sh assetcheck    # OpenTUI iOS asset/resolver host check (node26)
 #   scripts/build-opencode-bundle.sh smoke      # host-Node smoke matrix
 #   scripts/build-opencode-bundle.sh manifest   # bundle-manifest.json + SHA256SUMS
 #   scripts/build-opencode-bundle.sh verify     # offline artifact verification
@@ -37,6 +39,17 @@
 #   OPENCODE_NODE_MATRIX     host Node versions to smoke test
 #                            (default: "22.9.0 24.22.2 26.4.0"; 22.9.0 is the runtime we ship).
 #   OPENCODE_SMOKE_REQUIRED  version whose `--version`/`--help` MUST pass (default: 22.9.0).
+#   OPENCODE_IOS_NODE26      set to 1 for the Node 26 + node:ffi variant (real TUI, Phase D).
+#   OPENCODE_OPENTUI_IOS_DYLIB
+#                            prebuilt iPhoneOS libopentui.dylib staged as a CLI asset; required
+#                            when OPENCODE_IOS_NODE26=1 (from the opencode-ios `opentui-ios-renderer`
+#                            artifact).
+#   OPENCODE_OPENTUI_IOS_DYLIB_SHA256
+#                            expected sha256 of that dylib (default: the Phase C green artifact pin).
+#   OPENCODE_OPENTUI_IOS_ASSET_KEY
+#                            asset key of the renderer (default
+#                            @opentui/core-ios-arm64/libopentui.dylib).
+#   NODE_BIN                 host node used by the OpenTUI iOS resolver check (default: node).
 #   PYTHON                   python3 interpreter used for JSON/manifest helpers (default: python3).
 #   BUN                      bun executable (default: bun).
 # ---------------------------------------------------------------------------
@@ -49,11 +62,19 @@ PATCHES_DIR="$ROOT/patches/opencode"
 #   default        Node 22.9 iPhoneOS bundle  -> opencode-cli-node-ios
 #   Node 18 hedge  Node 18 iPhoneOS fallback   -> opencode-cli-node18-ios
 #                  (OPENCODE_IOS_NODE18=1; adds patch 0007 + the sql.js node:sqlite shim)
+#   Node 26 / TUI  Node 26 node:ffi real-TUI    -> opencode-cli-node26-ios
+#                  (OPENCODE_IOS_NODE26=1; stages the OpenTUI iPhoneOS renderer dylib asset and
+#                   needs the FFI-enabled Node 26 iPhoneOS runtime)
 NODE18="${OPENCODE_IOS_NODE18:-0}"
+NODE26="${OPENCODE_IOS_NODE26:-0}"
 if [ "$NODE18" = "1" ]; then
   DEFAULT_ARTIFACT="opencode-cli-node18-ios"
   DEFAULT_MATRIX="18.20.4 22.9.0"
   DEFAULT_REQUIRED="18.20.4"
+elif [ "$NODE26" = "1" ]; then
+  DEFAULT_ARTIFACT="opencode-cli-node26-ios"
+  DEFAULT_MATRIX="26.13.0 24.22.2"
+  DEFAULT_REQUIRED="26.13.0"
 else
   DEFAULT_ARTIFACT="opencode-cli-node-ios"
   DEFAULT_MATRIX="22.9.0 24.22.2 26.4.0"
@@ -75,6 +96,13 @@ SQLJS_VERSION="1.15.2"
 SQLJS_TARBALL_SHA256="74fbdd373ad7eb2bbe74c7807581c1c39e424ee53ed95042a02208cbc96d72fd"
 SQLJS_JS_SHA256="b46d4bddfdde8a787fc4764bd0a405cdfdf96fbd77e6a4e95446106826ecfa47"
 SQLJS_WASM_SHA256="0dfeecda2070b36da0cd4f6afa250af9453de528a983770f85b13d5d6b667572"
+# Node 26 (Phase D real-TUI) variant: the OpenTUI iPhoneOS renderer dylib shipped in the CLI
+# assets. Pinned to the Phase C green build (opencode-ios `opentui-ios-renderer` run 41313921358);
+# the workflow downloads that artifact and this script verifies the sha256 + Mach-O before use.
+OPENTUI_IOS_ASSET_KEY="${OPENCODE_OPENTUI_IOS_ASSET_KEY:-@opentui/core-ios-arm64/libopentui.dylib}"
+OPENTUI_IOS_DYLIB="${OPENCODE_OPENTUI_IOS_DYLIB:-}"
+OPENTUI_IOS_DYLIB_SHA256="${OPENCODE_OPENTUI_IOS_DYLIB_SHA256:-954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638}"
+NODE_BIN="${NODE_BIN:-node}"
 
 log() { printf '[build-opencode] %s\n' "$*"; }
 die() { printf '[build-opencode] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -103,6 +131,10 @@ require_bun() {
 
 require_python() {
   command -v "$PYTHON" >/dev/null 2>&1 || die "python3 not found (set PYTHON=/path/to/python3)"
+}
+
+require_node() {
+  command -v "$NODE_BIN" >/dev/null 2>&1 || die "host node not found (set NODE_BIN=/path/to/node)"
 }
 
 # --- fetch -----------------------------------------------------------------
@@ -213,6 +245,58 @@ prepare_node18_sqljs() {
   [ -f "$OPENCODE_NODE18_SQLITE_SHIM" ] || die "missing Node 18 sqlite shim: $OPENCODE_NODE18_SQLITE_SHIM"
 }
 
+# --- node_modules dependency patches (node26 variant only) -------------------
+# The OpenTUI FFI loader lives in the *published* @opentui/core 0.8.0 package, so its iOS native
+# asset support is patched after `bun install` (patches/opencode/node-modules/). The patch adds
+# the ios target to NATIVE_FILE_NAMES and resolves the renderer source/OTUI_ASSET_ROOT key.
+cmd_deps_patches() {
+  [ "$NODE26" = "1" ] || {
+    log "no node_modules dependency patches for this variant"
+    return 0
+  }
+  require_upstream
+  local core="$UPSTREAM_DIR/node_modules/@opentui/core"
+  [ -d "$core" ] || die "installed @opentui/core not found (run: $0 install)"
+  shopt -s nullglob
+  local patches=("$PATCHES_DIR"/node-modules/*.patch)
+  shopt -u nullglob
+  [ ${#patches[@]} -gt 0 ] || die "missing node-modules patches in $PATCHES_DIR/node-modules"
+  local patch
+  for patch in "${patches[@]}"; do
+    if git -C "$UPSTREAM_DIR" apply --reverse --check "$patch" >/dev/null 2>&1; then
+      log "dependency patch already applied: $(basename "$patch")"
+      continue
+    fi
+    log "applying dependency patch $(basename "$patch")"
+    git -C "$UPSTREAM_DIR" apply --whitespace=nowarn "$patch" ||
+      die "failed to apply dependency patch $(basename "$patch")"
+  done
+  grep -q 'ios: "libopentui.dylib"' "$core/node-assets.js" ||
+    die "dependency patch marker missing from node-assets.js"
+  grep -q 'OPENCODE_IOS === "1"' "$core/chunk-node-y0w0hq5m.js" ||
+    die "dependency patch marker missing from the runtime FFI chunk"
+  log "applied ${#patches[@]} dependency patch(es) to @opentui/core"
+}
+
+# --- OpenTUI iPhoneOS renderer asset (node26 variant only) ------------------
+prepare_opentui_ios_dylib() {
+  [ "$NODE26" = "1" ] || return 0
+  require_python
+  [ -n "$OPENTUI_IOS_DYLIB" ] ||
+    die "OPENCODE_IOS_NODE26=1 requires OPENCODE_OPENTUI_IOS_DYLIB (the prebuilt libopentui.dylib)"
+  [ -f "$OPENTUI_IOS_DYLIB" ] || die "OpenTUI iOS dylib not found: $OPENTUI_IOS_DYLIB"
+  local actual
+  actual="$(sha256_file "$OPENTUI_IOS_DYLIB")"
+  [ "$actual" = "$OPENTUI_IOS_DYLIB_SHA256" ] ||
+    die "OpenTUI iOS dylib sha256 mismatch (expected $OPENTUI_IOS_DYLIB_SHA256, got $actual)"
+  "$PYTHON" "$ROOT/scripts/check_macho.py" "$OPENTUI_IOS_DYLIB" --kind dylib --max-minos 16.1.1 ||
+    die "OpenTUI iOS dylib Mach-O audit failed"
+  export OPENCODE_IOS_NODE26=1
+  export OPENCODE_OPENTUI_IOS_DYLIB="$OPENTUI_IOS_DYLIB"
+  export OPENCODE_OPENTUI_IOS_DYLIB_SHA256="$actual"
+  log "OpenTUI iOS renderer dylib OK: $OPENTUI_IOS_DYLIB ($(wc -c <"$OPENTUI_IOS_DYLIB" | tr -d ' ') bytes, sha256 $actual)"
+}
+
 # --- build -----------------------------------------------------------------
 cmd_build() {
   require_upstream
@@ -223,6 +307,7 @@ cmd_build() {
 
   mkdir -p "$BUILD_DIR"
   prepare_node18_sqljs
+  prepare_opentui_ios_dylib
 
   # The upstream script refuses to run outside its pinned Bun version and
   # derives the version/channel from these variables; the iOS port always
@@ -252,9 +337,16 @@ cmd_build() {
     echo "TARGET=$TARGET"
     echo "OPENCODE_IOS=$IOS"
     echo "NODE18_VARIANT=$NODE18"
+    echo "NODE26_VARIANT=$NODE26"
     if [ "$NODE18" = "1" ]; then
       echo "SQLJS_VERSION=$SQLJS_VERSION"
       echo "SQLJS_TARBALL_SHA256=$SQLJS_TARBALL_SHA256"
+    fi
+    if [ "$NODE26" = "1" ]; then
+      echo "RUNTIME_NODE_VERSION=26.13.0"
+      echo "OPENCODE_OPENTUI_IOS_DYLIB=$OPENTUI_IOS_DYLIB"
+      echo "OPENCODE_OPENTUI_IOS_DYLIB_SHA256=$OPENTUI_IOS_DYLIB_SHA256"
+      echo "OPENCODE_OPENTUI_IOS_ASSET_KEY=$OPENTUI_IOS_ASSET_KEY"
     fi
     echo "UPSTREAM_REPO=$(pin OPENCODE_REPO)"
     echo "UPSTREAM_COMMIT=$(pin OPENCODE_REF)"
@@ -291,8 +383,33 @@ cmd_stage() {
   cp -p "$cli/dist-node/opencode.mjs" "$ARTIFACT_DIR/opencode.mjs"
   chmod 0644 "$ARTIFACT_DIR/opencode.mjs"
   cp -Rp "$cli/dist-node/assets" "$ARTIFACT_DIR/assets"
+  if [ "$NODE26" = "1" ]; then
+    local staged="$ARTIFACT_DIR/assets/$OPENTUI_IOS_ASSET_KEY"
+    [ -f "$staged" ] || die "staged artifact is missing the OpenTUI iOS renderer asset: $OPENTUI_IOS_ASSET_KEY"
+    [ "$(sha256_file "$staged")" = "$OPENTUI_IOS_DYLIB_SHA256" ] ||
+      die "staged OpenTUI iOS renderer asset sha256 mismatch: $OPENTUI_IOS_ASSET_KEY"
+    log "staged OpenTUI iOS renderer asset: $OPENTUI_IOS_ASSET_KEY"
+  fi
   log "staged $(find "$ARTIFACT_DIR/assets" -type f | wc -l | tr -d ' ') asset file(s), \
 $(du -sk "$ARTIFACT_DIR" | awk '{print $1}') KiB"
+}
+
+# --- OpenTUI iOS resolver/asset check (node26 variant only) -----------------
+# Host-Node unit check for the dependency patch: the patched build-time resolver must map the
+# iOS native asset target to @opentui/core-ios-arm64/libopentui.dylib (with process.platform
+# stubbed to "ios"), and the staged asset must exist at the OTUI_ASSET_ROOT-relative key.
+cmd_assetcheck() {
+  [ "$NODE26" = "1" ] || return 0
+  require_node
+  [ -f "$ARTIFACT_DIR/assets/$OPENTUI_IOS_ASSET_KEY" ] ||
+    die "staged artifact is missing $OPENTUI_IOS_ASSET_KEY (run: $0 stage)"
+  "$NODE_BIN" "$ROOT/src/opencode-ios/opentui_ios_asset_check.mjs" \
+    --core "$UPSTREAM_DIR/node_modules/@opentui/core/node-assets.js" \
+    --artifact-dir "$ARTIFACT_DIR" \
+    --asset-key "$OPENTUI_IOS_ASSET_KEY" \
+    --dylib "$OPENTUI_IOS_DYLIB" \
+    --expected-sha256 "$OPENTUI_IOS_DYLIB_SHA256" \
+    --bundle "$ARTIFACT_DIR/opencode.mjs"
 }
 
 # --- smoke -----------------------------------------------------------------
@@ -349,8 +466,10 @@ cmd_all() {
   cmd_fetch
   cmd_patches
   cmd_install
+  cmd_deps_patches
   cmd_build
   cmd_stage
+  cmd_assetcheck
   cmd_smoke
   cmd_manifest
   cmd_verify
@@ -365,12 +484,14 @@ main() {
     install) cmd_install "$@" ;;
     build) cmd_build "$@" ;;
     stage) cmd_stage "$@" ;;
+    deps-patches) cmd_deps_patches "$@" ;;
+    assetcheck) cmd_assetcheck "$@" ;;
     smoke) cmd_smoke "$@" ;;
     manifest) cmd_manifest "$@" ;;
     verify) cmd_verify "$@" ;;
     all) cmd_all "$@" ;;
     *)
-      printf 'usage: %s <fetch|patches|install|build|stage|smoke|manifest|verify|all>\n' "$0" >&2
+      printf 'usage: %s <fetch|patches|install|deps-patches|build|stage|assetcheck|smoke|manifest|verify|all>\n' "$0" >&2
       exit 2
       ;;
   esac

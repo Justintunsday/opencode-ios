@@ -1,0 +1,46 @@
+# OpenCode iOS port patch -- 0015
+# Title: stage the prebuilt OpenTUI iPhoneOS renderer as a CLI asset (node26 variant)
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Files: packages/cli/script/node-assets.ts
+# Why: Phase D wires the real OpenTUI TUI on iPhone. The renderer is a separately built
+#      iPhoneOS arm64 libopentui.dylib (opencode-ios `opentui-ios-renderer` artifact,
+#      patches/opentui-ios). The node26 CLI variant must ship it in the bundle assets under
+#      the key the OpenTUI FFI loader looks up: @opentui/core-ios-arm64/libopentui.dylib
+#      under OTUI_ASSET_ROOT (= <cli>/assets, set by the iOS prelude).
+#      The asset collector already has an iOS branch (patch 0001); this patch extends it:
+#      - when OPENCODE_IOS_NODE26=1 (Node 26 + node:ffi runtime), require
+#        OPENCODE_OPENTUI_IOS_DYLIB and collect the ios native asset from that path
+#        (via the patched @opentui/core node-assets resolver; the dependency patch is
+#        patches/opencode/node-modules/0001-opentui-core-ios-native-asset.patch);
+#      - keep the darwin parser-asset set and drop the desktop dylib exactly as before for
+#        the Node 22/18 variants (they do not set OPENCODE_OPENTUI_IOS_DYLIB).
+# Test: OPENCODE_IOS_NODE26=1 OPENCODE_OPENTUI_IOS_DYLIB=<artifact>/libopentui.dylib #       OPENCODE_TARGET=ios-arm64 bun run script/build-node.ts --bundle-only --skip-install
+#       (host CI: .github/workflows/build-opencode.yml bundle-node26 job)
+# Status: static/host verification only; the TUI load itself is device-verified separately.
+
+diff --git a/packages/cli/script/node-assets.ts b/packages/cli/script/node-assets.ts
+index 7c73b8b..8117861 100644
+--- a/packages/cli/script/node-assets.ts
++++ b/packages/cli/script/node-assets.ts
+@@ -66,9 +66,18 @@ export async function collectNodeAssets(target: NodeTarget) {
+ // intentionally omitted so the artifact never ships a macOS dylib/addon that
+ // cannot load on iOS.
+ async function collectIosNodeAssets() {
+-  const parserAssets = getNodeAssets({ platform: "darwin", arch: "arm64" }).filter(
+-    (asset) => !asset.key.endsWith(".dylib"),
+-  )
++  // Phase D (node26 variant): the OpenTUI iPhoneOS renderer is a prebuilt dylib supplied by
++  // the build workflow (opentui-ios-renderer artifact) under OPENCODE_OPENTUI_IOS_DYLIB.
++  // When present, collect the ios native asset too, keyed @opentui/core-ios-arm64; the iOS
++  // prelude points OTUI_ASSET_ROOT at the staged assets dir, so the FFI loader resolves it
++  // from there. Node 22/18 builds do not set the variable, keeping their asset set unchanged.
++  const opentuiIosDylib = process.env.OPENCODE_OPENTUI_IOS_DYLIB
++  const node26 = process.env.OPENCODE_IOS_NODE26 === "1"
++  if (node26 && !opentuiIosDylib)
++    throw new Error("OPENCODE_IOS_NODE26=1 requires OPENCODE_OPENTUI_IOS_DYLIB (libopentui.dylib)")
++  const parserAssets = getNodeAssets(
++    node26 ? { platform: "ios", arch: "arm64" } : { platform: "darwin", arch: "arm64" },
++  ).filter((asset) => !asset.key.endsWith(".dylib") || asset.key === "@opentui/core-ios-arm64/libopentui.dylib")
+   // Node 18 fallback: the shipped Node 18 runtime has no node:sqlite, so the bundle maps it to a
+   // sql.js-backed shim (vite.node.config.ts) that needs its JS glue + WebAssembly module staged
+   // as real files next to the bundle.

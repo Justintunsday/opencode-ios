@@ -1,0 +1,137 @@
+# OpenCode iOS port -- dependency patch for @opentui/core 0.8.0 (published package)
+# Title: accept the iPhoneOS "ios" native asset target for the OpenTUI renderer
+#
+# Applied by scripts/build-opencode-bundle.sh (command: deps-patch) AFTER `bun install`,
+# because it patches the installed @opentui/core package, not the upstream OpenCode source.
+# It is only applied for the node26 CLI variant (the only runtime with node:ffi).
+#
+# Upstream OpenTUI 0.8.0 ships native assets for darwin/linux/win32 only
+# (node-asset-target.ts NATIVE_FILE_NAMES); the iPhoneOS build of libopentui.dylib
+# (patches/opentui-ios in this repo, artifact `opentui-ios-renderer`) is described by the
+# extra "ios" entry. Runtime lookup: the CLI iOS prelude sets OTUI_ASSET_ROOT to the
+# installed assets directory and the loader resolves
+# <OTUI_ASSET_ROOT>/@opentui/core-ios-arm64/libopentui.dylib.
+#
+# Two pieces:
+#   * node-assets.js (build time, imported by packages/cli/script/node-assets.ts):
+#     "ios" entry + resolve the native asset source from OPENCODE_OPENTUI_IOS_DYLIB so the
+#     asset collector can stage the prebuilt dylib (there is no npm ios package) and export
+#     the descriptor helper for the port's host resolver check.
+#   * chunk-node-y0w0hq5m.js / chunk-bun-x6cz4jyg.js (runtime FFI loader): "ios" entry and a
+#     defensive platform fallback: an iOS bundle (OPENCODE_IOS=1) whose runtime reports
+#     process.platform === "darwin" (known Node 26 iOS runtime regression) still resolves
+#     ios-arm64; runtimes reporting "ios" take the direct path.
+#
+# Test: venv-free `git apply --check` on the installed 0.8.0 package; scripts/build-opencode-bundle.sh
+#       deps-patch + build + the host resolver check (src/opencode-ios/opentui_ios_asset_check.mjs).
+# Status: static/host verification only; end-to-end TUI load is device-verified separately.
+
+diff --git a/node_modules/@opentui/core/chunk-bun-x6cz4jyg.js b/node_modules/@opentui/core/chunk-bun-x6cz4jyg.js
+index 3779488..1c8e551 100644
+--- a/node_modules/@opentui/core/chunk-bun-x6cz4jyg.js
++++ b/node_modules/@opentui/core/chunk-bun-x6cz4jyg.js
+@@ -5626,10 +5626,13 @@ function resolveBundledDefaultParserAsset(relativePath, fallbackPath) {
+ }
+ 
+ // src/node-asset-target.ts
++// opencode-ios-port: the iPhoneOS renderer is a libopentui.dylib built by opencode-ios
++// (patches/opentui-ios in the port repo) and shipped in the CLI bundle assets.
+ var NATIVE_FILE_NAMES = {
+   darwin: "libopentui.dylib",
+   linux: "libopentui.so",
+-  win32: "opentui.dll"
++  win32: "opentui.dll",
++  ios: "libopentui.dylib"
+ };
+ function getNativeAssetDescriptor(target) {
+   if (!Object.hasOwn(NATIVE_FILE_NAMES, target.platform) || target.arch !== "arm64" && target.arch !== "x64") {
+@@ -5655,8 +5658,12 @@ function getCurrentNodeAssetTarget() {
+   if (process.platform === "linux" && libc !== undefined && libc !== "" && libc !== "glibc" && libc !== "musl") {
+     throw new Error(`On Linux, OPENTUI_LIBC must be unset, empty, "glibc", or "musl", got ${JSON.stringify(libc)}`);
+   }
++  // opencode-ios-port: an FFI-enabled iPhoneOS runtime may still report platform "darwin"
++  // (known runtime regression). iOS CLI bundles always set OPENCODE_IOS=1, so resolve the
++  // ios-arm64 native asset in that case; a runtime reporting "ios" resolves it directly.
++  const platform = process.platform === "darwin" && process.env.OPENCODE_IOS === "1" ? "ios" : process.platform;
+   return {
+-    platform: process.platform,
++    platform,
+     arch: process.arch,
+     ...process.platform === "linux" && libc === "musl" ? { libc } : {}
+   };
+diff --git a/node_modules/@opentui/core/chunk-node-y0w0hq5m.js b/node_modules/@opentui/core/chunk-node-y0w0hq5m.js
+index 5cefae0..7b22710 100644
+--- a/node_modules/@opentui/core/chunk-node-y0w0hq5m.js
++++ b/node_modules/@opentui/core/chunk-node-y0w0hq5m.js
+@@ -5636,10 +5636,13 @@ function normalizeBunfsPath(fileName) {
+ }
+ 
+ // src/node-asset-target.ts
++// opencode-ios-port: the iPhoneOS renderer is a libopentui.dylib built by opencode-ios
++// (patches/opentui-ios in the port repo) and shipped in the CLI bundle assets.
+ var NATIVE_FILE_NAMES = {
+   darwin: "libopentui.dylib",
+   linux: "libopentui.so",
+-  win32: "opentui.dll"
++  win32: "opentui.dll",
++  ios: "libopentui.dylib"
+ };
+ function getNativeAssetDescriptor(target) {
+   if (!Object.hasOwn(NATIVE_FILE_NAMES, target.platform) || target.arch !== "arm64" && target.arch !== "x64") {
+@@ -5665,8 +5668,12 @@ function getCurrentNodeAssetTarget() {
+   if (process.platform === "linux" && libc !== undefined && libc !== "" && libc !== "glibc" && libc !== "musl") {
+     throw new Error(`On Linux, OPENTUI_LIBC must be unset, empty, "glibc", or "musl", got ${JSON.stringify(libc)}`);
+   }
++  // opencode-ios-port: an FFI-enabled iPhoneOS runtime may still report platform "darwin"
++  // (known runtime regression). iOS CLI bundles always set OPENCODE_IOS=1, so resolve the
++  // ios-arm64 native asset in that case; a runtime reporting "ios" resolves it directly.
++  const platform = process.platform === "darwin" && process.env.OPENCODE_IOS === "1" ? "ios" : process.platform;
+   return {
+-    platform: process.platform,
++    platform,
+     arch: process.arch,
+     ...process.platform === "linux" && libc === "musl" ? { libc } : {}
+   };
+diff --git a/node_modules/@opentui/core/node-assets.js b/node_modules/@opentui/core/node-assets.js
+index 36294f2..c59851e 100644
+--- a/node_modules/@opentui/core/node-assets.js
++++ b/node_modules/@opentui/core/node-assets.js
+@@ -4,10 +4,13 @@ import { dirname, join as join2, resolve } from "node:path";
+ import { fileURLToPath } from "node:url";
+ 
+ // src/node-asset-target.ts
++// opencode-ios-port: the iPhoneOS renderer is a libopentui.dylib built by opencode-ios
++// (patches/opentui-ios in the port repo) and shipped in the CLI bundle assets.
+ var NATIVE_FILE_NAMES = {
+   darwin: "libopentui.dylib",
+   linux: "libopentui.so",
+-  win32: "opentui.dll"
++  win32: "opentui.dll",
++  ios: "libopentui.dylib"
+ };
+ function getNativeAssetDescriptor(target) {
+   if (!Object.hasOwn(NATIVE_FILE_NAMES, target.platform) || target.arch !== "arm64" && target.arch !== "x64") {
+@@ -219,7 +222,12 @@ function getNodeAssets(target) {
+   const native = getNativeAssetDescriptor(target);
+   const coreRoot = resolveCoreRuntimeRoot();
+   const parserRoot = resolve(dirname(fileURLToPath(import.meta.url)), "lib/tree-sitter");
+-  const nativeRoot = dirname(resolvePackageEntry(native.packageName));
++  // opencode-ios-port: the iPhoneOS renderer dylib is built by the port (no
++  // @opentui/core-ios-arm64 package exists on npm); the CLI build supplies its path.
++  const nativeRoot =
++    target.platform === "ios" && process.env.OPENCODE_OPENTUI_IOS_DYLIB
++      ? dirname(resolve(process.env.OPENCODE_OPENTUI_IOS_DYLIB))
++      : dirname(resolvePackageEntry(native.packageName));
+   const assets = [
+     { key: native.key, source: join2(nativeRoot, native.fileName) },
+     { key: PARSER_WORKER_KEY, source: join2(coreRoot, "parser.worker.js") },
+@@ -265,7 +273,8 @@ function statIsFile(path) {
+   }
+ }
+ export {
+-  getNodeAssets
++  getNodeAssets,
++  getNativeAssetDescriptor
+ };
+ 
+ //# debugId=F5C999A86A06F6F464756E2164756E21
