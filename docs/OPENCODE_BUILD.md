@@ -732,7 +732,7 @@ Status (honest):
 | OpenTUI renderer dylib `dlopen` on the device | device-verified from `/var/jb` paths (probe run 41315221320); `/var/mobile` and `/tmp` are sandbox-blocked (`file system sandbox blocked mmap()`) |
 | OpenTUI renderer build (iPhoneOS arm64 dylib) | CI green (opencode-ios run 41313921358; dylib sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`) |
 | CLI bundle + renderer asset staged and host-verified | this workflow (`bundle-node26` job); see artifact below |
-| Packaged as `node26test.2` with the FFI-enabled runtime | packager run 41447424080: CLI pin enforced, `ffi_support=enabled`; device TUI run pending |
+| Packaged as `node26test.2` with the FFI-enabled runtime | packager run 41447424080: CLI pin enforced, `ffi_support=enabled`, deb sha256 `ef188de4…` (56,790,908 B); device TUI run pending |
 | FFI-enabled Node 26 iPhoneOS runtime | pending (Phase A/B artifact is `--without-ffi`; follow-up FFI build required) |
 | **End-to-end real TUI on the device** | **NOT verified** — needs the FFI-enabled runtime + this bundle |
 
@@ -826,13 +826,19 @@ script now locates it via `find` and applies the dependency patch with
 `git apply --directory`), and `OPENCODE_OPENTUI_IOS_DYLIB` must be absolute because the
 upstream build runs with cwd `packages/cli` (the script normalizes it).
 
-**Packaged chain (final node26 test package):** the packager's deb is opencode-ios run
-[41447424080](https://github.com/Justintunsday/opencode-ios/actions/runs/41447424080)
-(`node26test.2`), built from this CLI artifact with the pin enforced
-(`opencode.mjs` sha256 `d031509c…`) and against the FFI-enabled Node 26.13.0 runtime
-(`ffi_support=enabled`, runtime node sha256 prefix `f4b75cc8…`); the `.deb` is sha256
-`ef188de4…`, 56,790,908 bytes. The real-TUI device acceptance (Lead-executed PTY run) is the
-remaining item; the CI/package evidence above proves only the static/host chain.
+**Packaged chain (final node26 test package, `v2.2.5-ios.5-node26test.2`):**
+
+| Input | Pinned value |
+| --- | --- |
+| CLI bundle | run [41431113315](https://github.com/Justintunsday/opencode-ios/actions/runs/41431113315); `opencode.mjs` 21,398,198 B sha256 `d031509c318fe1f8cdbde17ee574373dddad43cebfd08aba54d9991f9f21b2ce`; artifact zip 32,693,073 B (pin enforced by the package dispatch `expected_cli_sha256` + bundle-manifest artifact-policy gate) |
+| Renderer | run [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358); `libopentui.dylib` 3,785,600 B sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`; packaged 0755 at `/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` (report `runtime.open_dylib`: iOS / arm64 / MH_DYLIB / minOS 15.0.0 / 2-key ldid verified / system-only deps) |
+| Runtime | `ios-node26-runtime-ffi` (Justintunsday/nodejs26-ios run [41423525481](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41423525481), branch `ffi-variant`; artifact id 13141318672, zip 41,535,556 B): node 26.13.0 **134,682,704 B** sha256 `f4b75cc83c0538010b3bb788d5c916e6ef77180cd94e1f54fed46c71f49218ad`; runtime-manifest.json sha256 `f1203eb3d1b4a6798fd7a17fd536b78660893e396e914527a8222b98f8cff504`; `variant=node26-phaseab-ffi`, `ffi_support="enabled (node:ffi default-on in Node 26.13; bundled deps/libffi cross-built for iPhoneOS)"`, patches 0001–0012, `runtime_policy.launcher.required_flags=["--single-threaded"]` |
+| Package | opencode-ios run [41447424080](https://github.com/Justintunsday/opencode-ios/actions/runs/41447424080); artifact `opencode-ios-rootless-node26` (id 13142693909, zip 56,816,370 B); deb `OpenCode-iOS-rootless-node26.deb` **56,790,908 B**, sha256 `ef188de4b26ea3ea55d6707d2e3da91c1b27dce317cb306ded9d1d0867051416`; `SHA256SUMS` contains exactly that deb line; report `variant=node26`, `runtime_kind=node26`, `experimental=true`, `bootstrap_prep=false`, `release_label=v2.2.5-ios.5-node26test.2`, CI `49 PASS / 0 FAIL / 2 SKIP` (SKIPs = optional jit-shim + ripgrep not shipped), `ci_status=PASS`, `device_status=UNVERIFIED ON DEVICE` |
+
+The full static/host chain is pinned end-to-end. The remaining acceptance item is the Lead-executed
+device PTY run with the FFI-enabled runtime; the deb ships `node26-install-instructions.txt` with
+the node:ffi/dlopen preflight (`node -p process.platform`, `typeof require('node:ffi').dlopen`,
+dylib `ls -l`).
 
 ### Device verification checklist (human-executed; CI cannot do this)
 
