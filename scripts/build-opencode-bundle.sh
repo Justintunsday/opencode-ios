@@ -249,33 +249,61 @@ prepare_node18_sqljs() {
 # The OpenTUI FFI loader lives in the *published* @opentui/core 0.8.0 package, so its iOS native
 # asset support is patched after `bun install` (patches/opencode/node-modules/). The patch adds
 # the ios target to NATIVE_FILE_NAMES and resolves the renderer source/OTUI_ASSET_ROOT key.
+# Locate the installed @opentui/core package. bun's node_modules layout depends on the
+# linker/version: hoisted (`node_modules/@opentui/core`) or isolated
+# (`node_modules/.bun/@opentui+core@<v>/node_modules/@opentui/core`), so find the real path.
+resolve_opentui_core() {
+  local found
+  found="$(find "$UPSTREAM_DIR" -type f -path '*/node_modules/@opentui/core/package.json' 2>/dev/null |
+    grep -v '/node_modules/@opentui/core/node_modules/' | head -n 1 || true)"
+  if [ -z "$found" ]; then
+    log "node_modules layout (for diagnosis):"
+    find "$UPSTREAM_DIR" -maxdepth 4 -type d -name node_modules 2>/dev/null | sed -n '1,10p' >&2 || true
+    die "installed @opentui/core not found under $UPSTREAM_DIR (run: $0 install)"
+  fi
+  dirname "$found"
+}
+
 cmd_deps_patches() {
   [ "$NODE26" = "1" ] || {
     log "no node_modules dependency patches for this variant"
     return 0
   }
   require_upstream
-  local core="$UPSTREAM_DIR/node_modules/@opentui/core"
-  [ -d "$core" ] || die "installed @opentui/core not found (run: $0 install)"
+  local core prefix patch
+  core="$(resolve_opentui_core)"
+  # git-apply prefix such that "<prefix>/node_modules/@opentui/core/<file>" is the real path
+  prefix="$(cd "$core" && cd ../../.. && pwd)"
+  prefix="${prefix#"$UPSTREAM_DIR"/}"
   shopt -s nullglob
   local patches=("$PATCHES_DIR"/node-modules/*.patch)
   shopt -u nullglob
   [ ${#patches[@]} -gt 0 ] || die "missing node-modules patches in $PATCHES_DIR/node-modules"
-  local patch
   for patch in "${patches[@]}"; do
-    if git -C "$UPSTREAM_DIR" apply --reverse --check "$patch" >/dev/null 2>&1; then
+    if [ -n "$prefix" ] && [ "$prefix" != "." ] &&
+      git -C "$UPSTREAM_DIR" apply --directory="$prefix" --reverse --check "$patch" >/dev/null 2>&1; then
       log "dependency patch already applied: $(basename "$patch")"
       continue
     fi
-    log "applying dependency patch $(basename "$patch")"
-    git -C "$UPSTREAM_DIR" apply --whitespace=nowarn "$patch" ||
-      die "failed to apply dependency patch $(basename "$patch")"
+    if [ -z "$prefix" ] || [ "$prefix" = "." ] &&
+      git -C "$UPSTREAM_DIR" apply --reverse --check "$patch" >/dev/null 2>&1; then
+      log "dependency patch already applied: $(basename "$patch")"
+      continue
+    fi
+    log "applying dependency patch $(basename "$patch") (core: $core)"
+    if [ -n "$prefix" ] && [ "$prefix" != "." ]; then
+      git -C "$UPSTREAM_DIR" apply --whitespace=nowarn --directory="$prefix" "$patch" ||
+        die "failed to apply dependency patch $(basename "$patch")"
+    else
+      git -C "$UPSTREAM_DIR" apply --whitespace=nowarn "$patch" ||
+        die "failed to apply dependency patch $(basename "$patch")"
+    fi
   done
   grep -q 'ios: "libopentui.dylib"' "$core/node-assets.js" ||
     die "dependency patch marker missing from node-assets.js"
   grep -q 'OPENCODE_IOS === "1"' "$core/chunk-node-y0w0hq5m.js" ||
     die "dependency patch marker missing from the runtime FFI chunk"
-  log "applied ${#patches[@]} dependency patch(es) to @opentui/core"
+  log "applied ${#patches[@]} dependency patch(es) to @opentui/core ($core)"
 }
 
 # --- OpenTUI iPhoneOS renderer asset (node26 variant only) ------------------
@@ -403,8 +431,10 @@ cmd_assetcheck() {
   require_node
   [ -f "$ARTIFACT_DIR/assets/$OPENTUI_IOS_ASSET_KEY" ] ||
     die "staged artifact is missing $OPENTUI_IOS_ASSET_KEY (run: $0 stage)"
+  local core
+  core="$(resolve_opentui_core)"
   "$NODE_BIN" "$ROOT/src/opencode-ios/opentui_ios_asset_check.mjs" \
-    --core "$UPSTREAM_DIR/node_modules/@opentui/core/node-assets.js" \
+    --core "$core/node-assets.js" \
     --artifact-dir "$ARTIFACT_DIR" \
     --asset-key "$OPENTUI_IOS_ASSET_KEY" \
     --dylib "$OPENTUI_IOS_DYLIB" \
