@@ -226,6 +226,7 @@ def run_command(
             argv,
             cwd=cwd,
             env=env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=COMMAND_TIMEOUT_SECONDS,
@@ -362,6 +363,27 @@ def main() -> int:
                 results.append(result)
                 status = "PASS" if result["passed"] else "FAIL"
                 log(f"  [{version}] node opencode.mjs {' '.join(command)}: {status} (exit {result['exit_code']})")
+                if require and not result["passed"]:
+                    required_failure = result
+
+            # An FFI-capable runtime must not enter the renderer with piped
+            # stdin. This regressed when the iOS no-FFI fallback became optional.
+            for command in ([], ["mini"]):
+                result = run_command(str(runtime["binary"]), flags, bundle_dir, command, workdir, env)
+                stderr = str(result["stderr"])
+                output = str(result["stdout"]) + stderr
+                result["passed"] = (
+                    result["exit_code"] == 1
+                    and stderr.startswith("Interactive mode requires a TTY (stdin and stdout).")
+                    and "opencode run" in stderr
+                    and "Interactive TUI is not available" not in output
+                    and "\x1b[?1049h" not in output
+                    and "Starting background server" not in output
+                )
+                result.update({"node_version": version, "required": require, "kind": "required"})
+                results.append(result)
+                status = "PASS" if result["passed"] else "FAIL"
+                log(f"  [{version}] non-TTY {' '.join(command) or 'default'}: {status} (exit {result['exit_code']})")
                 if require and not result["passed"]:
                     required_failure = result
 

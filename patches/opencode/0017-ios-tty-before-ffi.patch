@@ -1,0 +1,83 @@
+# OpenCode iOS 0017: require a real TTY before the FFI-capable TUI path.
+# Device regression: with node:ffi present, redirected stdin bypassed the
+# old no-FFI-only guard and started the full renderer forever.
+# Host smoke covers both default and mini with stdin=/dev/null.
+
+diff --git a/packages/cli/src/util/ios.ts b/packages/cli/src/util/ios.ts
+--- a/packages/cli/src/util/ios.ts
++++ b/packages/cli/src/util/ios.ts
+@@ -48,6 +48,18 @@
+   )
+ }
+ 
++// A working renderer still requires interactive stdin and stdout.
++export function reportInteractiveTTYRequired() {
++  process.stderr.write(`Interactive mode requires a TTY (stdin and stdout).
++For scripts and pipes use the headless CLI:
++  opencode run "your prompt"
++  opencode run --standalone "your prompt"
++  opencode models | auth list | session list | debug paths
++Docs: /var/jb/usr/share/doc/opencode/KNOWN_LIMITATIONS.md
++`)
++  process.exitCode = 1
++}
++
+ // Defensive fallback for renderer initialization failures on iOS builds.
+ export function isTUIRendererUnavailable(error: unknown) {
+   const text = String(error instanceof Error ? error.message : error)
+diff --git a/packages/cli/src/commands/handlers/default.ts b/packages/cli/src/commands/handlers/default.ts
+--- a/packages/cli/src/commands/handlers/default.ts
++++ b/packages/cli/src/commands/handlers/default.ts
+@@ -21,6 +21,7 @@
+       isIOS,
+       isTUIRendererUnavailable,
+       reportTUIUnavailable,
++      reportInteractiveTTYRequired,
+     } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands, (input) =>
+@@ -32,12 +33,12 @@
+     // FFI-enabled Node 26 iPhoneOS runtime; the renderer dylib is shipped in the CLI assets).
+     // Without FFI (Node 22 runtime, or a Node 26 build without FFI) keep the pure-JS line REPL in
+     // a terminal, and explain the supported headless interface for scripts/pipes.
++    if (isIOS() && !isInteractiveTTY()) {
++      yield* Effect.sync(reportInteractiveTTYRequired)
++      return
++    }
+     const iosTuiFFIAvailable = yield* Effect.promise(() => hasNodeFFI())
+     if (isIOS() && !iosTuiFFIAvailable) {
+-      if (!isInteractiveTTY()) {
+-        yield* Effect.sync(reportTUIUnavailable)
+-        return
+-      }
+       // Resolve a fresh connection per turn (a dead/poisoned client from a failed turn must not
+       // break the next one), like a separate `opencode run` process per prompt.
+       const context = yield* Effect.context<
+diff --git a/packages/cli/src/commands/handlers/mini.ts b/packages/cli/src/commands/handlers/mini.ts
+--- a/packages/cli/src/commands/handlers/mini.ts
++++ b/packages/cli/src/commands/handlers/mini.ts
+@@ -12,6 +12,7 @@
+       isIOS,
+       isTUIRendererUnavailable,
+       reportTUIUnavailable,
++      reportInteractiveTTYRequired,
+     } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands.commands.mini, (input) =>
+@@ -19,12 +20,12 @@
+     // `opencode mini` is an OpenTUI frontend too; on iPhoneOS it can run only when the runtime
+     // provides node:ffi (FFI-enabled Node 26 runtime). Otherwise keep the pure-JS line REPL in a
+     // terminal, or explain the supported interface for scripts/pipes.
++    if (isIOS() && !isInteractiveTTY()) {
++      yield* Effect.sync(reportInteractiveTTYRequired)
++      return
++    }
+     const iosTuiFFIAvailable = yield* Effect.promise(() => hasNodeFFI())
+     if (isIOS() && !iosTuiFFIAvailable) {
+-      if (!isInteractiveTTY()) {
+-        yield* Effect.sync(reportTUIUnavailable)
+-        return
+-      }
+       // Fresh connection per turn (see handlers/default.ts).
+       const context = yield* Effect.context<
+         FileSystem.FileSystem | Global.Service | Npm.Service | Updater.Service | Config.Service | Scope.Scope
