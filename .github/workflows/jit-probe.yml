@@ -58,6 +58,7 @@ jobs:
             '</dict></plist>' > dist/entitlements-jitkeys.plist
           ldid -Sdist/entitlements-2key.plist dist/jitprobe-2key
           ldid -Sdist/entitlements-2key.plist dist/dlopenprobe-2key
+          ldid -Sdist/entitlements-jitkeys.plist dist/jitprobe-jitkeys
           # ldid cannot re-sign a clang-built dylib here (ldid assert); use Apple's
           # codesign for the dylib diagnostics: one with the 2-key entitlements,
           # one plain ad-hoc, to see whether either variant is executable on device.
