@@ -228,6 +228,8 @@ jobs:
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Write node26 install/device-test instructions
+        env:
+          REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
         run: |
           set -euo pipefail
           {
@@ -278,6 +280,8 @@ jobs:
 
       - name: Run summary
         if: always()
+        env:
+          REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
         run: |
           {
             echo "## EXPERIMENTAL node26 rootless .deb (Phase D)"
