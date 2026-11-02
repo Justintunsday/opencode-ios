@@ -195,6 +195,7 @@ jobs:
           OPENTUI_RUN_ID: ${{ steps.resolve-opentui.outputs.opentui_run_id }}
           OPENTUI_RUN_URL: ${{ steps.resolve-opentui.outputs.opentui_run_url }}
           EXPECTED_NODE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_node_sha256 || '' }}
+          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime' }}
           EXPECTED_OPENTUI_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_opentui_sha256 || '954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638' }}
           EXPERIMENTAL_LABEL: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.1' }}
           REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
@@ -209,6 +210,7 @@ jobs:
             --out-dir dist \
             --runtime-run-id "$NODE26_RUNTIME_RUN_ID" \
             --runtime-run-url "$NODE26_RUNTIME_RUN_URL" \
+            --runtime-artifact-name "$NODE26_RUNTIME_ARTIFACT" \
             --opencode-run-id "$NODE26_CLI_RUN_ID" \
             --opencode-run-url "$NODE26_CLI_RUN_URL" \
             --opentui-run-id "$OPENTUI_RUN_ID" \
@@ -284,6 +286,9 @@ jobs:
             echo "  6. 'sudo dpkg -r opencode' + reinstall to test the cycle."
             echo ""
             echo "The launcher always passes --single-threaded (mandatory on iOS)."
+            echo "The CLI forwards --single-threaded/--max-old-space-size to spawned"
+            echo "server/standalone children (CLI patch 0010), so child node processes"
+            echo "also run single-threaded (a child without it can SIGBUS in the JIT)."
             if [ "${REQUIRE_FFI_RUNTIME}" != "true" ]; then
               echo "PIPELINE-PREP BUILD: the runtime is NOT guaranteed to be the FFI-enabled"
               echo "Phase C build. The real OpenTUI TUI will NOT load in this package; it is"

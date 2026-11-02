@@ -580,6 +580,8 @@ def cmd_sources(args):
         VARIANT_NODE18: "ios-node18-runtime",
         VARIANT_NODE26: "ios-node26-runtime",
     }.get(variant, "ios-node-runtime")
+    if getattr(args, "runtime_artifact_name", ""):
+        runtime_artifact = args.runtime_artifact_name
     runtime = artifact_summary(args.runtime_dir, runtime_artifact)
     runtime.update(
         run_id=args.runtime_run_id or "",
@@ -3700,17 +3702,6 @@ def cmd_verify(args):
         )
         if opentui_expected:
             ctx["metrics"]["opentui_expected_sha256"] = opentui_expected
-        sources_node_pin = str(sources.get("expected_node_sha256", "") or "")
-        node_sha_actual = ctx["metrics"].get("node_sha256", "")
-        if sources_node_pin:
-            if node_sha_actual and sources_node_pin != node_sha_actual:
-                check(checks, "runtime.node-pin", "runtime",
-                      "Runtime node binary matches the pinned sha256", "FAIL",
-                      f"pinned {sources_node_pin}, packaged node is {node_sha_actual}")
-            else:
-                check(checks, "runtime.node-pin", "runtime",
-                      "Runtime node binary matches the pinned sha256", "PASS",
-                      f"node sha256={node_sha_actual} matches provenance pin")
 
     expected_version = args.expected_version or expected_deb_version(repo_root)
 
@@ -3736,6 +3727,20 @@ def cmd_verify(args):
 
     # ---- runtime / CLI checks -------------------------------------------
     _check_runtime(checks, ctx, repo_root, extract_dir, mode, args.skip_native_audit)
+    # Node sha pin must be compared after the runtime binary has been hashed.
+    sources_node_pin = ""
+    if isinstance(sources, dict):
+        sources_node_pin = str(sources.get("expected_node_sha256", "") or "")
+    node_sha_actual = ctx["metrics"].get("node_sha256", "")
+    if sources_node_pin:
+        if node_sha_actual and sources_node_pin != node_sha_actual:
+            check(checks, "runtime.node-pin", "runtime",
+                  "Runtime node binary matches the pinned sha256", "FAIL",
+                  f"pinned {sources_node_pin}, packaged node is {node_sha_actual}")
+        else:
+            check(checks, "runtime.node-pin", "runtime",
+                  "Runtime node binary matches the pinned sha256", "PASS",
+                  f"node sha256={node_sha_actual} matches the provenance pin")
     _check_runtime_profile(checks, ctx, extract_dir, variant)
     _check_optional_jitshim(checks, ctx, extract_dir, args.skip_native_audit)
     _check_optional_ripgrep(checks, ctx, extract_dir, args.skip_native_audit, mode)
@@ -4012,6 +4017,7 @@ def build_parser():
     p.add_argument("--runtime-dir", required=True)
     p.add_argument("--runtime-run-id", default="")
     p.add_argument("--runtime-run-url", default="")
+    p.add_argument("--runtime-artifact-name", default="")
     p.add_argument("--opencode-dir", required=True)
     p.add_argument("--opencode-run-id", default="")
     p.add_argument("--opencode-run-url", default="")

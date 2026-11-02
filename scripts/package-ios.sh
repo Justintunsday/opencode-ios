@@ -64,6 +64,7 @@ VERSION_ARG=""
 MAINTAINER="OpenCode iOS port maintainers <opencode-ios-port@users.noreply.github.com>"
 RUNTIME_RUN_ID=""
 RUNTIME_RUN_URL=""
+RUNTIME_ARTIFACT_NAME=""
 OPENCODE_RUN_ID=""
 OPENCODE_RUN_URL=""
 RIPGREP_RUN_ID=""
@@ -96,6 +97,7 @@ while [ $# -gt 0 ]; do
         --maintainer) MAINTAINER="${2:-}"; shift 2 ;;
         --runtime-run-id) RUNTIME_RUN_ID="${2:-}"; shift 2 ;;
         --runtime-run-url) RUNTIME_RUN_URL="${2:-}"; shift 2 ;;
+        --runtime-artifact-name) RUNTIME_ARTIFACT_NAME="${2:-}"; shift 2 ;;
         --opencode-run-id) OPENCODE_RUN_ID="${2:-}"; shift 2 ;;
         --opencode-run-url) OPENCODE_RUN_URL="${2:-}"; shift 2 ;;
         --ripgrep-run-id) RIPGREP_RUN_ID="${2:-}"; shift 2 ;;
@@ -482,6 +484,7 @@ set -- "$PYTHON" "$ROOT/packaging/verify/port_verify.py" sources \
     --runtime-dir "$RUNTIME_DIR" \
     --runtime-run-id "$RUNTIME_RUN_ID" \
     --runtime-run-url "$RUNTIME_RUN_URL" \
+    --runtime-artifact-name "$RUNTIME_ARTIFACT_NAME" \
     --opencode-dir "$OPENCODE_DIR" \
     --opencode-run-id "$OPENCODE_RUN_ID" \
     --opencode-run-url "$OPENCODE_RUN_URL" \
