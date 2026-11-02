@@ -176,7 +176,6 @@ jobs:
             --runtime-dir .artifacts/runtime \
             --opencode-dir .artifacts/opencode \
             --variant node26 \
-            --opentui-dir .artifacts/opentui \
             --deb-name OpenCode-iOS-rootless-node26.deb \
             --out-dir dist \
             --runtime-run-id "$NODE26_RUNTIME_RUN_ID" \
@@ -188,6 +187,17 @@ jobs:
             --opentui-sha256 "$EXPECTED_OPENTUI_SHA" \
             --experimental-label "$EXPERIMENTAL_LABEL" \
             --run-url "$RUN_URL"
+          # Contract (task-4): the node26 CLI bundle ships the OpenTUI renderer
+          # itself; verify it, do not inject. --opentui-dir is only a fallback.
+          if find .artifacts/opencode -type f -path '*@opentui/core-ios-arm64/libopentui.dylib' | grep -q .; then
+            echo "OpenTUI renderer is shipped by the node26 CLI bundle (verify-only mode)"
+          elif [ -f .artifacts/opentui/libopentui.dylib ]; then
+            echo "::warning::CLI bundle does not ship the OpenTUI renderer; using the opentui-ios-renderer artifact as fallback"
+            set -- "$@" --opentui-dir .artifacts/opentui
+          else
+            echo "::error::neither the node26 CLI bundle nor the opentui-ios-renderer artifact contains libopentui.dylib"
+            exit 1
+          fi
           if [ -n "${EXPECTED_NODE_SHA:-}" ]; then
             set -- "$@" --expected-node-sha256 "$EXPECTED_NODE_SHA"
           fi
@@ -239,6 +249,12 @@ jobs:
             echo "  6. 'sudo dpkg -r opencode' + reinstall to test the cycle."
             echo ""
             echo "The launcher always passes --single-threaded (mandatory on iOS)."
+            echo "The runtime must be the FFI-enabled Phase C build; the package's"
+            echo "runtime.build-profile gate rejects --without-ffi artifacts."
+            echo "Device preflight: /var/jb/usr/lib/opencode/runtime/node -e"
+            echo "  \"console.log(typeof require('node:ffi').dlopen)\"   # expect function"
+            echo "Renderer resolution uses OTUI_ASSET_ROOT=<cli>/assets; the dylib must"
+            echo "stay under /var/jb (the iOS sandbox blocks executable mmap elsewhere)."
             echo "See docs/INSTALL.md / docs/VERIFICATION.md (node26 experimental section)."
           } > dist/node26-install-instructions.txt
           cat dist/node26-install-instructions.txt

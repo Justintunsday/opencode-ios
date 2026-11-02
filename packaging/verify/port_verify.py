@@ -1389,6 +1389,12 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 "model toggles W^X process-wide with mprotect and background V8 "
                 "threads race it (SIGBUS without the flag)"
             )
+        if "OTUI_ASSET_ROOT" not in code_text:
+            problems.append(
+                "node26 launcher must export OTUI_ASSET_ROOT (absolute CLI assets "
+                "dir) so the OpenTUI loader resolves "
+                "@opentui/core-ios-arm64/libopentui.dylib under /var/jb"
+            )
         if "OPENCODE_IOS_JITLESS" in code_text:
             problems.append(
                 "node26 launcher must not offer a --jitless escape hatch: it would "
@@ -1441,12 +1447,14 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
             )
         elif variant == VARIANT_NODE26:
             evidence = (
-                "#!/var/jb/bin/sh (experimental node26 variant), PATH prepend, "
-                "TMPDIR fallback, exec, \"$@\" forwarding, --single-threaded "
-                "(mandatory on iOS mprotect W^X; no background V8 threads), "
-                "--no-warnings, assets/iOS env exports, NODE_FLAGS/MAX_OLD_SPACE "
-                "escape hatches; no node:ffi flags needed (default-on in 26.13), "
-                "no Node-22-only flags, no uname, no credentials"
+                "#!/var/jb/bin/sh (experimental node26 variant), PATH prepend "
+                "(/var/jb bin/usr/bin/usr/sbin/sbin), TMPDIR fallback, exec, "
+                "\"$@\" forwarding, --single-threaded (mandatory on iOS mprotect "
+                "W^X; no background V8 threads), --no-warnings, "
+                "OPENCODE_NODE_ASSETS_DIR + OTUI_ASSET_ROOT (OpenTUI renderer under "
+                "/var/jb), NODE_FLAGS/MAX_OLD_SPACE escape hatches; no node:ffi flags "
+                "needed (default-on in 26.13), no Node-22-only flags, no uname, "
+                "no credentials"
             )
         else:
             evidence = (
@@ -2441,6 +2449,36 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 )
     elif variant == VARIANT_NODE22:
         notes.append("runtime manifest does not declare launcher.required_flags")
+
+    # ---- node26 requires node:ffi (OpenTUI renderer) ---------------------
+    # The Phase A/B runtime artifacts are built --without-ffi and cannot load the
+    # OpenTUI dylib; the Phase C FFI-enabled runtime is required for this variant.
+    if variant == VARIANT_NODE26:
+        build_manifest = manifest.get("build") if isinstance(manifest, dict) else None
+        ffi_support = ""
+        ffi_build = None
+        if isinstance(build_manifest, dict):
+            ffi_support = str(build_manifest.get("ffi_support", "") or "")
+            ffi_build = build_manifest.get("ffi")
+        ffi_disabled = (
+            (flags_declared and any("--without-ffi" in flag for flag in flags))
+            or "disabled" in ffi_support.lower()
+            or (isinstance(ffi_build, dict) and ffi_build.get("supported") is False)
+            or (isinstance(ffi_build, dict) and ffi_build.get("enabled") is False)
+        )
+        metrics["runtime_ffi_disabled"] = ffi_disabled
+        if ffi_disabled:
+            problems.append(
+                "node26 runtime is NOT FFI-enabled (--without-ffi / ffi_support "
+                "disabled): node:ffi cannot load the OpenTUI renderer. Use the "
+                "Phase C FFI-enabled ios-node26-runtime artifact."
+            )
+        elif ffi_support or ffi_build:
+            notes.append(
+                "node:ffi declared FFI-capable (required for the OpenTUI renderer)"
+            )
+        else:
+            notes.append("runtime FFI support not declared (unverified)")
     device_verification = metrics["runtime_device_verification"]
     if isinstance(device_verification, dict) and device_verification.get("verified") is True:
         notes.append(
@@ -2968,6 +3006,52 @@ def _check_artifact_policy(checks, ctx, cli_dir, variant=VARIANT_NODE22):
             problems.append(
                 f"bundle build.runtime_node_version={runtime_node_version!r} is not a "
                 "Node 26 runtime (experimental node26 bundle required)"
+            )
+        # The node26 bundle ships the OpenTUI renderer itself; the manifest must
+        # declare it and its hash must match the pinned Phase C artifact.
+        opentui_decl = (
+            manifest.get("opentui_renderer") if isinstance(manifest, dict) else None
+        )
+        metrics["cli_artifact_policy"]["opentui_renderer"] = opentui_decl
+        if not isinstance(opentui_decl, dict):
+            problems.append(
+                "node26 bundle manifest does not declare top-level "
+                "opentui_renderer provenance"
+            )
+        else:
+            opentui_asset = str(
+                opentui_decl.get("asset")
+                or opentui_decl.get("key")
+                or opentui_decl.get("path")
+                or ""
+            )
+            if "@opentui/core-ios-arm64/libopentui.dylib" not in opentui_asset:
+                problems.append(
+                    "bundle opentui_renderer does not declare the "
+                    "@opentui/core-ios-arm64/libopentui.dylib asset key"
+                )
+            if opentui_decl.get("sha256_matches_expected") is not True:
+                problems.append(
+                    "bundle opentui_renderer.sha256_matches_expected is not true "
+                    "(renderer does not match the pinned Phase C artifact)"
+                )
+        env_contract = (
+            manifest.get("env_contract") if isinstance(manifest, dict) else None
+        )
+        env_text = json.dumps(env_contract) if env_contract else ""
+        if "OTUI_ASSET_ROOT" not in env_text:
+            problems.append(
+                "node26 bundle env_contract does not declare OTUI_ASSET_ROOT for the "
+                "OpenTUI renderer resolution"
+            )
+        argv = (
+            env_contract.get("launcher_argv", [])
+            if isinstance(env_contract, dict) else []
+        )
+        if not any("--single-threaded" in str(item) for item in argv):
+            problems.append(
+                "node26 bundle env_contract.launcher_argv must include "
+                "--single-threaded (mandatory on iOS)"
             )
     elif "18" in build_variant.lower() or "26" in build_variant.lower():
         problems.append(

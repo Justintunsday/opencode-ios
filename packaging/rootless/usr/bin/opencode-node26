@@ -54,11 +54,15 @@ fi
 
 OPENCODE_NODE_ASSETS_DIR="$ASSETS"
 OPENCODE_IOS=1
+# OpenTUI asset root: the CLI's iOS loader resolves the renderer key
+# `@opentui/core-ios-arm64/libopentui.dylib` by joining it onto this absolute
+# directory (device-verified dlopen sandbox: only /var/jb paths are mappable).
+OTUI_ASSET_ROOT="$ASSETS"
 # Rootless iOS has no /bin/sh, /bin/bash or /bin/zsh: the bootstrap shells live
 # under /var/jb. Prepend the rootless bin directories so shells and tools spawned
 # by the CLI (shell tool calls, git, ...) resolve without manual PATH setup.
-PATH="$PREFIX/bin:$PREFIX/usr/bin:$PATH"
-export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS PATH
+PATH="$PREFIX/bin:$PREFIX/usr/bin:$PREFIX/usr/sbin:$PREFIX/sbin:$PATH"
+export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS OTUI_ASSET_ROOT PATH
 
 # TMPDIR fallback: some SSH/NewTerm sessions do not export TMPDIR, and the CLI /
 # Node tooling need a writable temp directory.

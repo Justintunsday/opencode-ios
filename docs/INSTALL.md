@@ -146,9 +146,9 @@ the stable `v2.2.5-ios.5` release and must not be presented as device-verified.
 | --- | --- |
 | Artifact | `opencode-ios-rootless-node26` (CI artifact) → `OpenCode-iOS-rootless-node26.deb` |
 | Report label | `package-report.json`: `"variant": "node26"`, `"runtime_kind": "node26"`, `"experimental": true`, `"release_label": "v2.2.5-ios.5-node26test.1"` |
-| Runtime | Node.js **26.13.0** iPhoneOS arm64 from `Justintunsday/nodejs26-ios` (`ios-node26-runtime`; V8 14.6 mprotect W^X, node:ffi **default-on**), always launched with `--single-threaded` |
-| CLI | node26 bundle from `build-opencode.yml` (`opencode-cli-node26-ios`; iOS OpenTUI resolver) |
-| TUI renderer | `libopentui.dylib` from `opentui-ios-renderer` run `41313921358` (sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`, 3,785,600 B, 2-key ldid-signed), installed at `/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` (0755) so the device dlopen sandbox can map it |
+| Runtime | Node.js **26.13.0** iPhoneOS arm64 from `Justintunsday/nodejs26-ios` (`ios-node26-runtime`; V8 14.6 mprotect W^X, **node:ffi default-on**). Must be the **FFI-enabled Phase C build** — the earlier `--without-ffi` Phase A/B artifact cannot load OpenTUI and is rejected by the package's runtime FFI gate. Always launched with `--single-threaded` |
+| CLI | node26 bundle from `build-opencode.yml` (`opencode-cli-node26-ios`; iOS OpenTUI resolver). The bundle **ships the renderer itself** (`assets/@opentui/core-ios-arm64/libopentui.dylib`); the packager verifies it rather than injecting it |
+| TUI renderer | `libopentui.dylib` from `opentui-ios-renderer` run `41313921358` (sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`, 3,785,600 B, 2-key ldid-signed), at `/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` (0755); the CLI resolves it through `OTUI_ASSET_ROOT` (absolute `/var/jb` path, required by the device dlopen sandbox) |
 | Status | **EXPERIMENTAL, static CI only — UNVERIFIED ON DEVICE.** The real TUI path (node:ffi + OpenTUI) is the Lead's Phase D device step. |
 | Stable alternative | `v2.2.5-ios.5` node22 v6 package remains the stable, device-verified release |
 
@@ -160,6 +160,7 @@ Device test steps (maintainer):
 sudo dpkg -i OpenCode-iOS-rootless-node26.deb
 # 2. identity + offline matrix
 /var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 26.13.0
+/var/jb/usr/lib/opencode/runtime/node -e "console.log(typeof require('node:ffi').dlopen)"  # function (FFI-enabled runtime)
 sudo ldid -e /var/jb/usr/lib/opencode/runtime/node | grep platform-application
 opencode --version; opencode --help; opencode models; opencode debug paths
 # 3. real TUI in a PTY (NewTerm 3 / SSH): expect the OpenTUI TUI, not the line REPL
