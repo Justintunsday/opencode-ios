@@ -374,7 +374,9 @@ def main() -> int:
                 output = str(result["stdout"]) + stderr
                 result["passed"] = (
                     result["exit_code"] == 1
-                    and stderr.startswith("Interactive mode requires a TTY (stdin and stdout).")
+                    # Stock host Node may print its FFI/sqlite ExperimentalWarning
+                    # before the guidance; the installed launcher suppresses it.
+                    and "Interactive mode requires a TTY (stdin and stdout)." in stderr
                     and "opencode run" in stderr
                     and "Interactive TUI is not available" not in output
                     and "\x1b[?1049h" not in output
