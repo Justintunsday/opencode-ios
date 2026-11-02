@@ -27,10 +27,15 @@ on:
         required: false
         type: string
       node26_runtime_workflow:
-        description: "nodejs26-ios workflow file that produces ios-node26-runtime"
+        description: "nodejs26-ios workflow file that produces the runtime artifact"
         required: false
         type: string
         default: build-runtime.yml
+      node26_runtime_artifact:
+        description: "nodejs26-ios runtime artifact name: ios-node26-runtime (Phase A+B, non-FFI) or ios-node26-runtime-ffi (Phase C FFI-enabled; required for the real TUI)"
+        required: false
+        type: string
+        default: ios-node26-runtime
       node26_cli_run_id:
         description: "Pin the opencode-ios build-opencode.yml run id that has the node26 CLI artifact (default: latest successful run with it)"
         required: false
@@ -97,15 +102,16 @@ jobs:
           python3 --version
           echo "commit: $(git rev-parse HEAD)"
 
-      - name: Resolve ios-node26-runtime run (external repo)
+      - name: Resolve node26 runtime run (external repo)
         id: resolve-runtime
         env:
           NODE26_RUNTIME_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_run_id || '' }}
           NODE26_RUNTIME_WORKFLOW: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_workflow || 'build-runtime.yml' }}
+          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime' }}
           ARTIFACT_REPO: Justintunsday/nodejs26-ios
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
-            "$NODE26_RUNTIME_WORKFLOW" ios-node26-runtime node26_runtime "$NODE26_RUNTIME_RUN_ID_INPUT"
+            "$NODE26_RUNTIME_WORKFLOW" "$NODE26_RUNTIME_ARTIFACT" node26_runtime "$NODE26_RUNTIME_RUN_ID_INPUT"
 
       - name: Preflight node26 CLI bundle artifact (task-4; clear pending guard)
         id: resolve-cli
@@ -133,12 +139,14 @@ jobs:
           bash packaging/verify/resolve-artifact-run.sh \
             build-opentui-ios.yml opentui-ios-renderer opentui "$OPENTUI_RUN_ID_INPUT"
 
-      - name: Download ios-node26-runtime artifact (external repo)
+      - name: Download node26 runtime artifact (external repo)
+        env:
+          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime' }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/runtime
           gh run download "${{ steps.resolve-runtime.outputs.node26_runtime_run_id }}" \
-            --repo "$NODE26_REPO" -n ios-node26-runtime -D .artifacts/runtime
+            --repo "$NODE26_REPO" -n "$NODE26_RUNTIME_ARTIFACT" -D .artifacts/runtime
           find .artifacts/runtime -maxdepth 2 -type f | sort
 
       - name: Download node26 CLI bundle artifact
