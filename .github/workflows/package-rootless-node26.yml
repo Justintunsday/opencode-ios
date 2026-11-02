@@ -1,0 +1,294 @@
+name: Package experimental node26 rootless .deb (Phase D)
+
+# EXPERIMENTAL Phase D packaging line: node22 v6 (release v2.2.5-ios.5) remains the
+# stable/device-verified artifact and is NOT touched by this workflow.
+#
+# Assembles `OpenCode-iOS-rootless-node26.deb` from:
+#   * `ios-node26-runtime`  (repo Justintunsday/nodejs26-ios; Node 26.13 iPhoneOS
+#     arm64 runtime with the V8 14.6 iOS mprotect W^X patch; node:ffi enabled in
+#     the Phase C build; REQUIRES --single-threaded in the launcher),
+#   * `opencode-cli-node26-ios` (opencode-ios build-opencode.yml; task-4 CLI bundle
+#     variant with the iOS OpenTUI resolver; artifact name is an input so the
+#     workflow can stay ready until opencode-engineer publishes it),
+#   * `opentui-ios-renderer` (opencode-ios build-opentui-ios.yml; libopentui.dylib
+#     Mach-O iPhoneOS arm64, 2-key ldid-signed, installed under
+#     /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/).
+#
+# It is static-only CI: the real TUI/FFI path is NOT device-verified here. The
+# package-report marks the build experimental, records every pinned sha and lists
+# the device steps the maintainer must run. Never publish this artifact as a
+# stable release; `device_status` stays UNVERIFIED ON DEVICE.
+
+on:
+  workflow_dispatch:
+    inputs:
+      node26_runtime_run_id:
+        description: "Pin the nodejs26-ios build-runtime.yml run id (default: latest successful run with ios-node26-runtime)"
+        required: false
+        type: string
+      node26_runtime_workflow:
+        description: "nodejs26-ios workflow file that produces ios-node26-runtime"
+        required: false
+        type: string
+        default: build-runtime.yml
+      node26_cli_run_id:
+        description: "Pin the opencode-ios build-opencode.yml run id that has the node26 CLI artifact (default: latest successful run with it)"
+        required: false
+        type: string
+      node26_cli_artifact:
+        description: "node26 CLI bundle artifact name (task-4)"
+        required: false
+        type: string
+        default: opencode-cli-node26-ios
+      opentui_run_id:
+        description: "Pin the opentui-ios-renderer run id (default: the device-verified renderer run 41313921358)"
+        required: false
+        type: string
+        default: "41313921358"
+      expected_node_sha256:
+        description: "Required ios-node26-runtime node sha256 (from that run's SHA256SUMS); empty = record whatever the pinned artifact contains"
+        required: false
+        type: string
+        default: ""
+      expected_opentui_sha256:
+        description: "Required libopentui.dylib sha256"
+        required: false
+        type: string
+        default: "954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638"
+      experimental_label:
+        description: "Experimental build label recorded in the report/control"
+        required: false
+        type: string
+        default: "v2.2.5-ios.5-node26test.1"
+  # Intentionally no push trigger: the experimental artifact is produced only by
+  # explicit dispatch, so ordinary commits can never publish a node26 package.
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: package-rootless-node26-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-node26:
+    name: Assemble + statically validate experimental node26 .deb (NOT device-verified)
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NODE26_REPO: Justintunsday/nodejs26-ios
+      CLI_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_cli_artifact || 'opencode-cli-node26-ios' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show runner toolchain and repository state
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          python3 --version
+          echo "commit: $(git rev-parse HEAD)"
+
+      - name: Resolve ios-node26-runtime run (external repo)
+        id: resolve-runtime
+        env:
+          NODE26_RUNTIME_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_run_id || '' }}
+          NODE26_RUNTIME_WORKFLOW: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_workflow || 'build-runtime.yml' }}
+          ARTIFACT_REPO: Justintunsday/nodejs26-ios
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            "$NODE26_RUNTIME_WORKFLOW" ios-node26-runtime node26_runtime "$NODE26_RUNTIME_RUN_ID_INPUT"
+
+      - name: Preflight node26 CLI bundle artifact (task-4; clear pending guard)
+        id: resolve-cli
+        env:
+          NODE26_CLI_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_cli_run_id || '' }}
+        run: |
+          set -euo pipefail
+          bash packaging/verify/resolve-artifact-run.sh \
+            build-opencode.yml "$CLI_ARTIFACT" node26_cli "$NODE26_CLI_RUN_ID_INPUT" --optional
+          RUN_ID="$(grep -E '^node26_cli_run_id=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2- || true)"
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::PENDING: the node26 CLI bundle artifact '${CLI_ARTIFACT}' is not published yet (opencode-engineer task-4). The packaging pipeline is wired; dispatch again once the artifact exists (optionally pin node26_cli_run_id)."
+            echo "### BLOCKED: node26 CLI bundle artifact pending" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The experimental node26 packaging workflow is ready but needs" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`${CLI_ARTIFACT}\` from \`build-opencode.yml\` (task-4)." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Resolve opentui-ios-renderer run
+        id: resolve-opentui
+        env:
+          OPENTUI_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.opentui_run_id || '41313921358' }}
+        run: |
+          bash packaging/verify/resolve-artifact-run.sh \
+            build-opentui-ios.yml opentui-ios-renderer opentui "$OPENTUI_RUN_ID_INPUT"
+
+      - name: Download ios-node26-runtime artifact (external repo)
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/runtime
+          gh run download "${{ steps.resolve-runtime.outputs.node26_runtime_run_id }}" \
+            --repo "$NODE26_REPO" -n ios-node26-runtime -D .artifacts/runtime
+          find .artifacts/runtime -maxdepth 2 -type f | sort
+
+      - name: Download node26 CLI bundle artifact
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/opencode
+          gh run download "${{ steps.resolve-cli.outputs.node26_cli_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n "$CLI_ARTIFACT" -D .artifacts/opencode
+          find .artifacts/opencode -maxdepth 3 -type f | sort | head -n 40
+
+      - name: Download opentui-ios-renderer artifact
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/opentui
+          gh run download "${{ steps.resolve-opentui.outputs.opentui_run_id }}" \
+            --repo "$GITHUB_REPOSITORY" -n opentui-ios-renderer -D .artifacts/opentui
+          find .artifacts/opentui -maxdepth 2 -type f | sort
+
+      - name: Install dpkg + ldid (deb assembly + dylib entitlement audit)
+        run: |
+          brew install dpkg ldid
+          dpkg-deb --version
+          ldid -v 2>&1 | head -n 2 || true
+
+      - name: Assemble experimental rootless .deb (node26)
+        env:
+          NODE26_RUNTIME_RUN_ID: ${{ steps.resolve-runtime.outputs.node26_runtime_run_id }}
+          NODE26_RUNTIME_RUN_URL: ${{ steps.resolve-runtime.outputs.node26_runtime_run_url }}
+          NODE26_CLI_RUN_ID: ${{ steps.resolve-cli.outputs.node26_cli_run_id }}
+          NODE26_CLI_RUN_URL: ${{ steps.resolve-cli.outputs.node26_cli_run_url }}
+          OPENTUI_RUN_ID: ${{ steps.resolve-opentui.outputs.opentui_run_id }}
+          OPENTUI_RUN_URL: ${{ steps.resolve-opentui.outputs.opentui_run_url }}
+          EXPECTED_NODE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_node_sha256 || '' }}
+          EXPECTED_OPENTUI_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_opentui_sha256 || '954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638' }}
+          EXPERIMENTAL_LABEL: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.1' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          set -- bash scripts/package-ios.sh \
+            --runtime-dir .artifacts/runtime \
+            --opencode-dir .artifacts/opencode \
+            --variant node26 \
+            --opentui-dir .artifacts/opentui \
+            --deb-name OpenCode-iOS-rootless-node26.deb \
+            --out-dir dist \
+            --runtime-run-id "$NODE26_RUNTIME_RUN_ID" \
+            --runtime-run-url "$NODE26_RUNTIME_RUN_URL" \
+            --opencode-run-id "$NODE26_CLI_RUN_ID" \
+            --opencode-run-url "$NODE26_CLI_RUN_URL" \
+            --opentui-run-id "$OPENTUI_RUN_ID" \
+            --opentui-run-url "$OPENTUI_RUN_URL" \
+            --opentui-sha256 "$EXPECTED_OPENTUI_SHA" \
+            --experimental-label "$EXPERIMENTAL_LABEL" \
+            --run-url "$RUN_URL"
+          if [ -n "${EXPECTED_NODE_SHA:-}" ]; then
+            set -- "$@" --expected-node-sha256 "$EXPECTED_NODE_SHA"
+          fi
+          "$@"
+
+      - name: Validate experimental package (static; device TUI/FFI unverified)
+        run: |
+          set -euo pipefail
+          bash scripts/validate-port.sh \
+            --deb dist/OpenCode-iOS-rootless-node26.deb \
+            --mode package \
+            --variant node26 \
+            --out-dir dist \
+            --artifact-dir dist \
+            --contents-manifest dist/contents-manifest.json \
+            --sources dist/package-sources.json \
+            --run-id "${{ github.run_id }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Write node26 install/device-test instructions
+        run: |
+          set -euo pipefail
+          {
+            echo "OpenCode iOS experimental node26 / Phase D package"
+            echo "===================================================="
+            echo ""
+            echo "EXPERIMENTAL: not device-verified. The stable device-verified"
+            echo "release remains OpenCode-iOS-rootless.deb v2.2.5-ios.5 (node22 v6)."
+            echo ""
+            echo "Artifact: OpenCode-iOS-rootless-node26.deb (variant=node26,"
+            echo "release label: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.1' }})."
+            echo "Runtime: Node 26.13 iPhoneOS arm64 (nodejs26-ios run"
+            echo "  ${{ steps.resolve-runtime.outputs.node26_runtime_run_id }},"
+            echo "  ${{ steps.resolve-runtime.outputs.node26_runtime_run_url }})."
+            echo "CLI bundle: ${{ steps.resolve-cli.outputs.node26_cli_run_url }}."
+            echo "OpenTUI renderer: ${{ steps.resolve-opentui.outputs.opentui_run_url }}."
+            echo ""
+            echo "Device steps (maintainer):"
+            echo "  1. copy the .deb to the iPhone and 'sudo dpkg -i OpenCode-iOS-rootless-node26.deb'"
+            echo "     (this replaces the stable opencode package: same package name/version;"
+            echo "      to roll back, reinstall the stable v2.2.5-ios.5 .deb)."
+            echo "  2. 'opencode --version' (expect opencode2-node v2.2.5) and"
+            echo "     'opencode --help', 'opencode models', 'opencode debug paths'."
+            echo "  3. run 'opencode' in a real PTY (NewTerm 3 / SSH): expect the real"
+            echo "     OpenTUI TUI (not the line REPL). Verify the dylib loads via node:ffi"
+            echo "     and that shell-tool/agent turns work with the mock provider."
+            echo "  4. 'opencode < /dev/null' must print clean guidance and exit 1."
+            echo "  5. headless 'opencode run --standalone ...' E2E with the mock provider."
+            echo "  6. 'sudo dpkg -r opencode' + reinstall to test the cycle."
+            echo ""
+            echo "The launcher always passes --single-threaded (mandatory on iOS)."
+            echo "See docs/INSTALL.md / docs/VERIFICATION.md (node26 experimental section)."
+          } > dist/node26-install-instructions.txt
+          cat dist/node26-install-instructions.txt
+
+      - name: Run summary
+        if: always()
+        run: |
+          {
+            echo "## EXPERIMENTAL node26 rootless .deb (Phase D)"
+            echo ""
+            echo "> Not device-verified: the real TUI/node:ffi path is a separate"
+            echo "> maintainer device step. Stable release remains v2.2.5-ios.5 (node22 v6)."
+            echo ""
+            echo "node26 runtime run: ${{ steps.resolve-runtime.outputs.node26_runtime_run_url }}"
+            echo "node26 CLI run:     ${{ steps.resolve-cli.outputs.node26_cli_run_url }}"
+            echo "OpenTUI run:        ${{ steps.resolve-opentui.outputs.opentui_run_url }}"
+            echo ""
+            if [ -f dist/verification-report.md ]; then
+              cat dist/verification-report.md
+            else
+              echo "_No verification report was produced._"
+            fi
+            echo ""
+            echo "### Package checksum"
+            echo '```'
+            cat dist/SHA256SUMS 2>/dev/null || echo "(SHA256SUMS missing)"
+            echo '```'
+            echo ""
+            echo "**DEVICE TESTS: NOT PERFORMED (requires real iPhone)** — experimental"
+            echo "node26 package is \`UNVERIFIED ON DEVICE\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Confirm packaging did not modify tracked files
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "::error::packaging modified tracked repository files"
+            git status --porcelain --untracked-files=no
+            exit 1
+          fi
+          echo "tracked working tree clean (build outputs are ignored)"
+
+      - name: Upload experimental node26 package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-ios-rootless-node26
+          path: |
+            dist/OpenCode-iOS-rootless-node26.deb
+            dist/SHA256SUMS
+            dist/package-report.json
+            dist/node26-install-instructions.txt
+          if-no-files-found: error
+          retention-days: 14

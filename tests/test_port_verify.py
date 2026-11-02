@@ -9,6 +9,7 @@ and are executed by `python3 -m unittest discover -s tests -v` in both
 package-rootless.yml and test-port.yml.
 """
 import argparse
+import hashlib
 import io
 import json
 import re
@@ -497,12 +498,33 @@ class LauncherVariantTest(unittest.TestCase):
         self.assertIn("OPENCODE_IOS_NODE_FLAGS", code)
 
     def test_launchers_share_tmpdir_and_assets_contract(self):
-        for name in ("opencode", "opencode-node18"):
+        for name in ("opencode", "opencode-node18", "opencode-node26"):
             code = self._code(self._launcher(name))
             self.assertIn("TMPDIR", code, name)
             self.assertIn("OPENCODE_NODE_ASSETS_DIR", code, name)
             self.assertIn("OPENCODE_IOS=1", code, name)
             self.assertIn("PATH=", code, name)
+
+    def test_node26_launcher_contract(self):
+        code = self._code(self._launcher("opencode-node26"))
+        self.assertIn("--single-threaded", code)
+        self.assertIn("--no-warnings", code)
+        self.assertIn('"$@"', code)
+        self.assertIn("TMPDIR", code)
+        self.assertIn("OPENCODE_IOS_NODE_FLAGS", code)
+        self.assertIn("OPENCODE_IOS_MAX_OLD_SPACE_MB", code)
+        # Node 22-only flags must not be passed on the Node 26 runtime.
+        self.assertNotIn("--experimental-sqlite", code)
+        self.assertNotIn("--disable-warning", code)
+        self.assertNotIn("--experimental-ffi", code)
+        self.assertNotIn("--jitless", code)
+
+    def test_node26_launcher_comment_mentions_ffi_and_single_threaded(self):
+        text = self._launcher("opencode-node26").lower()
+        self.assertIn("node:ffi", text)
+        self.assertIn("opentui", text)
+        self.assertIn("--single-threaded", text)
+        self.assertIn("/var/jb", text)
 
 
 class VariantInferenceTest(unittest.TestCase):
@@ -510,8 +532,16 @@ class VariantInferenceTest(unittest.TestCase):
         self.assertEqual(port_verify.normalize_variant("node18"), port_verify.VARIANT_NODE18)
         self.assertEqual(port_verify.normalize_variant("node18-fallback"), port_verify.VARIANT_NODE18)
         self.assertEqual(port_verify.normalize_variant("node22"), port_verify.VARIANT_NODE22)
+        self.assertEqual(port_verify.normalize_variant("node26"), port_verify.VARIANT_NODE26)
+        self.assertEqual(port_verify.normalize_variant("node26-phaseab"), port_verify.VARIANT_NODE26)
         self.assertEqual(port_verify.normalize_variant(""), "")
         self.assertEqual(port_verify.normalize_variant("garbage"), "")
+
+    def test_node26_is_experimental_with_release_label(self):
+        self.assertTrue(port_verify.EXPERIMENTAL_VARIANTS.get(port_verify.VARIANT_NODE26))
+        self.assertIn("node26test", port_verify.EXPERIMENTAL_RELEASE_LABELS[
+            port_verify.VARIANT_NODE26
+        ])
 
     def test_infer_variant_from_sources(self):
         self.assertEqual(
@@ -588,6 +618,123 @@ class VariantInferenceTest(unittest.TestCase):
             self.assertIn("primary", text)
             self.assertIn("--single-threaded", text)
             self.assertNotIn("experimental Node.js", text)
+
+    def test_render_control_node26_experimental(self):
+        with tempfile.TemporaryDirectory() as td:
+            template = Path(td) / "control.in"
+            template.write_text(
+                "Package: opencode\nVersion: @VERSION@\nMaintainer: @MAINTAINER@\n"
+                "Installed-Size: @INSTALLED_SIZE@\nDescription: test\n"
+                " running on Node.js @NODE_VERSION@.\n @VARIANT_DESCRIPTION@\n"
+            )
+            out = Path(td) / "control"
+            rc = port_verify.cmd_render_control(
+                argparse.Namespace(
+                    template=str(template), out=str(out), version="2.2.5-1",
+                    maintainer="Test <test@example.com>", installed_size=123,
+                    variant="node26", node_version="",
+                )
+            )
+            self.assertEqual(rc, 0)
+            text = out.read_text()
+            self.assertIn("Node.js 26.13.0", text)
+            self.assertIn("EXPERIMENTAL", text)
+            self.assertIn("OpenTUI", text)
+            self.assertIn("--single-threaded", text)
+            self.assertIn("Node 22.9", text)
+
+
+class OpentuiCheckTest(unittest.TestCase):
+    def test_valid_ios_dylib_passes_static_checks(self):
+        dylib_bytes = macho_bytes(platform=2, minos=(14, 0, 0), filetype=6)
+        with tempfile.TemporaryDirectory() as td:
+            rel = port_verify.OPENTUI_REL_PATH.split(
+                "var/jb/usr/lib/opencode/cli/", 1
+            )[1]
+            target = Path(td) / "var/jb/usr/lib/opencode/cli" / rel
+            target.parent.mkdir(parents=True)
+            target.write_bytes(dylib_bytes)
+            target.chmod(0o755)
+            expected = hashlib.sha256(dylib_bytes).hexdigest()
+            checks = []
+            ctx = {"metrics": {}}
+            sources = {"inputs": {"opentui": {"expected_sha256": expected}}}
+            port_verify._check_opentui(
+                checks, ctx, td, port_verify.VARIANT_NODE26,
+                skip_native=True, sources=sources,
+            )
+            main = [c for c in checks if c["id"] == "cli.opentui-renderer"]
+            self.assertEqual(len(main), 1)
+            self.assertEqual(main[0]["status"], "PASS")
+            self.assertEqual(ctx["metrics"]["opentui"]["platform"], "iOS")
+            self.assertEqual(ctx["metrics"]["opentui"]["filetype"], 6)
+            self.assertEqual(ctx["metrics"]["opentui"]["sha256"], expected)
+
+    def test_missing_dylib_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            checks = []
+            ctx = {"metrics": {}}
+            port_verify._check_opentui(
+                checks, ctx, td, port_verify.VARIANT_NODE26,
+                skip_native=True, sources=None,
+            )
+            main = [c for c in checks if c["id"] == "cli.opentui-renderer"]
+            self.assertEqual(len(main), 1)
+            self.assertEqual(main[0]["status"], "FAIL")
+            self.assertIn("missing", main[0]["evidence"])
+
+    def test_hash_pin_mismatch_fails(self):
+        dylib_bytes = macho_bytes(platform=2, minos=(14, 0, 0), filetype=6)
+        with tempfile.TemporaryDirectory() as td:
+            rel = port_verify.OPENTUI_REL_PATH.split(
+                "var/jb/usr/lib/opencode/cli/", 1
+            )[1]
+            target = Path(td) / "var/jb/usr/lib/opencode/cli" / rel
+            target.parent.mkdir(parents=True)
+            target.write_bytes(dylib_bytes)
+            target.chmod(0o755)
+            checks = []
+            ctx = {"metrics": {}}
+            sources = {"inputs": {"opentui": {"expected_sha256": "0" * 64}}}
+            port_verify._check_opentui(
+                checks, ctx, td, port_verify.VARIANT_NODE26,
+                skip_native=True, sources=sources,
+            )
+            main = [c for c in checks if c["id"] == "cli.opentui-renderer"]
+            self.assertEqual(len(main), 1)
+            self.assertEqual(main[0]["status"], "FAIL")
+            self.assertIn("does not match", main[0]["evidence"])
+
+    def test_macos_dylib_fails(self):
+        dylib_bytes = macho_bytes(platform=1, minos=(14, 0, 0), filetype=6)
+        with tempfile.TemporaryDirectory() as td:
+            rel = port_verify.OPENTUI_REL_PATH.split(
+                "var/jb/usr/lib/opencode/cli/", 1
+            )[1]
+            target = Path(td) / "var/jb/usr/lib/opencode/cli" / rel
+            target.parent.mkdir(parents=True)
+            target.write_bytes(dylib_bytes)
+            target.chmod(0o755)
+            checks = []
+            ctx = {"metrics": {}}
+            port_verify._check_opentui(
+                checks, ctx, td, port_verify.VARIANT_NODE26,
+                skip_native=True, sources=None,
+            )
+            main = [c for c in checks if c["id"] == "cli.opentui-renderer"]
+            self.assertEqual(len(main), 1)
+            self.assertEqual(main[0]["status"], "FAIL")
+            self.assertIn("platform", main[0]["evidence"])
+
+    def test_node22_variant_skips_opentui(self):
+        with tempfile.TemporaryDirectory() as td:
+            checks = []
+            ctx = {"metrics": {}}
+            port_verify._check_opentui(
+                checks, ctx, td, port_verify.VARIANT_NODE22,
+                skip_native=True, sources=None,
+            )
+            self.assertEqual(checks[0]["status"], "SKIP")
 
 
 class VerifyCliTest(unittest.TestCase):

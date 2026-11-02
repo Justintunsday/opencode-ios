@@ -1,0 +1,90 @@
+#!/var/jb/bin/sh
+# OpenCode iOS (rootless) launcher — EXPERIMENTAL Node 26 (Phase D) variant.
+#
+# Shebang is /var/jb/bin/sh, NOT /bin/sh: on rootless iOS the kernel execs this
+# file directly and /bin/sh does not exist (only /var/jb/bin/sh and
+# /var/jb/usr/bin/sh). Rootless Procursus dpkg has its own shell handling, which
+# is why DEBIAN/postinst etc. can keep #!/bin/sh; the launcher cannot.
+# Keep this file POSIX-dash compatible.
+#
+# This experimental variant ships the OpenCode CLI bundle built for the native
+# iPhoneOS arm64 Node.js 26.13 runtime with the OpenTUI iOS renderer
+# (libopentui.dylib loaded through node:ffi, so the full interactive TUI is
+# expected to work). Node 26 has node:ffi enabled by default; --experimental-ffi
+# is not passed (it is accepted but redundant in 26.13).
+#
+# Mandatory flags:
+#   --single-threaded  the iOS V8 W^X model toggles code-page permissions
+#                      process-wide with mprotect; V8 background compiler/marking
+#                      threads race that toggle (SIGBUS without it) — the same
+#                      device-verified requirement as the Node 22.9 runtime.
+#   --no-warnings      keep the CLI output clean.
+# --experimental-sqlite/--disable-warning are NOT passed (not valid on the Node 26
+# runtime); node:sqlite is native/stable there.
+#
+# OpenTUI renderer: the CLI assets include
+#   cli/assets/@opentui/core-ios-arm64/libopentui.dylib
+# (Mach-O iPhoneOS arm64, 2-key ldid-signed, installed under /var/jb — the
+# device-verified dlopen sandbox only allows /var/jb paths).
+#
+# Optional environment overrides (documented in docs/INSTALL.md):
+#   OPENCODE_IOS_MAX_OLD_SPACE_MB V8 old-space cap in MiB (default 1536)
+#   OPENCODE_IOS_NODE_FLAGS       extra Node flags (word-split)
+#   OPENCODE_IOS_PREFIX           install prefix (default /var/jb)
+#   OPENCODE_IOS_NODE             alternate node binary (host smoke/diagnostics)
+set -e
+
+PREFIX="${OPENCODE_IOS_PREFIX:-/var/jb}"
+LIB="$PREFIX/usr/lib/opencode"
+NODE="${OPENCODE_IOS_NODE:-$LIB/runtime/node}"
+CLI="$LIB/cli/opencode.mjs"
+ASSETS="$LIB/cli/assets"
+
+if [ ! -x "$NODE" ]; then
+    echo "opencode: native runtime not found or not executable: $NODE" >&2
+    echo "opencode: reinstall the experimental OpenCode-iOS-rootless-node26.deb." >&2
+    exit 127
+fi
+
+if [ ! -f "$CLI" ]; then
+    echo "opencode: CLI bundle not found: $CLI" >&2
+    echo "opencode: reinstall the experimental OpenCode-iOS-rootless-node26.deb." >&2
+    exit 127
+fi
+
+OPENCODE_NODE_ASSETS_DIR="$ASSETS"
+OPENCODE_IOS=1
+# Rootless iOS has no /bin/sh, /bin/bash or /bin/zsh: the bootstrap shells live
+# under /var/jb. Prepend the rootless bin directories so shells and tools spawned
+# by the CLI (shell tool calls, git, ...) resolve without manual PATH setup.
+PATH="$PREFIX/bin:$PREFIX/usr/bin:$PATH"
+export OPENCODE_NODE_ASSETS_DIR OPENCODE_IOS PATH
+
+# TMPDIR fallback: some SSH/NewTerm sessions do not export TMPDIR, and the CLI /
+# Node tooling need a writable temp directory.
+if [ -z "${TMPDIR:-}" ]; then
+    for candidate in "$PREFIX/tmp" "$PREFIX/var/tmp" /tmp; do
+        if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+            TMPDIR="$candidate"
+            break
+        fi
+    done
+    if [ -n "${TMPDIR:-}" ]; then
+        export TMPDIR
+    fi
+fi
+
+MAX_OLD_SPACE="${OPENCODE_IOS_MAX_OLD_SPACE_MB:-1536}"
+
+# Node flags must precede the entry script; CLI arguments follow the script
+# path, so "$@" is preserved verbatim for the CLI.
+set -- --single-threaded --no-warnings \
+    "--max-old-space-size=$MAX_OLD_SPACE" "$CLI" "$@"
+
+if [ -n "${OPENCODE_IOS_NODE_FLAGS:-}" ]; then
+    # Intentional word splitting: OPENCODE_IOS_NODE_FLAGS is a list of flags.
+    # shellcheck disable=SC2086
+    set -- $OPENCODE_IOS_NODE_FLAGS "$@"
+fi
+
+exec "$NODE" "$@"

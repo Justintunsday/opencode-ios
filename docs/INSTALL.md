@@ -87,12 +87,14 @@ Current pinned version: OpenCode **2.2.5** (package version `2.2.5-1`, see
 
 ### Which runtime variant is in this package?
 
-One package ships exactly one runtime; the artifact name is the same for both:
+One package ships exactly one runtime; the artifact name differs for the
+experimental node26 line:
 
 | Variant | Runtime | Status | How to tell |
 | --- | --- | --- | --- |
 | `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite, **v6 mprotect-W^X runtime** | **Primary — DEVICE-VERIFIED (packaged, PASS=14/0)** with the mandatory `--single-threaded` launcher flag; CLI matrix + mock-provider agent turn PASS through the packaged launcher. | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
-| `node18` | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 device-proven memory model, bundled sql.js sqlite shim | **Fallback**, CLI bundle runs on device with a community Node 18 runtime; our own full-ICU Node 18 runtime is CI-built and awaiting its acceptance run | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
+| `node18` | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 device-proven memory model, bundled sql.js sqlite shim | **Fallback**, CI-validated only (UNVERIFIED ON DEVICE); CLI bundle runs on a community Node 18 runtime | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
+| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 mprotect W^X, **node:ffi + OpenTUI iOS renderer** (`libopentui.dylib`) | **EXPERIMENTAL Phase D — NOT device-verified.** Expected to run the real interactive TUI; the stable device-verified release remains node22 v6. | artifact `OpenCode-iOS-rootless-node26.deb`; `package-report.json`: `"variant": "node26"`, `"experimental": true`, `runtime.open_dylib`; `runtime.node.node_version` starts `26.` |
 
 Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`
 prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manifest.json`
@@ -133,6 +135,47 @@ declares the capability profile.
 > `ReferenceError: WebAssembly is not defined`). Upgrade/install only a released
 > artifact whose `SHA256SUMS` matches a device-tested SHA recorded in
 > `docs/VERIFICATION.md`.
+
+## 2b. Experimental node26 + OpenTUI variant (Phase D — NOT device-verified)
+
+This is a **separate experimental artifact**, produced only by the
+`Package experimental node26 rootless .deb (Phase D)` workflow. It is not part of
+the stable `v2.2.5-ios.5` release and must not be presented as device-verified.
+
+| Item | Value |
+| --- | --- |
+| Artifact | `opencode-ios-rootless-node26` (CI artifact) → `OpenCode-iOS-rootless-node26.deb` |
+| Report label | `package-report.json`: `"variant": "node26"`, `"runtime_kind": "node26"`, `"experimental": true`, `"release_label": "v2.2.5-ios.5-node26test.1"` |
+| Runtime | Node.js **26.13.0** iPhoneOS arm64 from `Justintunsday/nodejs26-ios` (`ios-node26-runtime`; V8 14.6 mprotect W^X, node:ffi **default-on**), always launched with `--single-threaded` |
+| CLI | node26 bundle from `build-opencode.yml` (`opencode-cli-node26-ios`; iOS OpenTUI resolver) |
+| TUI renderer | `libopentui.dylib` from `opentui-ios-renderer` run `41313921358` (sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`, 3,785,600 B, 2-key ldid-signed), installed at `/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` (0755) so the device dlopen sandbox can map it |
+| Status | **EXPERIMENTAL, static CI only — UNVERIFIED ON DEVICE.** The real TUI path (node:ffi + OpenTUI) is the Lead's Phase D device step. |
+| Stable alternative | `v2.2.5-ios.5` node22 v6 package remains the stable, device-verified release |
+
+Device test steps (maintainer):
+
+```sh
+# 1. install the experimental package (same package name/version as the stable
+#    build, so it REPLACES the installed opencode package)
+sudo dpkg -i OpenCode-iOS-rootless-node26.deb
+# 2. identity + offline matrix
+/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 26.13.0
+sudo ldid -e /var/jb/usr/lib/opencode/runtime/node | grep platform-application
+opencode --version; opencode --help; opencode models; opencode debug paths
+# 3. real TUI in a PTY (NewTerm 3 / SSH): expect the OpenTUI TUI, not the line REPL
+opencode
+#    shell tool / agent turn with a mock provider should work; /exit to quit
+# 4. non-TTY must print clean guidance and exit 1
+opencode < /dev/null; echo "rc=$?"
+# 5. rollback to the stable device-verified release
+sudo dpkg -i OpenCode-iOS-rootless.deb          # v2.2.5-ios.5 artifact
+```
+
+The launcher always passes `--single-threaded` (mandatory: the V8 14.6 iOS W^X
+toggle is process-wide; background V8 threads race it → SIGBUS). Do not install
+this experimental build on a device you rely on. See
+[`VERIFICATION.md`](VERIFICATION.md) (node26 experimental section) and
+[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) for the honest status.
 
 ## 3. Transfer the package to the device
 

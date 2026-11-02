@@ -25,7 +25,7 @@
 # Usage:
 #   scripts/validate-port.sh --deb dist/OpenCode-iOS-rootless.deb [options]
 #     --mode package|verify|self-test      (default: verify)
-#     --variant auto|node22|node18         (default: auto, inferred)
+#     --variant auto|node22|node18|node26  (default: auto, inferred)
 #     --out-dir DIR                        (default: verification)
 #     --artifact-dir DIR                   SHA256SUMS/package-report.json dir
 #     --contents-manifest FILE             (package mode)
@@ -93,8 +93,8 @@ case "$MODE" in
     *) die "invalid --mode '$MODE' (expected package, verify or self-test)" ;;
 esac
 case "$VARIANT" in
-    auto|node22|node18) : ;;
-    *) die "invalid --variant '$VARIANT' (expected auto, node22 or node18)" ;;
+    auto|node22|node18|node26) : ;;
+    *) die "invalid --variant '$VARIANT' (expected auto, node22, node18 or node26)" ;;
 esac
 [ -n "$ARTIFACT_DIR" ] || ARTIFACT_DIR="$(dirname "$DEB")"
 [ -d "$ARTIFACT_DIR" ] || die "artifact dir not found: $ARTIFACT_DIR"

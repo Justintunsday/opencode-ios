@@ -17,7 +17,7 @@
 #   scripts/smoke-bundle-host.sh --bundle-dir DIR [--output FILE] \
 #       [--launcher PATH] [--prefix DIR] [--work-dir DIR] \
 #       [--node-bin PATH] [--node-version 22.9.0] [--expected-version 2.2.5] \
-#       [--node-flags "..."] [--variant node22|node18]
+#       [--node-flags "..."] [--variant node22|node18|node26]
 #
 # Exit code 0 iff every required check passed. Always writes the JSON result
 # when --output is supplied (also on failure).
@@ -61,8 +61,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$VARIANT" in
-    node22|node18) : ;;
-    *) die "--variant must be node22 or node18 (got '$VARIANT')" ;;
+    node22|node18|node26) : ;;
+    *) die "--variant must be node22, node18 or node26 (got '$VARIANT')" ;;
 esac
 
 [ -n "$BUNDLE_DIR" ] || die "--bundle-dir is required"
@@ -204,8 +204,8 @@ record() {
 
 if [ -n "$NODE_FLAGS_ARG" ]; then
     NODE_FLAGS="$NODE_FLAGS_ARG"
-elif [ "$VARIANT" = "node18" ]; then
-    # Node 18.20.4 rejects --experimental-sqlite/--disable-warning (newer flags).
+elif [ "$VARIANT" = "node18" ] || [ "$VARIANT" = "node26" ]; then
+    # Node 18/26 reject --experimental-sqlite/--disable-warning (newer-line flags).
     NODE_FLAGS="--no-warnings"
 else
     NODE_FLAGS="--experimental-sqlite --disable-warning=ExperimentalWarning --no-warnings"

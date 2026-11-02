@@ -2,20 +2,29 @@
 # OpenCode iOS port — assemble the rootless iphoneos-arm64 .deb.
 #
 # Inputs are the artifacts of the upstream build workflows (never rebuilt here):
-#   --runtime-dir   contents of the `ios-node-runtime` artifact
-#                   (node, entitlements.plist, runtime-manifest.json, SHA256SUMS)
-#   --opencode-dir  contents of the `opencode-cli-node-ios` artifact
+#   --runtime-dir   contents of the runtime artifact
+#                   (node, entitlements.plist, runtime-manifest.json, SHA256SUMS):
+#                   `ios-node-runtime` (node22), `ios-node18-runtime` (node18) or
+#                   the experimental `ios-node26-runtime` from nodejs26-ios
+#   --opencode-dir  contents of the OpenCode CLI artifact
 #                   (opencode.mjs, assets/**, bundle-manifest.json, SHA256SUMS)
+#   --variant       node22 (default) | node18 | node26 (experimental Phase D)
 #   --ripgrep-dir   optional contents of the `ios-ripgrep` stretch artifact
-#   --jitshim-dir   optional contents of the `ios-jit-shim` artifact; its
-#                   libjitshim.dylib is installed at
+#   --jitshim-dir   optional contents of the `ios-jit-shim` artifact (node22 only);
+#                   its libjitshim.dylib is installed at
 #                   /var/jb/usr/lib/opencode/runtime/libjitshim.dylib and injected
 #                   by the launcher via DYLD_INSERT_LIBRARIES when present
-#                   (jailbreak JIT W^X interposer; provenance recorded in
-#                   package-sources.json, static Mach-O/dylib audit in validate)
+#   --opentui-dir   optional `opentui-ios-renderer` artifact contents (node26
+#                   required unless the CLI bundle already ships the dylib); its
+#                   libopentui.dylib is installed at
+#                   /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/
+#                   libopentui.dylib with mode 0755
+#   --opentui-sha256 / --expected-node-sha256  optional enforced pins
+#   --deb-name      output file name (default OpenCode-iOS-rootless.deb; the
+#                   experimental node26 build uses OpenCode-iOS-rootless-node26.deb)
 #
 # Output (in --out-dir, default dist/):
-#   OpenCode-iOS-rootless.deb   rootless package for /var/jb
+#   OpenCode-iOS-rootless.deb   rootless package for /var/jb (or --deb-name)
 #   SHA256SUMS                  sha256 of the .deb
 #   package-sources.json        provenance (runs, artifact hashes, upstream pins)
 #   contents-manifest.json      path/mode/size/sha256 of the staged tree
@@ -27,6 +36,8 @@
 # Examples:
 #   scripts/package-ios.sh --runtime-dir .artifacts/runtime \
 #       --opencode-dir .artifacts/opencode --out-dir dist
+#   scripts/package-ios.sh ... --variant node26 --opentui-dir .artifacts/opentui \
+#       --deb-name OpenCode-iOS-rootless-node26.deb --out-dir dist
 #   scripts/package-ios.sh ... --no-build   # stage only (local dry-run)
 set -euo pipefail
 
@@ -39,13 +50,14 @@ warn() { echo "package-ios: warning: $*" >&2; }
 info() { echo "==> $*"; }
 
 usage() {
-    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 RUNTIME_DIR=""
 OPENCODE_DIR=""
 RIPGREP_DIR=""
 JITSHIM_DIR=""
+OPENTUI_DIR=""
 VARIANT="node22"
 OUT_DIR="$ROOT/dist"
 VERSION_ARG=""
@@ -58,6 +70,12 @@ RIPGREP_RUN_ID=""
 RIPGREP_RUN_URL=""
 JITSHIM_RUN_ID=""
 JITSHIM_RUN_URL=""
+OPENTUI_RUN_ID=""
+OPENTUI_RUN_URL=""
+OPENTUI_SHA256_EXPECTED=""
+NODE_SHA256_EXPECTED=""
+EXPERIMENTAL_LABEL=""
+DEB_NAME="OpenCode-iOS-rootless.deb"
 RUN_URL=""
 COMMIT=""
 SELF_TEST=0
@@ -70,7 +88,9 @@ while [ $# -gt 0 ]; do
         --variant) VARIANT="${2:-}"; shift 2 ;;
         --ripgrep-dir) RIPGREP_DIR="${2:-}"; shift 2 ;;
         --jitshim-dir) JITSHIM_DIR="${2:-}"; shift 2 ;;
+        --opentui-dir) OPENTUI_DIR="${2:-}"; shift 2 ;;
         --out-dir) OUT_DIR="${2:-}"; shift 2 ;;
+        --deb-name) DEB_NAME="${2:-}"; shift 2 ;;
         --version) VERSION_ARG="${2:-}"; shift 2 ;;
         --maintainer) MAINTAINER="${2:-}"; shift 2 ;;
         --runtime-run-id) RUNTIME_RUN_ID="${2:-}"; shift 2 ;;
@@ -81,6 +101,11 @@ while [ $# -gt 0 ]; do
         --ripgrep-run-url) RIPGREP_RUN_URL="${2:-}"; shift 2 ;;
         --jitshim-run-id) JITSHIM_RUN_ID="${2:-}"; shift 2 ;;
         --jitshim-run-url) JITSHIM_RUN_URL="${2:-}"; shift 2 ;;
+        --opentui-run-id) OPENTUI_RUN_ID="${2:-}"; shift 2 ;;
+        --opentui-run-url) OPENTUI_RUN_URL="${2:-}"; shift 2 ;;
+        --opentui-sha256) OPENTUI_SHA256_EXPECTED="${2:-}"; shift 2 ;;
+        --expected-node-sha256) NODE_SHA256_EXPECTED="${2:-}"; shift 2 ;;
+        --experimental-label) EXPERIMENTAL_LABEL="${2:-}"; shift 2 ;;
         --run-url) RUN_URL="${2:-}"; shift 2 ;;
         --commit) COMMIT="${2:-}"; shift 2 ;;
         --self-test) SELF_TEST=1; shift ;;
@@ -90,12 +115,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-[ -n "$RUNTIME_DIR" ] || die "--runtime-dir is required (contents of the ios-node-runtime / ios-node18-runtime artifact)"
+[ -n "$RUNTIME_DIR" ] || die "--runtime-dir is required (contents of the runtime artifact: ios-node-runtime / ios-node18-runtime / ios-node26-runtime)"
 [ -n "$OPENCODE_DIR" ] || die "--opencode-dir is required (contents of the OpenCode CLI artifact)"
 case "$VARIANT" in
     node22) LAUNCHER_SRC="$ROOT/packaging/rootless/usr/bin/opencode" ;;
     node18) LAUNCHER_SRC="$ROOT/packaging/rootless/usr/bin/opencode-node18" ;;
-    *) die "--variant must be node22 or node18 (got '$VARIANT')" ;;
+    node26) LAUNCHER_SRC="$ROOT/packaging/rootless/usr/bin/opencode-node26" ;;
+    *) die "--variant must be node22, node18 or node26 (got '$VARIANT')" ;;
 esac
 [ -f "$LAUNCHER_SRC" ] || die "launcher for variant $VARIANT not found: $LAUNCHER_SRC"
 [ -d "$RUNTIME_DIR" ] || die "--runtime-dir not found: $RUNTIME_DIR"
@@ -173,6 +199,10 @@ verify_artifact_sums() {
 info "runtime artifact: $RUNTIME_DIR"
 NODE_SRC="$(find_first_file "$RUNTIME_DIR" node)"
 [ -n "$NODE_SRC" ] || die "ios-node-runtime artifact has no 'node' binary (expected: node, entitlements.plist, runtime-manifest.json, SHA256SUMS). Refusing to fabricate one."
+NODE_SHA_ACTUAL="$(sha256_of "$NODE_SRC")"
+if [ -n "$NODE_SHA256_EXPECTED" ] && [ "$NODE_SHA_ACTUAL" != "$NODE_SHA256_EXPECTED" ]; then
+    die "runtime node sha256 mismatch: expected $NODE_SHA256_EXPECTED, got $NODE_SHA_ACTUAL (wrong/updated runtime artifact?)"
+fi
 ENTITLEMENTS_SRC="$(find_first_file "$RUNTIME_DIR" entitlements.xml)"
 if [ -z "$ENTITLEMENTS_SRC" ]; then
     ENTITLEMENTS_SRC="$(find_first_file "$RUNTIME_DIR" entitlements.plist)"
@@ -180,11 +210,17 @@ fi
 if [ -z "$ENTITLEMENTS_SRC" ]; then
     ENTITLEMENTS_SRC="$(find "$RUNTIME_DIR" -type f -iname '*entitlement*' ! -path '*/.git/*' 2>/dev/null | head -n 1 || true)"
 fi
-[ -n "$ENTITLEMENTS_SRC" ] || die "ios-node-runtime artifact has no entitlements plist (expected entitlements.plist)"
+[ -n "$ENTITLEMENTS_SRC" ] || die "runtime artifact has no entitlements plist (expected entitlements.plist)"
 RUNTIME_MANIFEST_SRC="$(find_first_file "$RUNTIME_DIR" runtime-manifest.json)"
 if [ -z "$RUNTIME_MANIFEST_SRC" ]; then
     die "runtime artifact ($VARIANT) has no runtime-manifest.json (expected the packager-contract JSON manifest; the producer must upload it). Refusing to fabricate capability declarations."
 fi
+RUNTIME_NODE_VERSION="$("$PYTHON" -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1], encoding="utf-8")).get("node_version", "") or "")
+except Exception:
+    print("")' "$RUNTIME_MANIFEST_SRC" 2>/dev/null || true)"
+info "runtime node: version=${RUNTIME_NODE_VERSION:-unknown} sha256=$NODE_SHA_ACTUAL size=$(wc -c < "$NODE_SRC" | tr -d ' ') bytes"
 
 info "opencode artifact: $OPENCODE_DIR"
 OPENCODE_MJS_SRC="$(find_first_file "$OPENCODE_DIR" opencode.mjs)"
@@ -308,6 +344,34 @@ if [ -n "$JITSHIM_SRC" ]; then
     chmod 0755 "$STAGE/var/jb/usr/lib/opencode/runtime/libjitshim.dylib"
 fi
 
+# Experimental node26 variant: OpenTUI iOS renderer dylib. Device-verified dlopen
+# rule: only /var/jb paths are allowed by the iOS sandbox, so the renderer must
+# live under the packaged CLI assets tree.
+OPENTUI_REL="var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib"
+OPENTUI_STAGE=""
+OPENTUI_SHA_ACTUAL=""
+if [ "$VARIANT" = "node26" ]; then
+    OPENTUI_STAGE="$STAGE/$OPENTUI_REL"
+    mkdir -p "$(dirname "$OPENTUI_STAGE")"
+    if [ -n "$OPENTUI_DIR" ]; then
+        [ -d "$OPENTUI_DIR" ] || die "--opentui-dir not found: $OPENTUI_DIR"
+        OPENTUI_SRC="$(find_first_file "$OPENTUI_DIR" libopentui.dylib)"
+        [ -n "$OPENTUI_SRC" ] || die "opentui-ios-renderer artifact has no libopentui.dylib"
+        cp "$OPENTUI_SRC" "$OPENTUI_STAGE"
+        info "OpenTUI renderer: copied $OPENTUI_SRC -> $OPENTUI_REL"
+    elif [ -f "$OPENTUI_STAGE" ]; then
+        info "OpenTUI renderer: already present in the CLI bundle assets"
+    else
+        die "node26 package requires the OpenTUI renderer dylib: pass --opentui-dir (opentui-ios-renderer artifact) or use a CLI bundle that ships assets/@opentui/core-ios-arm64/libopentui.dylib"
+    fi
+    chmod 0755 "$OPENTUI_STAGE"
+    OPENTUI_SHA_ACTUAL="$(sha256_of "$OPENTUI_STAGE")"
+    if [ -n "$OPENTUI_SHA256_EXPECTED" ] && [ "$OPENTUI_SHA_ACTUAL" != "$OPENTUI_SHA256_EXPECTED" ]; then
+        die "OpenTUI renderer sha256 mismatch: expected $OPENTUI_SHA256_EXPECTED, got $OPENTUI_SHA_ACTUAL"
+    fi
+    info "OpenTUI renderer installed: $OPENTUI_REL ($(wc -c < "$OPENTUI_STAGE" | tr -d ' ') bytes, sha256=$OPENTUI_SHA_ACTUAL)"
+fi
+
 for maintenance in postinst prerm postrm; do
     cp "$ROOT/packaging/rootless/$maintenance" "$STAGE/DEBIAN/$maintenance"
     chmod 0755 "$STAGE/DEBIAN/$maintenance"
@@ -358,12 +422,13 @@ INSTALLED_SIZE=$((TOTAL_KB - DEBIAN_KB))
     --version "$VERSION" \
     --maintainer "$MAINTAINER" \
     --installed-size "$INSTALLED_SIZE" \
-    --variant "$VARIANT"
+    --variant "$VARIANT" \
+    --node-version "$RUNTIME_NODE_VERSION"
 chmod 0644 "$STAGE/DEBIAN/control"
 if grep -q '@[A-Z_]*@' "$STAGE/DEBIAN/control"; then
     die "unsubstituted placeholder remains in DEBIAN/control"
 fi
-info "control: Package=opencode Version=$VERSION Architecture=iphoneos-arm64 Installed-Size=$INSTALLED_SIZE variant=$VARIANT"
+info "control: Package=opencode Version=$VERSION Architecture=iphoneos-arm64 Installed-Size=$INSTALLED_SIZE variant=$VARIANT node=${RUNTIME_NODE_VERSION:-unknown}"
 
 mkdir -p "$OUT_DIR"
 rm -f "$OUT_DIR/SHA256SUMS" "$OUT_DIR/package-sources.json" \
@@ -390,15 +455,15 @@ if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
     SOURCE_DATE_EPOCH="$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || echo 0)"
     export SOURCE_DATE_EPOCH
 fi
-DEB_PATH="$OUT_DIR/OpenCode-iOS-rootless.deb"
-info "building $DEB_PATH (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
+DEB_PATH="$OUT_DIR/$DEB_NAME"
+info "building $DEB_PATH (SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH variant=$VARIANT)"
 dpkg-deb -Zxz --root-owner-group --build "$STAGE" "$DEB_PATH"
 [ -f "$DEB_PATH" ] || die "dpkg-deb did not produce $DEB_PATH"
 dpkg-deb --info "$DEB_PATH" > "$OUT_DIR/deb-info.txt"
 dpkg-deb --contents "$DEB_PATH" > "$OUT_DIR/deb-contents.txt"
 
 DEB_SHA="$(sha256_of "$DEB_PATH")"
-printf '%s  %s\n' "$DEB_SHA" "OpenCode-iOS-rootless.deb" > "$OUT_DIR/SHA256SUMS"
+printf '%s  %s\n' "$DEB_SHA" "$DEB_NAME" > "$OUT_DIR/SHA256SUMS"
 DEB_SIZE="$(wc -c < "$DEB_PATH" | tr -d ' ')"
 info "deb: $DEB_PATH ($DEB_SIZE bytes, sha256 $DEB_SHA)"
 
@@ -416,7 +481,18 @@ set -- "$PYTHON" "$ROOT/packaging/verify/port_verify.py" sources \
     --opencode-dir "$OPENCODE_DIR" \
     --opencode-run-id "$OPENCODE_RUN_ID" \
     --opencode-run-url "$OPENCODE_RUN_URL" \
-    --variant "$VARIANT"
+    --variant "$VARIANT" \
+    --expected-node-sha256 "$NODE_SHA_ACTUAL" \
+    --experimental-label "$EXPERIMENTAL_LABEL"
+if [ "$VARIANT" = "node26" ]; then
+    set -- "$@" --opentui-relative-path "$OPENTUI_REL" \
+        --opentui-sha256 "$OPENTUI_SHA_ACTUAL" \
+        --opentui-run-id "$OPENTUI_RUN_ID" \
+        --opentui-run-url "$OPENTUI_RUN_URL"
+    if [ -n "$OPENTUI_DIR" ]; then
+        set -- "$@" --opentui-dir "$OPENTUI_DIR"
+    fi
+fi
 if [ -n "$RIPGREP_DIR" ]; then
     set -- "$@" --ripgrep-dir "$RIPGREP_DIR" \
         --ripgrep-run-id "$RIPGREP_RUN_ID" \

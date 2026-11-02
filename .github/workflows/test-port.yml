@@ -13,9 +13,24 @@ on:
   workflow_dispatch:
     inputs:
       package_run_id:
-        description: "Pin the package-rootless.yml run id (default: latest successful run with OpenCode-iOS-rootless)"
+        description: "Pin the package run id (default: latest successful run with the selected artifact)"
         required: false
         type: string
+      package_workflow:
+        description: "Package workflow file (default package-rootless.yml; use package-rootless-node26.yml for the experimental variant)"
+        required: false
+        type: string
+        default: package-rootless.yml
+      package_artifact:
+        description: "Package artifact name (default OpenCode-iOS-rootless; node26 uses opencode-ios-rootless-node26)"
+        required: false
+        type: string
+        default: OpenCode-iOS-rootless
+      deb_file:
+        description: ".deb file name inside the artifact (default OpenCode-iOS-rootless.deb; node26 uses OpenCode-iOS-rootless-node26.deb)"
+        required: false
+        type: string
+        default: OpenCode-iOS-rootless.deb
       variant:
         description: "Expected runtime variant (default: auto-detect from package-report/sources)"
         required: false
@@ -24,6 +39,7 @@ on:
           - auto
           - node22
           - node18
+          - node26
         default: auto
   push:
     branches: [main]
@@ -67,20 +83,24 @@ jobs:
           brew install dpkg
           dpkg-deb --version
 
-      - name: Resolve latest successful package-rootless run
+      - name: Resolve package run
         id: resolve-package
         env:
           PACKAGE_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.package_run_id || '' }}
+          PACKAGE_WORKFLOW: ${{ github.event_name == 'workflow_dispatch' && inputs.package_workflow || 'package-rootless.yml' }}
+          PACKAGE_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.package_artifact || 'OpenCode-iOS-rootless' }}
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
-            package-rootless.yml OpenCode-iOS-rootless package "$PACKAGE_RUN_ID_INPUT"
+            "$PACKAGE_WORKFLOW" "$PACKAGE_ARTIFACT" package "$PACKAGE_RUN_ID_INPUT"
 
       - name: Download package artifact
+        env:
+          PACKAGE_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.package_artifact || 'OpenCode-iOS-rootless' }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/package
           gh run download "${{ steps.resolve-package.outputs.package_run_id }}" \
-            --repo "$GITHUB_REPOSITORY" -n OpenCode-iOS-rootless -D .artifacts/package
+            --repo "$GITHUB_REPOSITORY" -n "$PACKAGE_ARTIFACT" -D .artifacts/package
           ls -la .artifacts/package
           echo "--- SHA256SUMS ---"
           cat .artifacts/package/SHA256SUMS
@@ -89,10 +109,11 @@ jobs:
         id: verify
         env:
           VARIANT_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.variant || 'auto' }}
+          DEB_FILE: ${{ github.event_name == 'workflow_dispatch' && inputs.deb_file || 'OpenCode-iOS-rootless.deb' }}
         run: |
           set -euo pipefail
           bash scripts/validate-port.sh \
-            --deb .artifacts/package/OpenCode-iOS-rootless.deb \
+            --deb ".artifacts/package/$DEB_FILE" \
             --mode verify \
             --variant "$VARIANT_INPUT" \
             --out-dir verification \

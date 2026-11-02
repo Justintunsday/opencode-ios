@@ -68,21 +68,33 @@ EXPECTED_HOMEPAGE_PREFIX = "https://github.com/"
 
 # Runtime variants: node22 v6 (mprotect W^X, device-verified with the mandatory
 # --single-threaded launcher flag) is the primary shipping line; node18 is the
-# documented alternative fallback (V8 10.2 memory model, sql.js sqlite shim).
+# documented alternative fallback (V8 10.2 memory model, sql.js sqlite shim);
+# node26 is the EXPERIMENTAL Phase D line (real OpenTUI TUI via node:ffi).
 VARIANT_NODE22 = "node22"
 VARIANT_NODE18 = "node18"
+VARIANT_NODE26 = "node26"
 VARIANT_LABELS = {
     VARIANT_NODE22: "node22",
     VARIANT_NODE18: "node18",
+    VARIANT_NODE26: "node26",
 }
 EXPECTED_RUNTIME_NODE_VERSION = {
     VARIANT_NODE22: "22.9.0",
     VARIANT_NODE18: "18.20.4",
+    VARIANT_NODE26: "26.13.0",
 }
 RUNTIME_KIND = {
     VARIANT_NODE22: "node22",
     VARIANT_NODE18: "node18",
+    VARIANT_NODE26: "node26",
 }
+# The experimental node26 build is clearly labelled (artifact, package report and
+# control description) so it can never be confused with the stable node22 release.
+EXPERIMENTAL_VARIANTS = {VARIANT_NODE26: True}
+EXPERIMENTAL_RELEASE_LABELS = {
+    VARIANT_NODE26: "v2.2.5-ios.5-node26test.1",
+}
+OPENTUI_REL_PATH = "var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib"
 VARIANT_CONTROL_DESCRIPTION = {
     VARIANT_NODE22: (
         "This build ships the primary Node.js 22.9.0 runtime variant with the\n"
@@ -95,6 +107,14 @@ VARIANT_CONTROL_DESCRIPTION = {
         " memory model, device-proven JIT/WebAssembly/full-ICU on the target\n"
         " iPhone) with the bundled sql.js WebAssembly sqlite shim; the primary\n"
         " variant is Node 22.9 (v6 mprotect W^X, --single-threaded launcher)."
+    ),
+    VARIANT_NODE26: (
+        "EXPERIMENTAL Phase D build (v2.2.5-ios.5-node26test.1): Node.js 26.13\n"
+        " runtime with node:ffi and the iPhoneOS OpenTUI renderer, so the real\n"
+        " interactive TUI is expected to work (device verification pending).\n"
+        " The launcher passes --single-threaded (mandatory on iOS mprotect W^X).\n"
+        " The stable, device-verified variant remains Node 22.9 (v2.2.5-ios.5).\n"
+        " Do not install this experimental build on a device you rely on."
     ),
 }
 
@@ -124,6 +144,10 @@ OPTIONAL_DATA = {
     # Optional jailbreak JIT interposer (ios-jit-shim artifact). Injected by the
     # launcher through DYLD_INSERT_LIBRARIES only when shipped.
     "var/jb/usr/lib/opencode/runtime/libjitshim.dylib": {"type": "file", "mode": 0o755},
+    # Optional OpenTUI iOS renderer for the experimental node26 variant (loaded
+    # through node:ffi from this /var/jb path; dlopen sandbox requires /var/jb).
+    "var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib":
+        {"type": "file", "mode": 0o755},
 }
 ALLOWED_DATA_PREFIXES = (
     "var/jb/usr/bin/",
@@ -136,6 +160,7 @@ EXECUTABLE_DATA = {
     "var/jb/usr/share/doc/opencode/device-smoke.sh",
     "var/jb/usr/lib/opencode/runtime/node",
     "var/jb/usr/lib/opencode/runtime/libjitshim.dylib",
+    "var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib",
 }
 
 CONTROL_REQUIRED_FIELDS = (
@@ -280,9 +305,25 @@ DEVICE_TESTS = [
     },
     {
         "id": "device.tui",
-        "title": "Interactive TUI session in NewTerm 3 (degraded PTY)",
+        "title": "Interactive TUI session in NewTerm 3 (node22 line REPL / node26 real TUI)",
         "commands": ["cd /var/mobile/Documents && opencode"],
-        "expected": "TUI starts; shell tool panes use pipe fallback (see KNOWN_LIMITATIONS.md).",
+        "expected": "node22 package: line-based REPL (full TUI unavailable). "
+                    "Experimental node26 package: real OpenTUI TUI via node:ffi + "
+                    "cli/assets/@opentui/core-ios-arm64/libopentui.dylib; the dylib "
+                    "must load from /var/jb and the TUI must render.",
+    },
+    {
+        "id": "device.node26-tui",
+        "title": "Experimental node26 real TUI loads the OpenTUI dylib through node:ffi",
+        "commands": [
+            "cd /var/mobile/Documents && opencode   # real PTY: expect OpenTUI TUI, not line REPL",
+            "ls -l /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib",
+            "opencode < /dev/null; echo rc=$?",
+        ],
+        "expected": "TUI renders in a real PTY; the renderer dylib is present under "
+                    "/var/jb with mode 0755 and dlopens via node:ffi; non-TTY exits 1 "
+                    "with clean usage guidance. UNVERIFIED ON DEVICE until the "
+                    "maintainer runs the Phase D acceptance.",
     },
     {
         "id": "device.uninstall",
@@ -532,7 +573,14 @@ def artifact_summary(directory, artifact_name):
 
 
 def cmd_sources(args):
-    runtime = artifact_summary(args.runtime_dir, "ios-node-runtime")
+    variant = normalize_variant(getattr(args, "variant", "")) or VARIANT_NODE22
+    variant_label = VARIANT_LABELS[variant]
+    runtime_artifact = {
+        VARIANT_NODE22: "ios-node-runtime",
+        VARIANT_NODE18: "ios-node18-runtime",
+        VARIANT_NODE26: "ios-node26-runtime",
+    }.get(variant, "ios-node-runtime")
+    runtime = artifact_summary(args.runtime_dir, runtime_artifact)
     runtime.update(
         run_id=args.runtime_run_id or "",
         run_url=args.runtime_run_url or "",
@@ -568,15 +616,43 @@ def cmd_sources(args):
             run_id=getattr(args, "jitshim_run_id", "") or "",
             run_url=getattr(args, "jitshim_run_url", "") or "",
         )
+    opentui = {
+        "artifact": "opentui-ios-renderer",
+        "included": False,
+        "reason": "not part of the node22/node18 variants (line REPL instead of TUI)",
+    }
+    if variant == VARIANT_NODE26:
+        expected_sha = getattr(args, "opentui_sha256", "") or ""
+        rel_path = getattr(args, "opentui_relative_path", "") or OPENTUI_REL_PATH
+        opentui = {
+            "artifact": "opentui-ios-renderer",
+            "included": True,
+            "optional": False,
+            "path": rel_path,
+            "expected_sha256": expected_sha,
+            "run_id": getattr(args, "opentui_run_id", "") or "",
+            "run_url": getattr(args, "opentui_run_url", "") or "",
+        }
+        opentui_dir = getattr(args, "opentui_dir", "") or ""
+        if opentui_dir:
+            summary = artifact_summary(opentui_dir, "opentui-ios-renderer")
+            opentui["files"] = summary.get("files", [])
+            opentui["totals"] = summary.get("totals", {})
     lock = _parse_lock_file(args.lock)
-    variant = normalize_variant(getattr(args, "variant", "")) or VARIANT_NODE22
+    experimental = bool(EXPERIMENTAL_VARIANTS.get(variant))
+    release_label = (
+        getattr(args, "experimental_label", "") if experimental else ""
+    ) or (EXPERIMENTAL_RELEASE_LABELS.get(variant) if experimental else "")
     sources = {
         "schema": 1,
         "kind": "package-sources",
         "generated_at": utc_now(),
         "self_test": bool(args.self_test),
-        "variant": VARIANT_LABELS[variant],
+        "variant": variant_label,
         "runtime_kind": RUNTIME_KIND[variant],
+        "experimental": experimental,
+        "release_label": release_label,
+        "expected_node_sha256": getattr(args, "expected_node_sha256", "") or "",
         "repository": args.repository or os.environ.get("GITHUB_REPOSITORY", ""),
         "commit": args.commit or "",
         "workflow": {
@@ -589,15 +665,19 @@ def cmd_sources(args):
             "opencode_cli": opencode,
             "ripgrep": ripgrep,
             "jitshim": jitshim,
+            "opentui": opentui,
         },
     }
     json_write(args.out, sources)
     print(
-        "sources: runtime files={}, cli files={}, ripgrep={}, jitshim={} -> {}".format(
+        "sources: variant={}, runtime files={}, cli files={}, ripgrep={}, "
+        "jitshim={}, opentui={} -> {}".format(
+            variant_label,
             runtime["totals"]["files"],
             opencode["totals"]["files"],
             "included" if ripgrep.get("included") else "skipped",
             "included" if jitshim.get("included") else "skipped",
+            "included" if opentui.get("included") else "skipped",
             args.out,
         )
     )
@@ -979,6 +1059,21 @@ def _check_control(checks, ctx, expected_version, variant=VARIANT_NODE22):
             problems.append("Description must state that this build ships the Node 18 runtime")
         if "sql.js" not in description and "sqlite shim" not in description.lower():
             problems.append("Description must mention the bundled sql.js sqlite shim")
+    elif variant == VARIANT_NODE26:
+        if not re.search(r"Node(?:\.js)?\s*26", description):
+            problems.append("Description must state that this build ships the Node 26 runtime")
+        if not re.search(r"experimental|phase\s*d", description, re.IGNORECASE):
+            problems.append(
+                "Description must mark the Node 26 build as EXPERIMENTAL (Phase D)"
+            )
+        if not re.search(r"OpenTUI|TUI", description):
+            problems.append(
+                "Description must mention the OpenTUI renderer / interactive TUI"
+            )
+        if "--single-threaded" not in description:
+            problems.append(
+                "Description must state the mandatory --single-threaded launcher flag"
+            )
     else:
         if not re.search(r"Node(?:\.js)?\s*22", description):
             problems.append("Description must state that this build ships the Node 22 runtime")
@@ -1287,6 +1382,26 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 "launcher's JIT shim injection must be presence-based "
                 "(if [ -f \"$JITSHIM\" ]) so packages without the shim launch normally"
             )
+    elif variant == VARIANT_NODE26:
+        if "--single-threaded" not in code_text:
+            problems.append(
+                "node26 launcher must pass --single-threaded: the V8 14.6 iOS W^X "
+                "model toggles W^X process-wide with mprotect and background V8 "
+                "threads race it (SIGBUS without the flag)"
+            )
+        if "OPENCODE_IOS_JITLESS" in code_text:
+            problems.append(
+                "node26 launcher must not offer a --jitless escape hatch: it would "
+                "break node:ffi/OpenTUI and the WASM/JIT paths"
+            )
+        for banned, why in (
+            ("--experimental-sqlite", "not valid on the Node 26 runtime"),
+            ("--disable-warning", "not valid on the Node 26 runtime"),
+        ):
+            if banned in code_text:
+                problems.append(
+                    f"{banned} must not be passed on the node26 variant ({why})"
+                )
     else:
         # Node 18 (18.20.4) rejects flags that only exist on newer Node lines.
         for banned, why in (
@@ -1297,10 +1412,15 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 problems.append(f"{banned} must not be passed on the Node 18 variant ({why})")
     for banned, why in (
         ("--use-system-ca", "invalid option on Node 18/22.9"),
-        ("--experimental-ffi", "invalid option on Node 18/22.9"),
     ):
         if banned in code_text:
             problems.append(f"{banned} must not be passed ({why})")
+    if variant != VARIANT_NODE26 and "--experimental-ffi" in code_text:
+        problems.append(
+            "--experimental-ffi must not be passed on Node 18/22.9 (invalid option); "
+            "node:ffi is default-on in Node 26.13 so the node26 launcher does not "
+            "need it either"
+        )
     if "uname" in code_text:
         problems.append("launcher must not depend on uname (iOS identifies as ios)")
     secret = next((p for p in _SECRET_PATTERNS if p.search(text)), None)
@@ -1318,6 +1438,15 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 "presence-based DYLD_INSERT_LIBRARIES for the optional JIT shim, "
                 "JITless/NODE_FLAGS/MAX_OLD_SPACE escape hatches; no invalid flags, "
                 "no uname, no credentials"
+            )
+        elif variant == VARIANT_NODE26:
+            evidence = (
+                "#!/var/jb/bin/sh (experimental node26 variant), PATH prepend, "
+                "TMPDIR fallback, exec, \"$@\" forwarding, --single-threaded "
+                "(mandatory on iOS mprotect W^X; no background V8 threads), "
+                "--no-warnings, assets/iOS env exports, NODE_FLAGS/MAX_OLD_SPACE "
+                "escape hatches; no node:ffi flags needed (default-on in 26.13), "
+                "no Node-22-only flags, no uname, no credentials"
             )
         else:
             evidence = (
@@ -1374,15 +1503,30 @@ def _check_docs(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     )
     has_18 = bool(re.search(r"Node(?:\.js)?\s*18", combined_docs))
     has_22 = bool(re.search(r"Node(?:\.js)?\s*22", combined_docs))
+    has_26 = bool(re.search(r"Node(?:\.js)?\s*26", combined_docs))
     if has_18 and has_22:
         check(checks, "pkg.docs-runtimes", "package",
               "Packaged docs describe both Node 18 and Node 22 variants", "PASS",
               "INSTALL/VERIFICATION/KNOWN_LIMITATIONS mention the Node 22 primary/v6 "
-              "and Node 18 fallback runtimes")
+              "and Node 18 fallback runtimes"
+              + (" and the experimental Node 26 variant" if has_26 else ""))
     else:
         check(checks, "pkg.docs-runtimes", "package",
               "Packaged docs describe both Node 18 and Node 22 variants", "SKIP",
               f"Node 18 mentioned={has_18}, Node 22 mentioned={has_22}; docs update pending")
+    if variant == VARIANT_NODE26:
+        experimental_mention = bool(
+            re.search(r"experimental", combined_docs, re.IGNORECASE)
+        )
+        if has_26 and experimental_mention:
+            check(checks, "pkg.docs-node26", "package",
+                  "Packaged docs describe the experimental node26/TUI variant", "PASS",
+                  "INSTALL/VERIFICATION/KNOWN_LIMITATIONS mention Node 26 and mark it "
+                  "experimental")
+        else:
+            check(checks, "pkg.docs-node26", "package",
+                  "Packaged docs describe the experimental node26/TUI variant", "FAIL",
+                  f"has_26={has_26}, experimental_mention={experimental_mention}")
     smoke = base / "device-smoke.sh"
     if smoke.is_file():
         smoke_text = read_text(smoke)
@@ -2135,10 +2279,12 @@ def _capability_enabled(value):
 
 
 def normalize_variant(value):
-    """Map free-form variant labels to VARIANT_NODE22 / VARIANT_NODE18."""
+    """Map free-form variant labels to VARIANT_NODE22 / VARIANT_NODE18 / VARIANT_NODE26."""
     text = str(value or "").strip().lower()
     if not text:
         return ""
+    if "26" in text:
+        return VARIANT_NODE26
     if "18" in text or "node18" in text:
         return VARIANT_NODE18
     if "22" in text or "node22" in text:
@@ -2304,10 +2450,10 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
         )
 
     if not flags_declared:
-        if variant == VARIANT_NODE22:
+        if variant in (VARIANT_NODE22, VARIANT_NODE26):
             problems.append(
                 "runtime-manifest.json does not declare build.configure_flags "
-                "(required for the Node 22 variant)"
+                f"(required for the {VARIANT_LABELS[variant]} variant)"
             )
         else:
             notes.append("build.configure_flags not declared (Node 18 runtime)")
@@ -2388,18 +2534,18 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
         if not any("--dest-cpu=arm64" in flag for flag in flags):
             problems.append("--dest-cpu=arm64 missing from configure flags")
 
-    # ---- iOS V8 W^X patch (Node 22 variant only) -------------------------
-    # v3/v4 Node 22 builds without a working iOS W^X memory model trapped on
-    # device (SIGBUS / SIGTRAP at code-range reservation). The Node 18 variant
-    # uses the V8 10.2 memory model that is device-proven by the community build
-    # and does not need the Node-22-only patches.
+    # ---- iOS V8 W^X patch ------------------------------------------------
+    # Node 22 v3/v4 builds without a working iOS W^X memory model trapped on
+    # device; Node 26 (V8 14.6) needs its own mprotect W^X patch (patch 0007 in
+    # nodejs26-ios). The Node 18 variant uses the V8 10.2 memory model that is
+    # device-proven by the community build and does not need those patches.
     source = manifest.get("source") if isinstance(manifest, dict) else None
     patches = source.get("patches") if isinstance(source, dict) else None
     patch_files = ([str(item.get("file", "")) for item in patches
                     if isinstance(item, dict)] if isinstance(patches, list) else None)
     jit_enabled = _capability_enabled(jit_policy)
     # Accepted iOS V8 W^X patch families: patch 0004 (MAP_JIT write-protect),
-    # 0005 (no MAP_JIT on iOS) and 0006 (mprotect RW<->RX toggling).
+    # 0005 (no MAP_JIT on iOS), 0006/0007 (mprotect RW<->RX toggling).
     wx_patch_names = ("jit-write-protect", "no-map-jit", "map-jit", "mprotect", "w^x")
     wx_patch_declared = bool(
         patch_files and any(
@@ -2409,19 +2555,24 @@ def _check_runtime_profile(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     )
     if patch_files is not None:
         metrics["runtime_patches"] = patch_files
-    if variant == VARIANT_NODE22:
+    if variant in (VARIANT_NODE22, VARIANT_NODE26):
         if patch_files is not None and jit_enabled and not wx_patch_declared:
             problems.append(
-                "JIT-enabled Node 22 runtime manifest does not list an iOS V8 W^X "
-                "patch (patches/nodejs-mobile/0004-ios-jit-write-protect.patch or "
-                "0005-no-map-jit-on-ios.patch); pre-W^X builds trapped on generated "
-                "code on the device."
+                f"JIT-enabled {VARIANT_LABELS[variant]} runtime manifest does not list "
+                "an iOS V8 W^X patch (Node 22: 0004/0005/0006 family; Node 26: "
+                "patches/nodejs26/0007-v8-ios-mprotect-wx.patch); pre-W^X builds "
+                "trapped on generated code on the device."
             )
         elif patch_files is None:
             notes.append("W^X patch presence not declared (unverified)")
+        if variant == VARIANT_NODE26:
+            notes.append(
+                "Node 26 V8 14.6 mprotect W^X model (patch 0007 family): launcher "
+                "MUST pass --single-threaded (process-wide toggle vs V8 background threads)"
+            )
     else:
         notes.append(
-            "Node 18 V8 10.2 memory model (device-proven); Node 22 W^X patch not required"
+            "Node 18 V8 10.2 memory model (device-proven); Node 22/26 W^X patch not required"
         )
 
     if problems:
@@ -2630,6 +2781,22 @@ def _check_cli(checks, ctx, extract_dir, mode, variant=VARIANT_NODE22):
         metrics["cli"]["sqljs_assets"] = sorted(
             path.name for path in sqlite_dir.rglob("*") if path.is_file()
         ) if sqlite_dir.is_dir() else []
+    if mode != "self-test" and variant == VARIANT_NODE26:
+        opentui_asset = cli_dir / OPENTUI_REL_PATH.split(
+            "var/jb/usr/lib/opencode/cli/", 1
+        )[1]
+        if not opentui_asset.is_file() or opentui_asset.stat().st_size == 0:
+            problems.append(
+                f"OpenTUI renderer asset missing/empty: cli/{OPENTUI_REL_PATH.split('cli/', 1)[1]}"
+            )
+        else:
+            metrics["cli"]["opentui_asset_sha256"] = sha256_file(opentui_asset)
+            metrics["cli"]["opentui_asset_size"] = opentui_asset.stat().st_size
+            metrics["cli"]["opentui_asset_mode"] = oct(
+                opentui_asset.stat().st_mode & 0o777
+            )
+            if opentui_asset.stat().st_size < 100_000:
+                problems.append("OpenTUI renderer dylib is suspiciously small (placeholder?)")
     if problems:
         check(checks, "cli.bundle", "cli", "OpenCode CLI bundle present", "FAIL",
               truncate("; ".join(problems), 1200))
@@ -2637,6 +2804,12 @@ def _check_cli(checks, ctx, extract_dir, mode, variant=VARIANT_NODE22):
         extra = ""
         if variant == VARIANT_NODE18:
             extra = " with bundled sql.js sqlite shim (assets/node18-sqlite)"
+        elif variant == VARIANT_NODE26:
+            extra = (
+                " with OpenTUI iOS renderer "
+                f"(cli/assets/@opentui/core-ios-arm64/libopentui.dylib, "
+                f"sha256={metrics['cli'].get('opentui_asset_sha256', '')[:16]}...)"
+            )
         check(checks, "cli.bundle", "cli", "OpenCode CLI bundle present", "PASS",
               f"opencode.mjs {mjs_size} bytes sha256={metrics['cli']['opencode_mjs_sha256'][:16]}...; "
               f"{len(asset_files)} asset file(s), {asset_bytes} bytes{extra}")
@@ -2782,9 +2955,23 @@ def _check_artifact_policy(checks, ctx, cli_dir, variant=VARIANT_NODE22):
             problems.append(
                 "Node 18 bundle manifest does not declare the bundled sql.js sqlite shim"
             )
-    elif "18" in build_variant.lower():
+    elif variant == VARIANT_NODE26:
+        if "26" not in build_variant:
+            problems.append(
+                f"bundle build.variant={build_variant!r} does not declare the "
+                "experimental Node 26 variant"
+            )
+        runtime_node_version = (
+            str(build.get("runtime_node_version", "")) if isinstance(build, dict) else ""
+        )
+        if runtime_node_version and not runtime_node_version.startswith("26."):
+            problems.append(
+                f"bundle build.runtime_node_version={runtime_node_version!r} is not a "
+                "Node 26 runtime (experimental node26 bundle required)"
+            )
+    elif "18" in build_variant.lower() or "26" in build_variant.lower():
         problems.append(
-            f"bundle build.variant={build_variant!r} is a Node 18 artifact but the "
+            f"bundle build.variant={build_variant!r} is a Node 18/26 artifact but the "
             "package variant is node22"
         )
     if problems:
@@ -2800,6 +2987,130 @@ def _check_artifact_policy(checks, ctx, cli_dir, variant=VARIANT_NODE22):
     else:
         check(checks, "cli.artifact-policy", "cli", title,
               "SKIP", "bundle-manifest has no host-smoke version policy metadata")
+
+
+# --------------------------------------------------------------------------
+# OpenTUI renderer checks (experimental node26 variant only)
+# --------------------------------------------------------------------------
+def _check_opentui(checks, ctx, extract_dir, variant=VARIANT_NODE22,
+                   skip_native=False, sources=None):
+    """Audit the OpenTUI iOS renderer dylib for the experimental node26 variant."""
+    if variant != VARIANT_NODE26:
+        check(checks, "cli.opentui-renderer", "cli",
+              "OpenTUI iOS renderer is valid (experimental node26 variant)", "SKIP",
+              "not shipped for the node22/node18 variants (those use the line REPL)")
+        return
+    cli_dir = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
+    rel = OPENTUI_REL_PATH.split("var/jb/usr/lib/opencode/cli/", 1)[1]
+    dylib = cli_dir / rel
+    metrics = ctx["metrics"]
+    if not dylib.is_file():
+        check(checks, "cli.opentui-renderer", "cli",
+              "OpenTUI iOS renderer is valid (experimental node26 variant)", "FAIL",
+              f"missing cli/{rel}; the experimental node26 build needs the OpenTUI iOS "
+              "renderer (opentui-ios-renderer artifact) under /var/jb so the iOS "
+              "dlopen sandbox can map it")
+        return
+    info = _macho_info(dylib) or {}
+    missing_prefix = "var/jb/usr/lib/opencode/cli/"
+    metrics["opentui"] = {
+        "path": rel,
+        "sha256": sha256_file(dylib),
+        "size": dylib.stat().st_size,
+        "mode": oct(dylib.stat().st_mode & 0o777),
+        "platform": info.get("platform"),
+        "arch": info.get("arch"),
+        "filetype": info.get("filetype"),
+        "minos": info.get("minos"),
+    }
+    problems = []
+    if info.get("platform") != "iOS":
+        problems.append(f"Mach-O platform {info.get('platform')!r} (requires iPhoneOS/iOS)")
+    if info.get("filetype") != 6:
+        problems.append(f"Mach-O filetype {info.get('filetype')!r} (requires MH_DYLIB=6)")
+    if info.get("arch") != hex(0x0100000C):
+        problems.append(f"Mach-O arch {info.get('arch')!r} (requires arm64)")
+    minos = info.get("minos")
+    if minos and _version_tuple(minos) > _version_tuple("16.1.1"):
+        problems.append(f"Mach-O minOS {minos!r} is newer than the iOS 16.1.1 target")
+    if os.name == "posix" and metrics["opentui"]["mode"] != "0o755":
+        problems.append(
+            f"OpenTUI renderer mode {metrics['opentui']['mode']} (expected 0o755)"
+        )
+    elif os.name != "posix":
+        metrics["opentui"]["mode_check"] = "skipped (non-POSIX host cannot represent file modes)"
+    # Producer-pinned hash (opentui-ios-renderer SHA256SUMS) if available.
+    expected_sha = ""
+    if isinstance(metrics.get("opentui_expected_sha256"), str):
+        expected_sha = metrics["opentui_expected_sha256"]
+    if not expected_sha and isinstance(sources, dict):
+        opentui_inputs = sources.get("inputs", {}).get("opentui", {})
+        expected_sha = str(opentui_inputs.get("expected_sha256", ""))
+    if expected_sha and metrics["opentui"]["sha256"] != expected_sha:
+        problems.append(
+            f"OpenTUI renderer sha256 {metrics['opentui']['sha256']} does not match "
+            f"the pinned producer hash {expected_sha}"
+        )
+    # 2-key ldid entitlements (macOS runners have ldid from the workflow setup;
+    # the verifier must not fail when ldid is unavailable on a dev host).
+    ldid = shutil.which("ldid")
+    if ldid and not skip_native:
+        try:
+            proc = subprocess.run(
+                [ldid, "-e", str(dylib)],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            problems.append(f"cannot extract OpenTUI entitlements via ldid: {exc}")
+        else:
+            entitlements = proc.stdout or ""
+            metrics["opentui"]["entitlements_checked"] = True
+            if proc.returncode != 0:
+                problems.append(
+                    f"ldid -e failed on the OpenTUI renderer (rc={proc.returncode})"
+                )
+            elif "platform-application" not in entitlements:
+                problems.append(
+                    "OpenTUI renderer is not ldid-signed with platform-application"
+                )
+            elif "com.apple.private.security.no-sandbox" not in entitlements:
+                problems.append(
+                    "OpenTUI renderer is not ldid-signed with "
+                    "com.apple.private.security.no-sandbox"
+                )
+    else:
+        metrics["opentui"]["entitlements_checked"] = False
+        check(checks, "cli.opentui-renderer-entitlements", "cli",
+              "OpenTUI renderer carries the 2-key ldid entitlement set", "SKIP",
+              "ldid is not available on this host (CI installs ldid; static Mach-O/"
+              "hash checks still ran)")
+    if skip_native:
+        metrics["opentui"]["dylibs"] = None
+    else:
+        try:
+            libs = _otool_libs(dylib)
+            # Drop the dylib's own LC_ID_DYLIB install name (@rpath/libopentui.dylib).
+            libs = [lib for lib in libs if not lib.endswith("libopentui.dylib")]
+            violations = _validate_dylibs(libs)
+            if violations:
+                problems.append("dylib violations: " + "; ".join(violations[:5]))
+            metrics["opentui"]["dylibs"] = libs
+        except RuntimeError as exc:
+            metrics["opentui"]["dylibs"] = None
+            problems.append(str(exc))
+    title = "OpenTUI iOS renderer is valid (experimental node26 variant)"
+    if problems:
+        check(checks, "cli.opentui-renderer", "cli", title, "FAIL",
+              truncate("; ".join(problems), 1200))
+    else:
+        ent = ("2-key ldid entitlements verified; "
+               if metrics["opentui"].get("entitlements_checked") else "")
+        check(checks, "cli.opentui-renderer", "cli", title, "PASS",
+              f"iPhoneOS arm64 MH_DYLIB minOS {info.get('minos') or '?'} mode 0755; "
+              f"sha256={metrics['opentui']['sha256'][:16]}...; {ent}"
+              "only iOS system frameworks/libraries; installed under /var/jb "
+              "(device-verified dlopen sandbox path); device TUI load is UNVERIFIED "
+              "ON DEVICE until the Lead's Phase D run")
 
 
 def _check_assets_native(checks, ctx, cli_dir):
@@ -2925,6 +3236,13 @@ def _build_package_report(ctx, checks, sources, manifest, args):
     metrics = ctx["metrics"]
     variant = ctx.get("variant") or VARIANT_NODE22
     runtime_kind = RUNTIME_KIND[variant]
+    experimental = bool(EXPERIMENTAL_VARIANTS.get(variant))
+    release_label = ""
+    if experimental:
+        release_label = (
+            (sources or {}).get("release_label", "")
+            if isinstance(sources, dict) else ""
+        ) or EXPERIMENTAL_RELEASE_LABELS.get(variant, "")
     runtime_capabilities = metrics.get("runtime_capabilities", {})
     report = {
         "schema": 1,
@@ -2933,6 +3251,8 @@ def _build_package_report(ctx, checks, sources, manifest, args):
         "self_test": bool(args.mode == "self-test"),
         "variant": VARIANT_LABELS[variant],
         "runtime_kind": runtime_kind,
+        "experimental": experimental,
+        "release_label": release_label,
         "package": {
             "name": control.get("Package"),
             "version": control.get("Version"),
@@ -2943,6 +3263,8 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             "installed_size_kib": control.get("Installed-Size"),
             "variant": VARIANT_LABELS[variant],
             "runtime_kind": runtime_kind,
+            "experimental": experimental,
+            "release_label": release_label,
             "control": control,
         },
         "sources": sources,
@@ -2958,10 +3280,15 @@ def _build_package_report(ctx, checks, sources, manifest, args):
         "runtime": {
             "variant": VARIANT_LABELS[variant],
             "runtime_kind": runtime_kind,
+            "experimental": experimental,
             "node": {
                 "sha256": metrics.get("node_sha256"),
                 "size": metrics.get("node_size"),
                 "node_version": metrics.get("runtime_node_version", ""),
+                "expected_sha256": (
+                    (sources or {}).get("expected_node_sha256", "")
+                    if isinstance(sources, dict) else ""
+                ),
                 "macho": {
                     "platform": metrics.get("node_platform", ""),
                     "arch": metrics.get("node_arch", ""),
@@ -2980,6 +3307,7 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             "patches": metrics.get("runtime_patches", []),
             "ripgrep": metrics.get("ripgrep", {"included": False}),
             "jitshim": metrics.get("jitshim", {"included": False}),
+            "open_dylib": metrics.get("opentui", {"included": False}),
         },
         "cli": metrics.get("cli", {}),
         "host_smoke": metrics.get("host_smoke", {}),
@@ -2988,10 +3316,15 @@ def _build_package_report(ctx, checks, sources, manifest, args):
         "device_execution": {
             "status": DEVICE_STATUS,
             "banner": DEVICE_BANNER,
+            "experimental": experimental,
             "note": "No device execution was performed by CI; the package was built "
                     "and validated on a hosted macOS runner only. Producer runtime "
                     "manifest device markers are recorded under runtime.device_status "
-                    "/ runtime.device_verification as producer evidence, not CI proof.",
+                    "/ runtime.device_verification as producer evidence, not CI proof."
+                    + (" This is an EXPERIMENTAL node26/Phase D build: the real TUI "
+                       "path (node:ffi + OpenTUI dylib) is NOT device-verified until "
+                       "the maintainer runs the packaged acceptance."
+                       if experimental else ""),
             "producer_runtime_device_status": metrics.get("runtime_device_status", ""),
             "device_tests": DEVICE_TESTS,
         },
@@ -3258,6 +3591,23 @@ def cmd_verify(args):
           f"variant={VARIANT_LABELS[variant]} "
           f"(runtime_kind={RUNTIME_KIND[variant]}, expected Node "
           f"{EXPECTED_RUNTIME_NODE_VERSION[variant]})")
+    if isinstance(sources, dict):
+        opentui_expected = (
+            sources.get("inputs", {}).get("opentui", {}).get("expected_sha256", "")
+        )
+        if opentui_expected:
+            ctx["metrics"]["opentui_expected_sha256"] = opentui_expected
+        sources_node_pin = str(sources.get("expected_node_sha256", "") or "")
+        node_sha_actual = ctx["metrics"].get("node_sha256", "")
+        if sources_node_pin:
+            if node_sha_actual and sources_node_pin != node_sha_actual:
+                check(checks, "runtime.node-pin", "runtime",
+                      "Runtime node binary matches the pinned sha256", "FAIL",
+                      f"pinned {sources_node_pin}, packaged node is {node_sha_actual}")
+            else:
+                check(checks, "runtime.node-pin", "runtime",
+                      "Runtime node binary matches the pinned sha256", "PASS",
+                      f"node sha256={node_sha_actual} matches provenance pin")
 
     expected_version = args.expected_version or expected_deb_version(repo_root)
 
@@ -3287,6 +3637,7 @@ def cmd_verify(args):
     _check_optional_jitshim(checks, ctx, extract_dir, args.skip_native_audit)
     _check_optional_ripgrep(checks, ctx, extract_dir, args.skip_native_audit, mode)
     _check_cli(checks, ctx, extract_dir, mode, variant)
+    _check_opentui(checks, ctx, extract_dir, variant, args.skip_native_audit, sources)
     cli_dir_check = Path(extract_dir) / "var/jb/usr/lib/opencode/cli"
     _check_artifact_policy(checks, ctx, cli_dir_check, variant)
     _check_assets_native(checks, ctx, cli_dir_check)
@@ -3567,7 +3918,15 @@ def build_parser():
     p.add_argument("--jitshim-dir", default="")
     p.add_argument("--jitshim-run-id", default="")
     p.add_argument("--jitshim-run-url", default="")
-    p.add_argument("--variant", default="", help="node22 (default) or node18")
+    p.add_argument("--opentui-dir", default="")
+    p.add_argument("--opentui-run-id", default="")
+    p.add_argument("--opentui-run-url", default="")
+    p.add_argument("--opentui-sha256", default="")
+    p.add_argument("--opentui-relative-path", default="")
+    p.add_argument("--expected-node-sha256", default="")
+    p.add_argument("--experimental-label", default="")
+    p.add_argument("--variant", default="",
+                   help="node22 (default), node18 or experimental node26")
     p.add_argument("--self-test", action="store_true")
     p.set_defaults(func=cmd_sources)
 
@@ -3599,7 +3958,8 @@ def build_parser():
     p.add_argument("--run-url", default="")
     p.add_argument("--expected-version", default="")
     p.add_argument("--variant", default="auto",
-                   help="auto|node22|node18 (auto infers from provenance/manifest)")
+                   help="auto|node22|node18|node26 (auto infers from "
+                        "provenance/manifest)")
     p.add_argument("--skip-smoke", action="store_true")
     p.add_argument("--skip-native-audit", action="store_true")
     p.set_defaults(func=cmd_verify)

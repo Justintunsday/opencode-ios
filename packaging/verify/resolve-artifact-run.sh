@@ -10,11 +10,16 @@
 #   * without a pin: scan the latest successful runs of the workflow on `main`
 #     and pick the newest one whose artifact exists and is not expired,
 #   * if the workflow/artifact does not exist yet, fail with an explicit
-#     bring-up message — placeholder binaries are never fabricated.
+#     bring-up message — placeholder binaries are never fabricated,
+#   * cross-repository artifacts: set ARTIFACT_REPO=owner/name (default: the
+#     current GITHUB_REPOSITORY); actions: read permission on that repo is
+#     required. Used by the experimental node26 packaging workflow to consume
+#     the `ios-node26-runtime` artifact from Justintunsday/nodejs26-ios.
 #
 # Usage:
-#   resolve-artifact-run.sh WORKFLOW_FILE ARTIFACT_NAME LABEL [PINNED_RUN_ID]
-#                          [--optional]
+#   [ARTIFACT_REPO=owner/name] \
+#     resolve-artifact-run.sh WORKFLOW_FILE ARTIFACT_NAME LABEL [PINNED_RUN_ID]
+#                            [--optional]
 #
 # Writes to $GITHUB_OUTPUT (when set):
 #   <label>_run_id, <label>_run_url, <label>_head_sha
@@ -38,8 +43,8 @@ info() { echo "==> $*"; }
 [ -n "$WORKFLOW_FILE" ] || die "usage: resolve-artifact-run.sh WORKFLOW_FILE ARTIFACT_NAME LABEL [RUN_ID] [--optional]"
 [ -n "$ARTIFACT_NAME" ] || die "ARTIFACT_NAME is required"
 [ -n "$LABEL" ] || die "LABEL is required"
-[ -n "${GITHUB_REPOSITORY:-}" ] || die "GITHUB_REPOSITORY is not set (this script is meant for GitHub Actions)"
-REPO="$GITHUB_REPOSITORY"
+REPO="${ARTIFACT_REPO:-${GITHUB_REPOSITORY:-}}"
+[ -n "$REPO" ] || die "ARTIFACT_REPO (or GITHUB_REPOSITORY) is not set (this script is meant for GitHub Actions)"
 
 emit() {
     if [ -n "${GITHUB_OUTPUT:-}" ]; then
