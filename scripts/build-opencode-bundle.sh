@@ -454,6 +454,14 @@ cmd_assetcheck() {
     --dylib "$dylib" \
     --expected-sha256 "$OPENTUI_IOS_DYLIB_SHA256" \
     --bundle "$ARTIFACT_DIR/opencode.mjs"
+  # Phase D real-TUI gate (patch 0016): the shipped bundle must keep both the node:ffi-conditional
+  # real TUI path and the FFI-less line-REPL fallback. Guards against a future patch silently
+  # making the real TUI unreachable on the FFI-enabled runtime again.
+  local bundle="$ARTIFACT_DIR/opencode.mjs" marker
+  for marker in IOS_TUI_FFI_GATE hasNodeFFI runIOSRepl "node:ffi"; do
+    grep -qF "$marker" "$bundle" || die "bundle is missing the iOS TUI FFI gate symbol: $marker"
+  done
+  log "bundle TUI gate OK: IOS_TUI_FFI_GATE + hasNodeFFI + runIOSRepl + node:ffi present"
 }
 
 # --- smoke -----------------------------------------------------------------

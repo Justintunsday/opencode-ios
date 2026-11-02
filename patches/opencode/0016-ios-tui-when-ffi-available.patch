@@ -1,0 +1,172 @@
+# OpenCode iOS port patch -- 0016
+# Title: use the real OpenTUI TUI on iPhoneOS when node:ffi is available
+# Upstream: anomalyco/opencode @ e8238bae9b807b72ecfc75afd3a9fe2e6b07b944 (v2.2.5)
+# Files: packages/cli/src/util/ios.ts, packages/cli/src/commands/handlers/default.ts,
+#        packages/cli/src/commands/handlers/mini.ts, packages/cli/vite.node.config.ts
+# Depends on: 0011 (iOS TUI guidance) and 0012 (iOS line REPL), which introduced the
+#             unconditional iOS fallback branch this patch makes conditional.
+# Why: patches 0011/0012 route every iOS build to the line REPL / guidance path as soon as
+#      `isIOS()` is true, because the Node 22 iPhoneOS runtime has no node:ffi. Phase D adds an
+#      FFI-enabled Node 26.13 iPhoneOS runtime and ships OpenTUI's iPhoneOS renderer as a CLI
+#      asset, so on that runtime the real TUI must be attempted instead. The handlers now probe
+#      node:ffi lazily (`hasNodeFFI()`: createRequire from node:module, guarded try/catch, so no
+#      bundler may try to resolve node:ffi at build time and the Node 22 bundle keeps working):
+#        - node:ffi available (FFI-enabled Node 26 + iOS): `opencode` / `opencode mini` fall
+#          through to the real OpenTUI TUI path (renderer resolved by the patched
+#          @opentui/core resolver from OTUI_ASSET_ROOT -> @opentui/core-ios-arm64/libopentui.dylib);
+#        - node:ffi unavailable (Node 22 runtime or a no-FFI Node 26 build): unchanged fallback
+#          (line REPL in a TTY, actionable guidance for non-TTY).
+#      `isTUIRendererUnavailable` also recognizes the renderer-asset errors ("Missing OpenTUI
+#      asset", "OpenTUI native library does not exist") so a partial install degrades to the
+#      guidance instead of an OpenTUI stack trace.
+#      `IOS_TUI_FFI_GATE` is a marker string kept in the bundle for the node26 build's static
+#      gate (scripts/build-opencode-bundle.sh assetcheck greps for it together with hasNodeFFI,
+#      runIOSRepl and node:ffi).
+# Test: node26 bundle host smoke (--version/--help/debug paths/models/auth list/session list on
+#       stock Node 26.13.0 + 24.22.2); bundle static gate; device TUI run with the FFI-enabled
+#       runtime (Lead-executed).
+# Status: static/host verification only; the real TUI on the device is verified separately.
+
+diff --git a/packages/cli/src/commands/handlers/default.ts b/packages/cli/src/commands/handlers/default.ts
+index d8019e9..2586d57 100644
+--- a/packages/cli/src/commands/handlers/default.ts
++++ b/packages/cli/src/commands/handlers/default.ts
+@@ -15,17 +15,25 @@ import { Service } from "@opencode/client/effect/service"
+ import { OpenCode } from "@opencode/client/promise"
+ import { findSession } from "../../session-target"
+ import { errorMessage } from "../../util/error"
+-import { isInteractiveTTY, isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
++import {
++      hasNodeFFI,
++      isInteractiveTTY,
++      isIOS,
++      isTUIRendererUnavailable,
++      reportTUIUnavailable,
++    } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands, (input) =>
+   Effect.gen(function* () {
+     const requestedDirectory = Option.getOrUndefined(input.directory)
+     const requestedServer = Option.getOrUndefined(input.server)
+     if (requestedDirectory !== undefined) process.chdir(requestedDirectory)
+-    // iPhoneOS has no OpenTUI native renderer (it needs Node >= 26.4 + node:ffi), so the full TUI
+-    // cannot start. With a terminal, fall back to the pure-JS line REPL; without one, explain the
+-    // supported headless interface instead of crashing inside the renderer with a stack trace.
+-    if (isIOS()) {
++    // iPhoneOS can start the real OpenTUI TUI only when the runtime provides node:ffi (the
++    // FFI-enabled Node 26 iPhoneOS runtime; the renderer dylib is shipped in the CLI assets).
++    // Without FFI (Node 22 runtime, or a Node 26 build without FFI) keep the pure-JS line REPL in
++    // a terminal, and explain the supported headless interface for scripts/pipes.
++    const iosTuiFFIAvailable = yield* Effect.promise(() => hasNodeFFI())
++    if (isIOS() && !iosTuiFFIAvailable) {
+       if (!isInteractiveTTY()) {
+         yield* Effect.sync(reportTUIUnavailable)
+         return
+diff --git a/packages/cli/src/commands/handlers/mini.ts b/packages/cli/src/commands/handlers/mini.ts
+index 0de1311..0e6594b 100644
+--- a/packages/cli/src/commands/handlers/mini.ts
++++ b/packages/cli/src/commands/handlers/mini.ts
+@@ -6,13 +6,21 @@ import { Updater } from "../../services/updater"
+ import { Config } from "../../config"
+ import { Global } from "@opencode/util/global"
+ import { Npm } from "@opencode/util/npm"
+-import { isInteractiveTTY, isIOS, isTUIRendererUnavailable, reportTUIUnavailable } from "../../util/ios"
++import {
++      hasNodeFFI,
++      isInteractiveTTY,
++      isIOS,
++      isTUIRendererUnavailable,
++      reportTUIUnavailable,
++    } from "../../util/ios"
+ 
+ export default Runtime.handler(Commands.commands.mini, (input) =>
+   Effect.gen(function* () {
+-    // `opencode mini` is an OpenTUI frontend too; on iPhoneOS there is no native renderer. With a
+-    // terminal fall back to the pure-JS line REPL, otherwise explain the supported interface.
+-    if (isIOS()) {
++    // `opencode mini` is an OpenTUI frontend too; on iPhoneOS it can run only when the runtime
++    // provides node:ffi (FFI-enabled Node 26 runtime). Otherwise keep the pure-JS line REPL in a
++    // terminal, or explain the supported interface for scripts/pipes.
++    const iosTuiFFIAvailable = yield* Effect.promise(() => hasNodeFFI())
++    if (isIOS() && !iosTuiFFIAvailable) {
+       if (!isInteractiveTTY()) {
+         yield* Effect.sync(reportTUIUnavailable)
+         return
+diff --git a/packages/cli/src/util/ios.ts b/packages/cli/src/util/ios.ts
+index 44c2ea4..de75fda 100644
+--- a/packages/cli/src/util/ios.ts
++++ b/packages/cli/src/util/ios.ts
+@@ -1,8 +1,10 @@
+-// iPhoneOS has no OpenTUI native renderer: OpenTUI's Node binding needs Node.js >= 26.4 with
+-// `--experimental-ffi` / `node:ffi` to load its native core, and the shipped iPhoneOS runtime
+-// is Node 22.9 (no node:ffi). The full TUI and `opencode mini` therefore cannot start here.
+-// In a terminal the CLI falls back to a pure-JS line REPL (see ios-repl.ts); scripts and pipes
+-// use the normal headless commands.
++// iPhoneOS can run OpenTUI's native renderer only when the runtime provides `node:ffi`
++// (OpenTUI's Node binding needs Node.js >= 26.4 with node:ffi): the FFI-enabled Node 26
++// iPhoneOS runtime plus the staged `libopentui.dylib` renderer asset. On the Node 22.9 runtime
++// (and any Node 26 build without FFI) `node:ffi` is absent, so the full TUI and `opencode mini`
++// cannot start: in a terminal the CLI falls back to a pure-JS line REPL (see ios-repl.ts), and
++// scripts/pipes use the normal headless commands. The handlers probe `hasNodeFFI()` and only
++// take the fallback when FFI is unavailable.
+ export const TUI_UNAVAILABLE_MESSAGE = `Interactive TUI is not available on this iOS build.
+ OpenTUI needs Node.js >= 26.4 with node:ffi (--experimental-ffi), which this iPhoneOS
+ runtime (Node ${process.versions.node}) cannot provide, so the full TUI and \`opencode mini\`
+@@ -14,10 +16,30 @@ Interactive mode requires a TTY (stdin and stdout). For scripts and pipes use th
+   opencode models | auth login | auth list | session list | debug paths
+ Docs: /var/jb/usr/share/doc/opencode/KNOWN_LIMITATIONS.md`
+ 
++// Build-time marker for the node26 bundle static check in scripts/build-opencode-bundle.sh: it
++// must be present in the shipped bundle together with `hasNodeFFI`/`runIOSRepl`/`node:ffi`.
++export const IOS_TUI_FFI_GATE = "IOS_TUI_FFI_GATE"
++
+ export function isIOS() {
+   return (process.platform as string) === "ios" || process.env.OPENCODE_IOS === "1"
+ }
+ 
++// True only when the running iOS build/runtime provides node:ffi (FFI-enabled Node 26 runtime).
++// Lazy + guarded so the Node 22 bundle (which has no node:ffi) keeps the line-REPL fallback and
++// never fails at module link time. Uses createRequire instead of a static/dynamic `node:ffi`
++// import so bundlers never try to resolve it at build time.
++export async function hasNodeFFI(): Promise<boolean> {
++  if (!isIOS()) return false
++  try {
++    const { createRequire } = await import("node:module")
++    const require = createRequire(import.meta.url)
++    const ffi = require("node:ffi") as { dlopen?: unknown } | undefined
++    return typeof ffi?.dlopen === "function"
++  } catch {
++    return false
++  }
++}
++
+ // The line REPL needs an interactive terminal. OPENCODE_IOS_REPL_ASSUME_TTY is a host-test hook
+ // (CI exercises the REPL with piped stdio on non-iOS hosts).
+ export function isInteractiveTTY() {
+@@ -30,7 +52,12 @@ export function isInteractiveTTY() {
+ export function isTUIRendererUnavailable(error: unknown) {
+   const text = String(error instanceof Error ? error.message : error)
+   return (
+-    text.includes("Failed to initialize OpenTUI render library") || text.includes("Unsupported OpenTUI Node asset target")
++    text.includes("Failed to initialize OpenTUI render library") ||
++    text.includes("Unsupported OpenTUI Node asset target") ||
++    // The iOS renderer asset is staged under the CLI assets dir; partial installs must degrade to
++    // the guidance instead of an OpenTUI stack trace.
++    text.includes("Missing OpenTUI asset") ||
++    text.includes("OpenTUI native library does not exist")
+   )
+ }
+ 
+diff --git a/packages/cli/vite.node.config.ts b/packages/cli/vite.node.config.ts
+index 7839432..e31fb25 100644
+--- a/packages/cli/vite.node.config.ts
++++ b/packages/cli/vite.node.config.ts
+@@ -163,6 +163,8 @@ const output = (entryFileNames: string, banner?: string) => ({
+ function iosNodePrelude() {
+   return `#!/usr/bin/env -S node --experimental-sqlite --disable-warning=ExperimentalWarning
+ // opencode-ios-prelude: non-SEA / Node 22.9-safe bootstrap for iPhoneOS
++// IOS_TUI_FFI_GATE: opencode/opencode mini probe node:ffi and only use the line-REPL fallback
++// when FFI is unavailable (Node 22 runtime / no-FFI Node 26 build); FFI-enabled Node 26 -> real TUI
+ import __cjs_mod__ from "node:module"
+ import { fileURLToPath as __ocFileURLToPath } from "node:url"
+ import __ocPath from "node:path"

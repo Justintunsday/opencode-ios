@@ -153,6 +153,8 @@ change surface — upstream itself is never modified.
 
 | 0015 | `ios-opentui-native-asset` | `packages/cli/script/node-assets.ts` | **Phase D Node 26 variant.** The iOS asset collector stages the prebuilt OpenTUI iPhoneOS renderer dylib (path supplied via `OPENCODE_OPENTUI_IOS_DYLIB` from the `opentui-ios-renderer` artifact) under the asset key `@opentui/core-ios-arm64/libopentui.dylib`, and requires the variable when `OPENCODE_IOS_NODE26=1`. Node 22/18 builds do not set the variable, so their asset set is unchanged (no macOS/iPhoneOS dylib is shipped for them). |
 
+| 0016 | `ios-tui-when-ffi-available` | `packages/cli/src/util/ios.ts`, `packages/cli/src/commands/handlers/default.ts`, `packages/cli/src/commands/handlers/mini.ts`, `packages/cli/vite.node.config.ts` | **Phase D.** 0011/0012 made every iOS build take the line-REPL/guidance fallback unconditionally. With the FFI-enabled Node 26 iPhoneOS runtime + staged renderer the real TUI must be attempted: the handlers probe `node:ffi` lazily (`hasNodeFFI()`: `createRequire` from `node:module`, guarded) and only fall back when FFI is unavailable, so the FFI-less Node 22 path is unchanged. `isTUIRendererUnavailable` also recognizes renderer-asset errors (`Missing OpenTUI asset`, `OpenTUI native library does not exist`). The iOS prelude carries an `IOS_TUI_FFI_GATE` marker that the node26 bundle build statically asserts (together with `hasNodeFFI`, `runIOSRepl`, `node:ffi`). |
+
 A second, post-install patch group lives in `patches/opencode/node-modules/` (applied by
 `scripts/build-opencode-bundle.sh deps-patches` after `bun install`, Node 26 variant only,
 because it patches the *published* `@opentui/core` package rather than the upstream source):
