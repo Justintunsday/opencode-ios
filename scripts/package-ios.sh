@@ -365,8 +365,21 @@ if [ "$VARIANT" = "node26" ]; then
         [ -d "$OPENTUI_DIR" ] || die "--opentui-dir not found: $OPENTUI_DIR"
         OPENTUI_SRC="$(find_first_file "$OPENTUI_DIR" libopentui.dylib)"
         [ -n "$OPENTUI_SRC" ] || die "opentui-ios-renderer artifact has no libopentui.dylib"
-        cp "$OPENTUI_SRC" "$OPENTUI_STAGE"
-        info "OpenTUI renderer: installed from opentui-ios-renderer artifact (authoritative; replaces any CLI-bundle copy)"
+        ARTIFACT_SHA="$(sha256_of "$OPENTUI_SRC")"
+        if [ -f "$OPENTUI_STAGE" ]; then
+            BUNDLE_SHA="$(sha256_of "$OPENTUI_STAGE")"
+            if [ -n "$OPENTUI_SHA256_EXPECTED" ] && [ "$BUNDLE_SHA" = "$OPENTUI_SHA256_EXPECTED" ]; then
+                # Preferred contract: the CLI bundle embeds the pinned renderer;
+                # verify-only, do not mutate the bundle asset.
+                info "OpenTUI renderer: CLI bundle already embeds the pinned renderer (sha256=$BUNDLE_SHA; verify-only)"
+            else
+                cp "$OPENTUI_SRC" "$OPENTUI_STAGE"
+                info "OpenTUI renderer: CLI-bundle copy (sha256=$BUNDLE_SHA) does not match the pinned renderer; replaced with opentui-ios-renderer artifact"
+            fi
+        else
+            cp "$OPENTUI_SRC" "$OPENTUI_STAGE"
+            info "OpenTUI renderer: installed from opentui-ios-renderer artifact (bundle had no renderer)"
+        fi
     elif [ -f "$OPENTUI_STAGE" ]; then
         info "OpenTUI renderer: already shipped by the node26 CLI bundle assets"
     else

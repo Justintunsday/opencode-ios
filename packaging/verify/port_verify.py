@@ -1251,18 +1251,25 @@ def _check_maintainer_scripts(checks, ctx, extract_dir, variant=VARIANT_NODE22):
         if not re.search(r"(?m)^set -e\s*$", text):
             problems.append(f"DEBIAN/{name} must contain 'set -e'")
         body = "\n".join(text.splitlines()[1:])
+        # Policy checks look at executable lines only: comments legitimately name
+        # forbidden tools (e.g. "ldid-signed dylibs map non-executable on iOS").
+        body_code = "\n".join(
+            line for line in body.splitlines() if not line.lstrip().startswith("#")
+        )
         forbidden_cmds = re.search(
             r"(?<![A-Za-z0-9_])(curl|wget|nc|netcat|ssh|scp|apt-get|apt|npm|pip|pip3|ldid)"
             r"(?![A-Za-z0-9_])",
-            body,
+            body_code,
         )
         if forbidden_cmds:
             problems.append(f"DEBIAN/{name} calls forbidden command {forbidden_cmds.group(1)!r}")
-        dangerous = re.search(r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:\s|$)", body)
+        dangerous = re.search(
+            r"rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/(?:\s|$)", body_code
+        )
         if dangerous:
             problems.append(f"DEBIAN/{name} contains a destructive rm of /")
         outside = re.search(
-            r"(?<![A-Za-z0-9_$}])/(?:usr|etc|bin)/", body
+            r"(?<![A-Za-z0-9_$}])/(?:usr|etc|bin)/", body_code
         )
         if outside:
             problems.append(
