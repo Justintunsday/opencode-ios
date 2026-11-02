@@ -7,12 +7,15 @@
 #   scripts/build-opentui-ios.sh fetch    # clone pinned OpenTUI, apply patches, unpack Zig deps
 #   scripts/build-opentui-ios.sh zig      # install pinned Zig 0.16.0 (sha256-verified)
 #   scripts/build-opentui-ios.sh build    # zig build -Dlibrary-target=aarch64-ios.15.0 ...
-#   scripts/build-opentui-ios.sh package  # locate, ldid-sign, statically validate, manifest
+#   scripts/build-opentui-ios.sh package  # locate, codesign(ad-hoc), statically validate, manifest
 #   scripts/build-opentui-ios.sh validate # static validation only (existing dylib)
 #   scripts/build-opentui-ios.sh all      # fetch + zig + build + package (CI entry point)
 #
 # Requires: macOS host with Xcode command line tools (xcrun/otool/vtool), git, python3, curl,
-# shasum. Zig is downloaded into the build dir; ldid is installed with Homebrew when missing.
+# shasum. Zig is downloaded into the build dir. The dylib is signed with Apple `codesign`
+# (ad-hoc), NOT ldid: device evidence shows ldid-signed dylibs are mapped non-executable by dyld
+# on iOS (executing them SIGBUSes; __TEXT r--/rw-), while codesign-ad-hoc dylibs execute under
+# node:ffi. See docs/OPENTUI_IOS.md and the dlopen/exec-mapping evidence.
 # Not needed on device: this script only produces a build artifact.
 set -euo pipefail
 
@@ -294,19 +297,14 @@ cmd_validate() {
   xcrun vtool -show-build "$lib" | tee "$DIST/vtool.txt"
   grep -q 'platform IOS' "$DIST/vtool.txt" || die "vtool did not report platform IOS"
 
-  log "ldid signature audit"
-  if ! command -v ldid >/dev/null 2>&1; then
-    log "WARNING: ldid not installed yet; skipping embedded-signature audit (package installs it)"
-    return 0
+  log "codesign signature audit"
+  xcrun codesign --verify --verbose=2 "$lib" >"$DIST/codesign-verify.txt" 2>&1 ||
+    die "dylib is not validly codesign-signed (see $DIST/codesign-verify.txt)"
+  xcrun codesign -dvv "$lib" >"$DIST/codesign.txt" 2>&1 || true
+  if ! grep -q 'Signature=adhoc' "$DIST/codesign.txt"; then
+    log "WARNING: signature is not ad-hoc (the anonymous iPhoneOS build expects ad-hoc)"
   fi
-  ldid -e "$lib" >"$DIST/entitlements-signed.xml" 2>&1 ||
-    die "dylib is not ldid-signed (ldid -e failed)"
-  if ! grep -q 'platform-application' "$DIST/entitlements-signed.xml"; then
-    # A dylib without embedded entitlements is still a signed Mach-O; ldid -S (ad-hoc) emits an
-    # empty entitlement blob, which is acceptable for a library. Only require a code signature.
-    log "WARNING: no embedded entitlements blob (ad-hoc signature retained)"
-  fi
-  log "signature audit done"
+  log "codesign signature audit done (ad-hoc; see codesign.txt)"
 }
 
 cmd_package() {
@@ -318,13 +316,15 @@ cmd_package() {
   cp -f "$src_lib" "$DIST/$DYLIB_NAME"
   chmod 0644 "$DIST/$DYLIB_NAME"
 
-  if ! command -v ldid >/dev/null 2>&1; then
-    log "installing ldid (brew install ldid)"
-    brew install ldid >/dev/null 2>&1 || die "ldid not installed and brew install ldid failed"
-  fi
-  log "ldid signing with the device-verified 2-key node entitlements"
-  ldid -S"$ROOT/scripts/ios-runtime/entitlements.plist" "$DIST/$DYLIB_NAME"
-  ldid -e "$DIST/$DYLIB_NAME" >"$DIST/entitlements-signed.xml" 2>&1 || true
+  # Apple codesign (ad-hoc). Device-reported root cause for the renderer exec-mapping failure:
+  # ldid-signed dylibs are mapped non-executable by dyld on iOS, so calling into them SIGBUSes;
+  # codesign-ad-hoc dylibs execute fine under node:ffi (verified with a minimal probe on iOS 16.1.1).
+  log "codesign (ad-hoc) signing the renderer dylib"
+  xcrun codesign --force --sign - --timestamp=none "$DIST/$DYLIB_NAME" ||
+    die "codesign ad-hoc signing failed"
+  xcrun codesign --verify --verbose=2 "$DIST/$DYLIB_NAME" >"$DIST/codesign-verify.txt" 2>&1 ||
+    die "codesign verification failed after signing (see $DIST/codesign-verify.txt)"
+  xcrun codesign -dvv "$DIST/$DYLIB_NAME" >"$DIST/codesign.txt" 2>&1 || true
 
   cmd_validate "$DIST/$DYLIB_NAME"
 
@@ -347,7 +347,8 @@ cmd_package() {
     echo "zig_version=$zig_version"
     echo "ios_sdk_version=$sdk_version"
     echo "ios_sdk_path=$IOS_SDK"
-    echo "signed_with=ldid $(command -v ldid) -S<2-key node entitlements>"
+    echo "signed_with=codesign ad-hoc (xcrun codesign --force --sign - --timestamp=none)"
+    echo "signing_scheme=ad-hoc (no Team ID, no entitlements; codesign-verified; executes under node:ffi)"
     echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [ -n "${GITHUB_RUN_ID:-}" ]; then
       echo "github_repository=$GITHUB_REPOSITORY"
@@ -371,7 +372,7 @@ cmd_package() {
     echo "=== otool -hv ==="; xcrun otool -hv "$DIST/$DYLIB_NAME"
   } >"$DIST/file.txt" 2>&1 || true
 
-  (cd "$DIST" && shasum -a 256 "$DYLIB_NAME" opentui-ios-manifest.txt entitlements-signed.xml \
+  (cd "$DIST" && shasum -a 256 "$DYLIB_NAME" opentui-ios-manifest.txt codesign.txt codesign-verify.txt \
     otool-L.txt vtool.txt file.txt > SHA256SUMS)
 
   log "artifact: $DIST ($size bytes dylib)"

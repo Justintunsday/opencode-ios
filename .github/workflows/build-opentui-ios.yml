@@ -7,7 +7,9 @@ name: Build OpenTUI iOS native renderer (Phase C prep)
 # asset and the device run belong to Phase D (see docs/OPENTUI_IOS.md).
 #
 # Artifact contract: `opentui-ios-renderer` = libopentui.dylib, opentui-ios-manifest.txt,
-# entitlements-signed.xml, file.txt, otool-L.txt, vtool.txt, SHA256SUMS.
+# codesign.txt, codesign-verify.txt, file.txt, otool-L.txt, vtool.txt, SHA256SUMS.
+# The dylib is signed with Apple `codesign` ad-hoc (NOT ldid: ldid-signed dylibs are mapped
+# non-executable by dyld on the device; codesign-ad-hoc dylibs execute under node:ffi).
 
 on:
   workflow_dispatch:
@@ -43,7 +45,8 @@ jobs:
           xcodebuild -version || true
           echo "iPhoneOS SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
           echo "iPhoneOS SDK version: $(xcrun --sdk iphoneos --show-sdk-version)"
-          echo "ldid: $(ldid --version 2>&1 || echo 'not installed (script installs it)')"
+          echo "codesign: $(xcrun --find codesign)"
+          codesign -dvv /bin/true 2>&1 | sed -n '1,3p' || true
 
       - name: Cache Zig toolchain, OpenTUI checkout and Zig caches
         uses: actions/cache@v4
@@ -67,6 +70,10 @@ jobs:
           cat dist/opentui-ios-renderer/SHA256SUMS
           echo '--- file ---'
           file dist/opentui-ios-renderer/libopentui.dylib
+          echo '--- codesign ---'
+          cat dist/opentui-ios-renderer/codesign.txt
+          echo '--- codesign verify ---'
+          cat dist/opentui-ios-renderer/codesign-verify.txt
 
       - name: Upload opentui-ios-renderer artifact
         uses: actions/upload-artifact@v4
