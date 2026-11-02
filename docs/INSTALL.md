@@ -136,58 +136,35 @@ declares the capability profile.
 > artifact whose `SHA256SUMS` matches a device-tested SHA recorded in
 > `docs/VERIFICATION.md`.
 
-## 2b. Experimental node26 + OpenTUI variant (Phase D — NOT device-verified)
+## 2b. Experimental node26 + OpenTUI candidate (input acceptance pending)
 
-This is a **separate experimental artifact**, produced only by the
-`Package experimental node26 rootless .deb (Phase D)` workflow. It is not part of
-the stable `v2.2.5-ios.5` release and must not be presented as device-verified.
+The first `v2.2.5-ios.5-node26test.4` candidate failed real-device input and non-TTY
+acceptance. A displayed TUI is not sufficient evidence of interactive operation.
+The current runtime/CLI callback and TTY fixes still require final packaged acceptance;
+use the exact accepted SHA from [`VERIFICATION.md`](VERIFICATION.md) when available.
+The stable `v2.2.5-ios.5` release remains unchanged.
 
-| Item | Value |
-| --- | --- |
-| Artifact | `opencode-ios-rootless-node26` (CI artifact) → `OpenCode-iOS-rootless-node26.deb` |
-| Report label | `package-report.json`: `"variant": "node26"`, `"runtime_kind": "node26"`, `"experimental": true`, `"release_label": "v2.2.5-ios.5-node26test.1"` |
-| Runtime | Node.js **26.13.0** iPhoneOS arm64 from `Justintunsday/nodejs26-ios` (`ios-node26-runtime`; V8 14.6 mprotect W^X, **node:ffi default-on**). Must be the **FFI-enabled Phase C build** — the earlier `--without-ffi` Phase A/B artifact cannot load OpenTUI and is rejected by the package's runtime FFI gate. Always launched with `--single-threaded` |
-| CLI | node26 bundle from `build-opencode.yml` (`opencode-cli-node26-ios`; iOS OpenTUI resolver). The bundle **ships the renderer itself** (`assets/@opentui/core-ios-arm64/libopentui.dylib`); the packager verifies it rather than injecting it |
-| TUI renderer | `libopentui.dylib` from `opentui-ios-renderer` run `41313921358` (sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`, 3,785,600 B, 2-key ldid-signed), at `/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` (0755); the CLI resolves it through `OTUI_ASSET_ROOT` (absolute `/var/jb` path, required by the device dlopen sandbox) |
-| Status | **EXPERIMENTAL, static CI only — UNVERIFIED ON DEVICE.** The real TUI path (node:ffi + OpenTUI) is the Lead's Phase D device step. **Acceptance artifact: run `41483801031`, artifact `opencode-ios-rootless-node26` id `13160407899`, `OpenCode-iOS-rootless-node26.deb` 56,790,460 B sha256 `7bbfbfbdcfb72f5732ea798951d0fff5d0e0d03fa3ceaf9751b915482d582a88`, label `v2.2.5-ios.5-node26test.3`** — FFI-enabled runtime (`ios-node26-runtime-ffi` run `41450472333`, node sha `73144efa…`, wasm trap-handler fix patch 0013) + patch-0016 CLI bundle (run `41431113315`, sha `d031509c…`) + `/var/mobile` asset mirror (postinst) with launcher env pointing there; CI 50/0/2. The superseded `node26test.2` (run `41447424080`, sha `ef188de4…`) lacked the exec-mmap and wasm fixes. A pipeline-prep build (`require_ffi_runtime=false`, `bootstrap_prep: true`) exists only for pipeline validation; **the TUI will NOT load there**. |
-| Stable alternative | `v2.2.5-ios.5` node22 v6 package remains the stable, device-verified release |
+The required components are Node 26.13.0 **FFI-enabled** iPhoneOS runtime with V8 W^X,
+wasm fixes and libffi callback patches 0014/0015; the node26 CLI with patch 0017; and
+renderer run `41531609826`, dylib SHA-256
+`5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242` (4,181,456 B).
+The renderer must be linked with Xcode clang/ld64 and signed with Apple codesign ad-hoc.
+The Node executable uses the separate device-proven ldid two-key entitlement set.
 
-Device test steps (maintainer):
+Runtime assets must load from **`/var/jb/usr/lib/opencode/cli/assets`**. Both
+`OPENCODE_NODE_ASSETS_DIR` and `OTUI_ASSET_ROOT` point there. The old mobile asset mirror
+was an incorrect workaround and is removed; executable dylib mmap from real `/var/mobile`
+is sandbox-denied. The dylib is installed at
+`/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib`, mode 0755.
+`OPENCODE_IOS_RUNTIME_ASSETS` is a diagnostic override, not a mobile mirror requirement.
 
-```sh
-# 1. install the experimental package (same package name/version as the stable
-#    build, so it REPLACES the installed opencode package). postinst mirrors the
-#    CLI assets to /var/mobile/Library/OpenCode/assets (root:mobile, dirs 0755,
-#    renderer dylib 0755) because iOS maps /var/jb executables non-executable.
-sudo dpkg -i OpenCode-iOS-rootless-node26.deb
-# 2. identity + exec-mmap mirror + FFI preflight
-ls -l /var/mobile/Library/OpenCode/assets/@opentui/core-ios-arm64/libopentui.dylib  # 3,785,600 B, -rwxr-xr-x
-/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 26.13.0
-/var/jb/usr/lib/opencode/runtime/node -p process.platform        # ios
-/var/jb/usr/lib/opencode/runtime/node -e "console.log(typeof require('node:ffi').dlopen)"  # function (FFI-enabled runtime)
-/var/jb/usr/lib/opencode/runtime/node -e "const m=new WebAssembly.Memory({initial:1}); console.log('wasm_ok')"  # wasm_ok (trap-handler fix)
-sudo ldid -e /var/jb/usr/lib/opencode/runtime/node | grep platform-application
-opencode --version; opencode --help; opencode models; opencode debug paths
-# 3. real TUI in a PTY (NewTerm 3 / SSH): expect the OpenTUI TUI, not the line REPL
-opencode
-#    shell tool / agent turn with a mock provider should work; /exit to quit
-# 4. non-TTY must print clean guidance and exit 1
-opencode < /dev/null; echo "rc=$?"
-# 5. headless standalone E2E (wasm/undici fetch + server child --single-threaded)
-opencode run --standalone "say hi"   # with the mock provider configured
-# 6. rollback to the stable device-verified release
-sudo dpkg -i OpenCode-iOS-rootless.deb          # v2.2.5-ios.5 artifact
-```
-
-The launcher always passes `--single-threaded` (mandatory: the V8 14.6 iOS W^X
-toggle is process-wide; background V8 threads race it → SIGBUS). It points
-`OPENCODE_NODE_ASSETS_DIR` and `OTUI_ASSET_ROOT` at the `/var/mobile` asset
-mirror; the `/var/jb` copy is kept for static validation only (the iOS sandbox
-maps it non-executable, so a renderer function call from there SIGBUSes).
-`OPENCODE_IOS_RUNTIME_ASSETS` overrides the mirror path for diagnostics. Do not
-install this experimental build on a device you rely on. See
-[`VERIFICATION.md`](VERIFICATION.md) (node26 experimental section) and
-[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) for the honest status.
+The launcher and spawned children must retain `--single-threaded`. A new candidate is
+installed with `sudo dpkg -i OpenCode-iOS-rootless-node26.deb`, replacing the same-named
+installed `opencode` package. Verify its exact SHA first, then runtime identity, callback
+regression and actual TTY input/exit. Pipes must print guidance and return 1; headless
+commands use `opencode run ...`. Reinstall stable `OpenCode-iOS-rootless.deb` to roll back;
+user config/sessions are preserved. Do not reinstall rejected test.3 or the first test.4
+candidate for interactive use. Complete pins/results: [`VERIFICATION.md`](VERIFICATION.md).
 
 ## 3. Transfer the package to the device
 
