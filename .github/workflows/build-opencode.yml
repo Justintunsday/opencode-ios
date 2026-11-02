@@ -262,7 +262,8 @@ jobs:
           retention-days: 14
 
   # Phase D: Node 26.13.0 + node:ffi real-TUI bundle. It ships the prebuilt OpenTUI iPhoneOS
-  # renderer (`opentui-ios-renderer` artifact from run 41487998437, codesign-adhoc signed) as a CLI asset under the key
+  # renderer (`opentui-ios-renderer` artifact from run 41531609826, clang/ld64-linked
+  # and codesign-adhoc signed) as a CLI asset under the key
   # the patched OpenTUI FFI loader resolves: @opentui/core-ios-arm64/libopentui.dylib.
   # This job is static/host verification only: the end-to-end TUI is device-verified separately
   # with the FFI-enabled Node 26 iPhoneOS runtime (the current --without-ffi Phase A/B runtime
@@ -281,12 +282,13 @@ jobs:
       # informational (the bundle must not hard-crash on a supported previous LTS either).
       OPENCODE_NODE_MATRIX: '26.13.0 24.22.2'
       OPENCODE_SMOKE_REQUIRED: '26.13.0'
-      # Phase C renderer artifact, rebuilt and signed with Apple codesign ad-hoc (opencode-ios run
-      # 41487998437; ldid signatures map non-executable on the device). The sha256 is pinned and
+      # Phase C renderer artifact, linked with Xcode clang/ld64 and signed with Apple
+      # codesign ad-hoc (opencode-ios run 41531609826; Zig-linked/ldid-signed
+      # dylibs map non-executable on the device). The sha256 is pinned and
       # scripts/build-opencode-bundle.sh re-verifies it plus the Mach-O before staging; the
       # manifest records the actual staged hash.
       OPENCODE_OPENTUI_IOS_DYLIB: dist/opentui-ios-renderer/libopentui.dylib
-      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: c2123919402a3ab418f6e431d3c21bec4c33e130bb439c657a8ac17479da62a9
+      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: 5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242
     steps:
       - name: Checkout port repository
         uses: actions/checkout@v4
@@ -307,7 +309,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: opentui-ios-renderer
-          run-id: '41487998437'
+          run-id: '41531609826'
           github-token: ${{ github.token }}
           path: dist/opentui-ios-renderer
 
