@@ -191,7 +191,10 @@ ensure_compiler_rt() {
   fi
   [ -f "$compiler_rt_src" ] || die "Zig compiler_rt.zig not found at $compiler_rt_src"
   mkdir -p "$(dirname "$archive")"
-  log "building Zig compiler-rt static archive for $TARGET"
+  # NOTE: log to stderr: ensure_compiler_rt's stdout is captured by the caller
+  # (`compiler_rt="$(ensure_compiler_rt)"`), so stdout must contain only the
+  # archive path (a log line on stdout made clang++ treat it as an input file).
+  log "building Zig compiler-rt static archive for $TARGET" >&2
   "$(zig_bin)" build-lib "$compiler_rt_src" -target "$TARGET" -OReleaseFast -fPIC \
     -femit-bin="$archive" >"$BUILD_DIR/compiler_rt/build.log" 2>&1 ||
     { sed -n '1,80p' "$BUILD_DIR/compiler_rt/build.log" >&2; die "failed to build Zig compiler-rt archive"; }
