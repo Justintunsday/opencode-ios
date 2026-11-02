@@ -137,6 +137,16 @@ require_node() {
   command -v "$NODE_BIN" >/dev/null 2>&1 || die "host node not found (set NODE_BIN=/path/to/node)"
 }
 
+# Absolute path helper: the upstream build runs with cwd packages/cli, so an env path must be
+# absolute before it is handed to the asset collector.
+abs_path() {
+  if [ -d "$(dirname "$1")" ]; then
+    (cd "$(dirname "$1")" && printf '%s/%s' "$(pwd -P)" "$(basename "$1")")
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # --- fetch -----------------------------------------------------------------
 # Shallow-fetches exactly the pinned upstream commit. GitHub serves arbitrary
 # commit SHAs to `git fetch --depth 1`; if that ever fails we fall back to the
@@ -313,6 +323,9 @@ prepare_opentui_ios_dylib() {
   [ -n "$OPENTUI_IOS_DYLIB" ] ||
     die "OPENCODE_IOS_NODE26=1 requires OPENCODE_OPENTUI_IOS_DYLIB (the prebuilt libopentui.dylib)"
   [ -f "$OPENTUI_IOS_DYLIB" ] || die "OpenTUI iOS dylib not found: $OPENTUI_IOS_DYLIB"
+  # The upstream build runs `bun` with cwd packages/cli; OPENCODE_OPENTUI_IOS_DYLIB must be an
+  # absolute path so the asset collector resolves the same file.
+  OPENTUI_IOS_DYLIB="$(abs_path "$OPENTUI_IOS_DYLIB")"
   local actual
   actual="$(sha256_file "$OPENTUI_IOS_DYLIB")"
   [ "$actual" = "$OPENTUI_IOS_DYLIB_SHA256" ] ||
@@ -431,13 +444,14 @@ cmd_assetcheck() {
   require_node
   [ -f "$ARTIFACT_DIR/assets/$OPENTUI_IOS_ASSET_KEY" ] ||
     die "staged artifact is missing $OPENTUI_IOS_ASSET_KEY (run: $0 stage)"
-  local core
+  local core dylib
   core="$(resolve_opentui_core)"
+  dylib="$(abs_path "$OPENTUI_IOS_DYLIB")"
   "$NODE_BIN" "$ROOT/src/opencode-ios/opentui_ios_asset_check.mjs" \
     --core "$core/node-assets.js" \
     --artifact-dir "$ARTIFACT_DIR" \
     --asset-key "$OPENTUI_IOS_ASSET_KEY" \
-    --dylib "$OPENTUI_IOS_DYLIB" \
+    --dylib "$dylib" \
     --expected-sha256 "$OPENTUI_IOS_DYLIB_SHA256" \
     --bundle "$ARTIFACT_DIR/opencode.mjs"
 }
