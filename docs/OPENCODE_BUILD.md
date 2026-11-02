@@ -804,17 +804,20 @@ redundant on 26.13; `--allow-ffi` is only for the permission model.
 
 ### CI evidence (this workflow's `bundle-node26` job)
 
-Run [41401521367](https://github.com/Justintunsday/opencode-ios/actions/runs/41401521367) (all
-three jobs green; `bundle-node26` all steps success), artifact `opencode-cli-node26-ios`:
+Run [41431113315](https://github.com/Justintunsday/opencode-ios/actions/runs/41431113315) (all
+three jobs green; `bundle-node26` all steps success) — this is the Phase D real-TUI bundle with
+patch 0016 (the node:ffi-conditional TUI gate). Artifact `opencode-cli-node26-ios` (zip
+32,693,073 bytes):
 
 | Field | Value |
 | --- | --- |
-| `opencode.mjs` | 21,397,770 bytes, sha256 `93dbd95586c8c5a642a8fb77e956fbe74b076c4c5fbc1443f3ae79745ab535f9` |
+| `opencode.mjs` | 21,398,198 bytes, sha256 `d031509c318fe1f8cdbde17ee574373dddad43cebfd08aba54d9991f9f21b2ce` |
 | Assets | 23 files / 36,667,080 bytes (app-archive 1, audio 5, data 8, wasm 8, **ios-native-library 1**) |
 | Renderer asset | `assets/@opentui/core-ios-arm64/libopentui.dylib`, 3,785,600 bytes, sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638` (= pinned Phase C artifact; manifest `sha256_matches_expected: true`) |
-| Manifest | `variant=node26`, `build.runtime_node_version=26.13.0`, 15 upstream patches + 1 dependency patch, `host_smoke_required_node_version=26.13.0`, `host_smoke_required_passed=true`, `device_verified=false` |
+| Manifest | `variant=node26`, `build.runtime_node_version=26.13.0`, **16** upstream patches + 1 dependency patch (0016 sha256 `63ebc1464cd0c334d5406917ff81d11d7024b5890e06a6480f50caec802f0e0f`), `host_smoke_required_node_version=26.13.0`, `host_smoke_required_passed=true`, `device_verified=false` |
 | Host smoke | 12/12 commands pass on stock Node 26.13.0 (required) and 24.22.2 (informational): `--version`, `--help`, `debug paths`, `models`, `auth list`, `session list`; native `node:sqlite` (no flag needed) |
 | Resolver/asset check | `assetcheck` step passed (patched build-time resolver maps `process.platform="ios"` to the key; staged dylib hash matches; runtime FFI chunk + bundle contain the iOS entry/fallback) |
+| Real-TUI gate (patch 0016) | bundle contains `IOS_TUI_FFI_GATE` (prelude marker), `hasNodeFFI`, `runIOSRepl` and `node:ffi`; both handlers bundle the conditional shape `const ffi = yield* Effect.promise(() => hasNodeFFI()); if (isIOS() && !ffi) { …line-REPL fallback… }` — so on the FFI-enabled Node 26 runtime the handlers fall through to the real TUI, while the Node 22/no-FFI path keeps the line REPL/guidance exactly as before |
 
 Two CI-only fixes this run needed: bun 1.4 installs `@opentui/core` in the **isolated**
 `node_modules/.bun/@opentui+core@0.8.0+<hash>/node_modules/@opentui/core` layout (the build
