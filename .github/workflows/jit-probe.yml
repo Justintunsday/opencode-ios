@@ -58,8 +58,11 @@ jobs:
             '</dict></plist>' > dist/entitlements-jitkeys.plist
           ldid -Sdist/entitlements-2key.plist dist/jitprobe-2key
           ldid -Sdist/entitlements-2key.plist dist/dlopenprobe-2key
-          ldid -Sdist/entitlements-2key.plist dist/libocprobe.dylib
-          ldid -S dist/libocprobe-adhoc.dylib
+          # ldid cannot re-sign a clang-built dylib here (ldid assert); use Apple's
+          # codesign for the dylib diagnostics: one with the 2-key entitlements,
+          # one plain ad-hoc, to see whether either variant is executable on device.
+          xcrun codesign --force --sign - --entitlements dist/entitlements-2key.plist dist/libocprobe.dylib
+          xcrun codesign --force --sign - dist/libocprobe-adhoc.dylib
           ldid -e dist/jitprobe-2key > dist/entitlements-2key-signed.xml
           ldid -e dist/jitprobe-jitkeys > dist/entitlements-jitkeys-signed.xml
           python3 scripts/check_macho.py dist/jitprobe-2key --max-minos 16.1.1
