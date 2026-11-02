@@ -378,7 +378,12 @@ cmd_package() {
   # exports all globals, but the C shim objects are compiled with -fvisibility=hidden, so pin the
   # ABI explicitly with -exported_symbols_list instead of relying on default visibility.
   local exported_symbols="$DIST/exported-symbols.txt"
-  xcrun nm -gU "$src_zig" 2>/dev/null | awk '{print $NF}' | grep '^_' | sort -u >"$exported_symbols" || true
+  # The Zig-linked dylib's dynamic symbol table also lists two linker/compiler-generated
+  # symbols (__dso_handle, __mh_dylib_header) that are never dlsym'ed by node:ffi and
+  # that ld64 does not export from a -exported_symbols_list link; drop them from the
+  # required-export list (otherwise the audit false-fails: primary=1847 vs ziglinked=1849).
+  xcrun nm -gU "$src_zig" 2>/dev/null | awk '{print $NF}' | grep '^_' |
+    grep -v -E '^(___dso_handle|__mh_dylib_header)$' | sort -u >"$exported_symbols" || true
   [ -s "$exported_symbols" ] || die "could not extract exported symbols from the Zig-linked dylib"
   log "exported ABI symbols from Zig dylib: $(wc -l <"$exported_symbols" | tr -d ' ')"
 
