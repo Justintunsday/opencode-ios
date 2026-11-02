@@ -7,7 +7,7 @@
 #   scripts/build-opentui-ios.sh fetch    # clone pinned OpenTUI, apply patches, unpack Zig deps
 #   scripts/build-opentui-ios.sh zig      # install pinned Zig 0.16.0 (sha256-verified)
 #   scripts/build-opentui-ios.sh build    # zig build -Dlibrary-target=aarch64-ios.15.0 ...
-#   scripts/build-opentui-ios.sh package  # locate, codesign(ad-hoc), statically validate, manifest
+#   scripts/build-opentui-ios.sh package  # clang-link from Zig static lib, codesign, validate
 #   scripts/build-opentui-ios.sh validate # static validation only (existing dylib)
 #   scripts/build-opentui-ios.sh all      # fetch + zig + build + package (CI entry point)
 #
@@ -159,6 +159,46 @@ cmd_fetch() {
 }
 
 # --- build -------------------------------------------------------------------
+find_static_lib() {
+  local candidate base
+  # build.zig installs both libraries to <package>/lib/<output_name>; the static archive is the
+  # input for the clang/ld64 final link (the Zig-linked dylib is mapped non-executable on device).
+  for base in "$SRC/packages/native/lib" "$SRC/packages/native/zig-out" "$SRC/packages/native"; do
+    [ -d "$base" ] || continue
+    candidate="$(find "$base" -name 'libopentui.a' -type f 2>/dev/null | head -n 1 || true)"
+    if [ -n "$candidate" ]; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+  log "native package tree (for diagnosis):"
+  find "$SRC/packages/native" -maxdepth 4 \( -name '*.a' -o -name '*.dylib' -o -name 'lib' -o -name 'zig-out' \) 2>/dev/null |
+    sed -n '1,40p' >&2 || true
+  die "Zig static library libopentui.a not found under $SRC/packages/native"
+}
+
+# Zig compiler-rt archive for aarch64-ios. The Zig static library does not embed compiler-rt, and
+# the clang/ld64 final link must not leave operator-runtime helpers undefined (dlsym would never
+# resolve them at runtime). Built once per build dir with the pinned Zig.
+ensure_compiler_rt() {
+  local zig_lib compiler_rt_src archive
+  zig_lib="$(dirname "$(zig_bin)")/lib"
+  compiler_rt_src="$zig_lib/compiler_rt.zig"
+  archive="$BUILD_DIR/compiler_rt/libcompiler_rt-$TARGET.a"
+  if [ -f "$archive" ]; then
+    echo "$archive"
+    return 0
+  fi
+  [ -f "$compiler_rt_src" ] || die "Zig compiler_rt.zig not found at $compiler_rt_src"
+  mkdir -p "$(dirname "$archive")"
+  log "building Zig compiler-rt static archive for $TARGET"
+  "$(zig_bin)" build-lib "$compiler_rt_src" -target "$TARGET" -OReleaseFast -fPIC \
+    -femit-bin="$archive" >"$BUILD_DIR/compiler_rt/build.log" 2>&1 ||
+    { sed -n '1,80p' "$BUILD_DIR/compiler_rt/build.log" >&2; die "failed to build Zig compiler-rt archive"; }
+  [ -f "$archive" ] || die "compiler-rt archive was not produced: $archive"
+  echo "$archive"
+}
+
 cmd_build() {
   require_macos
   [ -d "$SRC/packages/native" ] || die "OpenTUI source missing (run: $0 fetch)"
@@ -276,49 +316,6 @@ print(f"Mach-O OK: arm64 dylib platform iOS minOS {minos[0]}.{minos[1]}.{minos[2
 PY
 }
 
-# Print the Mach-O mach_header_64.flags field (64-bit little-endian Mach-O only).
-macho_flags() {
-  python3 - "$1" <<'PY'
-import struct
-import sys
-
-path = sys.argv[1]
-with open(path, "rb") as handle:
-    header = handle.read(32)
-if len(header) != 32:
-    raise SystemExit("Mach-O header truncated")
-magic, _cpu, _subtype, _filetype, _ncmds, _sizeofcmds, flags, _reserved = struct.unpack("<8I", header)
-if magic != 0xFEEDFACF:
-    raise SystemExit(f"not a 64-bit little-endian Mach-O: magic={magic:#x}")
-print(f"{flags:#x}")
-PY
-}
-
-# Rewrite mach_header_64.flags to the target value (u32 at file offset 24). Used by the renderer
-# A/B experiment: the Zig-linked dylib carries MH_HAS_TLV_DESCRIPTORS (0x800000) and
-# MH_BINDS_TO_WEAK (0x10000) which the clang-linked (device-executable) dylib does not; dyld maps
-# the Zig dylib non-executable on iOS 16.1.1 even with a valid codesign ad-hoc signature.
-normalize_macho_flags() {
-  python3 - "$1" "$2" <<'PY'
-import struct
-import sys
-
-path = sys.argv[1]
-target = int(sys.argv[2], 0)
-with open(path, "r+b") as handle:
-    header = handle.read(32)
-    if len(header) != 32:
-        raise SystemExit("Mach-O header truncated")
-    magic, _cpu, _subtype, _filetype, _ncmds, _sizeofcmds, flags, _reserved = struct.unpack("<8I", header)
-    if magic != 0xFEEDFACF:
-        raise SystemExit(f"not a 64-bit little-endian Mach-O: magic={magic:#x}")
-    handle.seek(24)
-    handle.write(struct.pack("<I", target))
-    handle.flush()
-print(f"normalized mach_header_64.flags {flags:#x} -> {target:#x}")
-PY
-}
-
 cmd_validate() {
   require_macos
   local lib
@@ -352,59 +349,127 @@ cmd_validate() {
 
 cmd_package() {
   require_macos
-  local src_lib
-  src_lib="$(find_dylib)"
+  local src_zig src_static compiler_rt ziglinked
+  src_zig="$(find_dylib)"
+  src_static="$(find_static_lib)"
   mkdir -p "$DIST"
-  local unmodified="$DIST/libopentui-unmodified.dylib"
-  log "staging $src_lib -> $DIST/$DYLIB_NAME (+ $unmodified A/B variant)"
-  cp -f "$src_lib" "$DIST/$DYLIB_NAME"
-  cp -f "$src_lib" "$unmodified"
-  chmod 0644 "$DIST/$DYLIB_NAME" "$unmodified"
+  rm -f "$DIST/$DYLIB_NAME" "$DIST/libopentui-ziglinked.dylib" "$DIST"/codesign*.txt \
+    "$DIST"/nm-exported*.txt "$DIST/clang-link.txt" "$DIST/compiler-rt.txt"
 
-  # A/B experiment for the device-reported exec-mapping failure. Apple codesign(ad-hoc) alone is
-  # not sufficient for the Zig-linked dylib: dyld still maps its __TEXT non-executable (SIGBUS,
-  # r--/rw- crash report), while a clang-linked dylib with the same signature executes. The
-  # Mach-O header flags differ (Zig: 0x910085 = +MH_HAS_TLV_DESCRIPTORS 0x800000 and
-  # +MH_BINDS_TO_WEAK 0x10000; clang: 0x100085). The primary artifact is therefore
-  # flags-normalized (0x100085) + codesign; the unmodified Zig Mach-O is shipped alongside so the
-  # device can A/B test both without another CI cycle.
-  local flags_original flags_unmodified
-  flags_original="$(macho_flags "$DIST/$DYLIB_NAME")"
-  flags_unmodified="$(macho_flags "$unmodified")"
-  log "mach_header_64.flags: original=$flags_original unmodified=$flags_unmodified -> normalizing primary to 0x100085"
-  normalize_macho_flags "$DIST/$DYLIB_NAME" "0x100085" | tee "$DIST/macho-flags-normalize.txt"
-  local flags_normalized
-  flags_normalized="$(macho_flags "$DIST/$DYLIB_NAME")"
+  # Device finding: the Zig-linked Mach-O is mapped non-executable by dyld on iOS 16.1.1 even
+  # when codesign(ad-hoc) signed (SIGBUS, __TEXT r--/rw-, both original and normalized header
+  # flags), while a clang/ld64-linked dylib with the identical signature executes. The final
+  # renderer dylib is therefore linked by Xcode clang from the Zig static archive; the Zig-linked
+  # dylib is kept in the artifact for the record/diagnostics.
+  ziglinked="$DIST/libopentui-ziglinked.dylib"
+  cp -f "$src_zig" "$ziglinked"
+  chmod 0644 "$ziglinked"
+  log "staged Zig-linked dylib (record/diagnostic): $src_zig -> $ziglinked"
 
-  log "codesign (ad-hoc) signing both renderer variants"
+  compiler_rt="$(ensure_compiler_rt)"
+  log "Zig static library: $src_static ($(wc -c <"$src_static" | tr -d ' ') bytes)"
+  log "Zig compiler-rt: $compiler_rt"
+
+  # Export the exact same dynamic symbol set as the Zig-linked dylib (the node:ffi ABI: the
+  # Zig-linked build exported these names and node:ffi resolves them with dlsym). ld64 by default
+  # exports all globals, but the C shim objects are compiled with -fvisibility=hidden, so pin the
+  # ABI explicitly with -exported_symbols_list instead of relying on default visibility.
+  local exported_symbols="$DIST/exported-symbols.txt"
+  xcrun nm -gU "$src_zig" 2>/dev/null | awk '{print $NF}' | grep '^_' | sort -u >"$exported_symbols" || true
+  [ -s "$exported_symbols" ] || die "could not extract exported symbols from the Zig-linked dylib"
+  log "exported ABI symbols from Zig dylib: $(wc -l <"$exported_symbols" | tr -d ' ')"
+
+  {
+    echo "=== renderer link: Xcode clang/ld64 from the Zig static library ==="
+    echo "zig_static_lib=$src_static"
+    echo "zig_static_lib_size=$(wc -c <"$src_static" | tr -d ' ')"
+    echo "zig_static_lib_sha256=$(sha256_file "$src_static")"
+    echo "zig_compiler_rt=$compiler_rt"
+    echo "zig_compiler_rt_sha256=$(sha256_file "$compiler_rt")"
+    echo "zig_linked_dylib=$src_zig"
+    echo "zig_linked_dylib_sha256=$(sha256_file "$src_zig")"
+    xcrun --find clang++
+    xcrun clang++ --version | head -n 2
+  } >"$DIST/clang-link.txt"
+
+  log "clang/ld64 linking $DIST/$DYLIB_NAME"
+  if ! xcrun clang++ -dynamiclib -target "arm64-apple-ios15.0" -isysroot "$IOS_SDK" \
+    -o "$DIST/$DYLIB_NAME" \
+    -install_name "@rpath/$DYLIB_NAME" \
+    -Wl,-force_load,"$src_static" \
+    -Wl,-exported_symbols_list,"$exported_symbols" \
+    "$compiler_rt" \
+    -lc++ -lc++abi \
+    -framework CoreFoundation -framework CoreAudio -framework AudioToolbox \
+    -framework Foundation -framework AVFoundation -framework AVFAudio \
+    -framework ImageIO -framework CoreGraphics \
+    >>"$DIST/clang-link.txt" 2>&1; then
+    log "clang link failed; last 120 log lines:"
+    tail -n 120 "$DIST/clang-link.txt" >&2
+    die "clang/ld64 link failed (see $DIST/clang-link.txt)"
+  fi
+  chmod 0644 "$DIST/$DYLIB_NAME"
+  echo "linked ok" >>"$DIST/clang-link.txt"
+
+  # Export audit: node:ffi resolves renderer entry points with dlsym on the dlopen'ed dylib, so
+  # the symbols must be in the dynamic symbol table (the static archive objects must not hide
+  # them). imageRetainIccCache is the symbol from the device crash stack / probe.
+  xcrun nm -gU "$DIST/$DYLIB_NAME" >"$DIST/nm-exported.txt" 2>&1 || true
+  xcrun nm -gU "$ziglinked" >"$DIST/nm-exported-ziglinked.txt" 2>&1 || true
+  log "exported symbol count: primary=$(wc -l <"$DIST/nm-exported.txt" | tr -d ' ') ziglinked=$(wc -l <"$DIST/nm-exported-ziglinked.txt" | tr -d ' ')"
+  # The clang-linked dylib must export the Zig dylib's ABI so node:ffi dlsym keeps working.
+  local abi_missing
+  abi_missing="$(comm -23 <(sort -u "$exported_symbols") <(xcrun nm -gU "$DIST/$DYLIB_NAME" 2>/dev/null | awk '{print $NF}' | grep '^_' | sort -u) || true)"
+  [ -z "$abi_missing" ] ||
+    die "clang-linked dylib is missing exported ABI symbols: $(printf '%s ' $abi_missing | cut -c1-400)"
+  grep -q 'imageRetainIccCache' "$DIST/nm-exported.txt" ||
+    die "imageRetainIccCache is not exported by the clang-linked dylib (node:ffi dlsym would fail)"
+
+  log "codesign (ad-hoc) signing the clang-linked renderer"
   xcrun codesign --force --sign - --timestamp=none "$DIST/$DYLIB_NAME" ||
     die "codesign ad-hoc signing failed"
   xcrun codesign --verify --verbose=2 "$DIST/$DYLIB_NAME" >"$DIST/codesign-verify.txt" 2>&1 ||
     die "codesign verification failed after signing (see $DIST/codesign-verify.txt)"
   xcrun codesign -dvv "$DIST/$DYLIB_NAME" >"$DIST/codesign.txt" 2>&1 || true
 
-  # Experiment variant B: the unmodified Zig Mach-O with the current codesign pipeline.
-  xcrun codesign --force --sign - --timestamp=none "$unmodified" ||
-    die "codesign ad-hoc signing failed for $unmodified"
-  xcrun codesign --verify --verbose=2 "$unmodified" >"$DIST/codesign-verify-unmodified.txt" 2>&1 ||
-    die "codesign verification failed for $unmodified (see $DIST/codesign-verify-unmodified.txt)"
-  xcrun codesign -dvv "$unmodified" >"$DIST/codesign-unmodified.txt" 2>&1 || true
+  # The Zig-linked record copy is signed the same way (it is known non-executable on device, but
+  # keeping it signed lets the device reproduce/diagnose the difference safely).
+  xcrun codesign --force --sign - --timestamp=none "$ziglinked" ||
+    die "codesign ad-hoc signing failed for the Zig-linked record copy"
+  xcrun codesign --verify --verbose=2 "$ziglinked" >"$DIST/codesign-verify-ziglinked.txt" 2>&1 ||
+    die "codesign verification failed for the Zig-linked record copy"
+  xcrun codesign -dvv "$ziglinked" >"$DIST/codesign-ziglinked.txt" 2>&1 || true
 
   cmd_validate "$DIST/$DYLIB_NAME"
 
-  local sha size sha_unmodified size_unmodified sdk_version zig_version
+  local sha size sha_ziglinked size_ziglinked sha_static size_static sha_rt sdk_version zig_version clang_version
   sha="$(sha256_file "$DIST/$DYLIB_NAME")"
   size="$(wc -c <"$DIST/$DYLIB_NAME" | tr -d ' ')"
-  sha_unmodified="$(sha256_file "$unmodified")"
-  size_unmodified="$(wc -c <"$unmodified" | tr -d ' ')"
+  sha_ziglinked="$(sha256_file "$ziglinked")"
+  size_ziglinked="$(wc -c <"$ziglinked" | tr -d ' ')"
+  sha_static="$(sha256_file "$src_static")"
+  size_static="$(wc -c <"$src_static" | tr -d ' ')"
+  sha_rt="$(sha256_file "$compiler_rt")"
   sdk_version="$(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || echo unknown)"
   zig_version="$("$(zig_bin)" version 2>/dev/null || echo "$ZIG_VERSION")"
+  clang_version="$(xcrun clang++ --version 2>/dev/null | head -n 1)"
 
   {
     echo "artifact=$ARTIFACT_NAME"
     echo "library=$DYLIB_NAME"
     echo "library_size=$size"
     echo "library_sha256=$sha"
+    echo "library_linker=clang/ld64 (Xcode clang++ -dynamiclib), from the Zig static archive"
+    echo "library_zigtarget=$TARGET"
+    echo "library_min_ios=15.0"
+    echo "zig_static_lib_size=$size_static"
+    echo "zig_static_lib_sha256=$sha_static"
+    echo "zig_compiler_rt_sha256=$sha_rt"
+    echo "zig_linked_dylib=libopentui-ziglinked.dylib"
+    echo "zig_linked_dylib_size=$size_ziglinked"
+    echo "zig_linked_dylib_sha256=$sha_ziglinked"
+    echo "device_finding=Zig-self-linked dylib is mapped non-executable by dyld on iOS 16.1.1 (SIGBUS, __TEXT r--/rw-); clang/ld64-linked dylib is the shipping path"
+    echo "clang_version=$clang_version"
     echo "target=$TARGET"
     echo "max_minos=$MAX_MINOS"
     echo "upstream_repo=$OPENTUI_REPO"
@@ -415,13 +480,9 @@ cmd_package() {
     echo "ios_sdk_path=$IOS_SDK"
     echo "signed_with=codesign ad-hoc (xcrun codesign --force --sign - --timestamp=none)"
     echo "signing_scheme=ad-hoc (no Team ID, no entitlements; codesign-verified)"
-    echo "mach_header_flags_original=$flags_original"
-    echo "mach_header_flags_normalized=$flags_normalized"
-    echo "mach_header_flags_normalized_target=0x100085"
-    echo "library_unmodified=libopentui-unmodified.dylib"
-    echo "library_unmodified_size=$size_unmodified"
-    echo "library_unmodified_sha256=$sha_unmodified"
-    echo "experiment=flags-normalized-vs-unmodified (A/B device test for the dyld exec-mapping failure)"
+    echo "exported_symbols=$(wc -l <"$DIST/nm-exported.txt" | tr -d ' ')"
+    echo "exported_symbols_source=Zig-linked dylib ABI (exported_symbols.txt)"
+    echo "exported_symbols_file=exported-symbols.txt"
     echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [ -n "${GITHUB_RUN_ID:-}" ]; then
       echo "github_repository=$GITHUB_REPOSITORY"
@@ -435,21 +496,23 @@ cmd_package() {
       echo "  - $(basename "$patch") sha256=$(sha256_file "$patch")"
     done
     echo ""
-    echo "STATUS: build feasibility artifact -- NOT device-verified."
-    echo "Phase D work: ship this dylib as a CLI asset, teach the iOS CLI resolver to accept"
-    echo "ios-arm64, and launch/load it through Node 26 node:ffi on the device."
+    echo "STATUS: renderer built with clang/ld64 + codesign(ad-hoc); device node:ffi load is"
+    echo "Lead-verified. The CLI Node 26 bundle ships this dylib as"
+    echo "@opentui/core-ios-arm64/libopentui.dylib and loads it through node:ffi."
   } >"$DIST/opentui-ios-manifest.txt"
 
   {
     echo "=== file ==="; file "$DIST/$DYLIB_NAME"
-    echo "=== otool -hv ==="; xcrun otool -hv "$DIST/$DYLIB_NAME"
+    echo "=== otool -hv (clang-linked) ==="; xcrun otool -hv "$DIST/$DYLIB_NAME"
+    echo "=== otool -hv (zig-linked record) ==="; xcrun otool -hv "$ziglinked"
   } >"$DIST/file.txt" 2>&1 || true
 
-  (cd "$DIST" && shasum -a 256 "$DYLIB_NAME" libopentui-unmodified.dylib opentui-ios-manifest.txt \
-    codesign.txt codesign-verify.txt codesign-unmodified.txt codesign-verify-unmodified.txt \
-    macho-flags-normalize.txt otool-L.txt vtool.txt file.txt > SHA256SUMS)
+  (cd "$DIST" && shasum -a 256 "$DYLIB_NAME" libopentui-ziglinked.dylib opentui-ios-manifest.txt \
+    clang-link.txt exported-symbols.txt nm-exported.txt nm-exported-ziglinked.txt \
+    codesign.txt codesign-verify.txt codesign-ziglinked.txt codesign-verify-ziglinked.txt \
+    otool-L.txt vtool.txt file.txt > SHA256SUMS)
 
-  log "artifact: $DIST ($size bytes dylib)"
+  log "artifact: $DIST ($size bytes clang-linked dylib)"
   log "dylib sha256: $sha"
 }
 

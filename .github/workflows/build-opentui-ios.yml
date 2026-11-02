@@ -6,15 +6,15 @@ name: Build OpenTUI iOS native renderer (Phase C prep)
 # CI can only validate the library statically; actual loading via node:ffi, shipping it as a CLI
 # asset and the device run belong to Phase D (see docs/OPENTUI_IOS.md).
 #
-# Artifact contract: `opentui-ios-renderer` = libopentui.dylib (Mach-O flags normalized to
-# 0x100085 + codesign ad-hoc), libopentui-unmodified.dylib (unmodified Zig Mach-O + codesign
-# ad-hoc, A/B device-test variant), opentui-ios-manifest.txt, codesign*.txt, macho-flags-normalize.txt,
+# Artifact contract: `opentui-ios-renderer` = libopentui.dylib (final renderer, linked by Xcode
+# clang/ld64 from the Zig static library + codesign ad-hoc), libopentui-ziglinked.dylib (the
+# Zig-self-linked dylib, kept for the record/diagnostics: it is mapped non-executable by dyld on
+# the device), opentui-ios-manifest.txt, clang-link.txt, nm-exported*.txt, codesign*.txt,
 # file.txt, otool-L.txt, vtool.txt, SHA256SUMS.
-# Signing: Apple `codesign` ad-hoc (NOT ldid: ldid-signed dylibs are mapped non-executable by dyld
-# on the device). The flags-normalized primary is an experiment for the Zig-dylib exec mapping:
-# clang-built dylibs execute on the device while the Zig-built one is mapped non-executable even
-# when codesign signed; the header flags differ (see the manifest). Both variants are shipped so
-# the device can A/B test them in one cycle.
+# Device finding driving this: BOTH codesign(ad-hoc) AND Mach-O flag normalization of the
+# Zig-self-linked dylib still left __TEXT mapped r--/rw- (SIGBUS in ffi_call_SYSV), while a
+# clang/ld64-linked dylib with the identical signature executes. The final dylib is therefore
+# linked with xcrun clang++ -dynamiclib from the Zig static archive (ld64-shaped Mach-O).
 
 on:
   workflow_dispatch:
@@ -75,14 +75,16 @@ jobs:
           cat dist/opentui-ios-renderer/SHA256SUMS
           echo '--- file ---'
           file dist/opentui-ios-renderer/libopentui.dylib
-          echo '--- codesign (normalized primary) ---'
+          echo '--- link metadata ---'
+          cat dist/opentui-ios-renderer/clang-link.txt
+          echo '--- codesign (clang-linked primary) ---'
           cat dist/opentui-ios-renderer/codesign.txt
-          echo '--- codesign verify (normalized primary) ---'
+          echo '--- codesign verify (clang-linked primary) ---'
           cat dist/opentui-ios-renderer/codesign-verify.txt
-          echo '--- codesign (unmodified A/B variant) ---'
-          cat dist/opentui-ios-renderer/codesign-unmodified.txt
-          echo '--- flags normalization ---'
-          cat dist/opentui-ios-renderer/macho-flags-normalize.txt
+          echo '--- codesign (zig-linked record) ---'
+          cat dist/opentui-ios-renderer/codesign-ziglinked.txt
+          echo '--- exported symbols (head) ---'
+          sed -n '1,20p' dist/opentui-ios-renderer/nm-exported.txt
 
       - name: Upload opentui-ios-renderer artifact
         uses: actions/upload-artifact@v4
