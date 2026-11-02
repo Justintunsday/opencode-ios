@@ -218,15 +218,18 @@ jobs:
             --opentui-sha256 "$EXPECTED_OPENTUI_SHA" \
             --experimental-label "$EXPERIMENTAL_LABEL" \
             --run-url "$RUN_URL"
-          # Contract (task-4): the node26 CLI bundle ships the OpenTUI renderer
-          # itself; verify it, do not inject. --opentui-dir is only a fallback.
-          if find .artifacts/opencode -type f -path '*@opentui/core-ios-arm64/libopentui.dylib' | grep -q .; then
-            echo "OpenTUI renderer is shipped by the node26 CLI bundle (verify-only mode)"
-          elif [ -f .artifacts/opentui/libopentui.dylib ]; then
-            echo "::warning::CLI bundle does not ship the OpenTUI renderer; using the opentui-ios-renderer artifact as fallback"
+          # Device finding (iOS 16.1.1): dyld maps ldid-signed dylibs non-executable,
+          # so the renderer must be the Apple codesign-adhoc-signed copy from the
+          # opentui-ios-renderer artifact. That artifact is authoritative and
+          # replaces any (older/lid-signed) copy the CLI bundle ships; the sha is
+          # hard-pinned by --opentui-sha256.
+          if [ -f .artifacts/opentui/libopentui.dylib ]; then
+            echo "using the codesign-signed opentui-ios-renderer artifact (authoritative; overrides any CLI-bundle renderer copy)"
             set -- "$@" --opentui-dir .artifacts/opentui
+          elif find .artifacts/opencode -type f -path '*@opentui/core-ios-arm64/libopentui.dylib' | grep -q .; then
+            echo "::warning::opentui-ios-renderer artifact missing; using the CLI-bundle renderer copy (verify-only, ldid-signed copy will not execute on device)"
           else
-            echo "::error::neither the node26 CLI bundle nor the opentui-ios-renderer artifact contains libopentui.dylib"
+            echo "::error::neither the opentui-ios-renderer artifact nor the node26 CLI bundle contains libopentui.dylib"
             exit 1
           fi
           if [ -n "${EXPECTED_NODE_SHA:-}" ]; then

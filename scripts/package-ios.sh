@@ -348,27 +348,29 @@ if [ -n "$JITSHIM_SRC" ]; then
     chmod 0755 "$STAGE/var/jb/usr/lib/opencode/runtime/libjitshim.dylib"
 fi
 
-# Experimental node26 variant: OpenTUI iOS renderer dylib. Device-verified dlopen
-# rule: only /var/jb paths are allowed by the iOS sandbox, so the renderer must
-# live under the packaged CLI assets tree.
+# Experimental node26 variant: OpenTUI iOS renderer dylib. Runtime asset root is
+# the packaged /var/jb CLI assets tree. Device finding (iOS 16.1.1): dyld maps
+# ldid-signed dylibs non-executable, so the renderer MUST be the Apple
+# codesign-adhoc-signed copy from the opentui-ios-renderer artifact. The CLI
+# bundle may still carry the older ldid-signed dylib, so when an explicit
+# --opentui-dir artifact is provided it is authoritative and replaces the bundle
+# copy (pinned by --opentui-sha256).
 OPENTUI_REL="var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib"
 OPENTUI_STAGE=""
 OPENTUI_SHA_ACTUAL=""
 if [ "$VARIANT" = "node26" ]; then
     OPENTUI_STAGE="$STAGE/$OPENTUI_REL"
     mkdir -p "$(dirname "$OPENTUI_STAGE")"
-    # The node26 CLI bundle ships the renderer itself (verify, do not inject);
-    # --opentui-dir is only a fallback for a bundle that lacks the dylib.
-    if [ -f "$OPENTUI_STAGE" ]; then
-        info "OpenTUI renderer: already shipped by the node26 CLI bundle assets"
-    elif [ -n "$OPENTUI_DIR" ]; then
+    if [ -n "$OPENTUI_DIR" ]; then
         [ -d "$OPENTUI_DIR" ] || die "--opentui-dir not found: $OPENTUI_DIR"
         OPENTUI_SRC="$(find_first_file "$OPENTUI_DIR" libopentui.dylib)"
         [ -n "$OPENTUI_SRC" ] || die "opentui-ios-renderer artifact has no libopentui.dylib"
         cp "$OPENTUI_SRC" "$OPENTUI_STAGE"
-        info "OpenTUI renderer: bundle lacks the dylib; copied $OPENTUI_SRC -> $OPENTUI_REL"
+        info "OpenTUI renderer: installed from opentui-ios-renderer artifact (authoritative; replaces any CLI-bundle copy)"
+    elif [ -f "$OPENTUI_STAGE" ]; then
+        info "OpenTUI renderer: already shipped by the node26 CLI bundle assets"
     else
-        die "node26 package requires the OpenTUI renderer dylib: the CLI bundle must ship assets/@opentui/core-ios-arm64/libopentui.dylib (or pass --opentui-dir as a fallback)"
+        die "node26 package requires the OpenTUI renderer dylib: pass --opentui-dir (opentui-ios-renderer artifact) or use a CLI bundle that ships assets/@opentui/core-ios-arm64/libopentui.dylib"
     fi
     chmod 0755 "$OPENTUI_STAGE"
     OPENTUI_SHA_ACTUAL="$(sha256_of "$OPENTUI_STAGE")"
