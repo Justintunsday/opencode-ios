@@ -526,6 +526,28 @@ class LauncherVariantTest(unittest.TestCase):
         self.assertIn("--single-threaded", text)
         self.assertIn("/var/jb", text)
 
+    def test_node26_launcher_uses_mobile_runtime_assets(self):
+        code = self._code(self._launcher("opencode-node26"))
+        # iOS maps /var/jb executables non-executable: the renderer must be loaded
+        # from the /var/mobile mirror that postinst creates (device-verified).
+        self.assertIn("/var/mobile/Library/OpenCode/assets", code)
+        self.assertIn('OPENCODE_NODE_ASSETS_DIR="$RUNTIME_ASSETS"', code)
+        self.assertIn('OTUI_ASSET_ROOT="$RUNTIME_ASSETS"', code)
+        self.assertNotIn('OTUI_ASSET_ROOT="$ASSETS"', code)
+        self.assertIn("OPENCODE_IOS_RUNTIME_ASSETS", code)
+
+    def test_node26_postinst_mirrors_assets_for_exec_mmap(self):
+        repo = Path(__file__).resolve().parent.parent
+        postinst = (repo / "packaging/rootless/postinst").read_text(encoding="utf-8")
+        postrm = (repo / "packaging/rootless/postrm").read_text(encoding="utf-8")
+        self.assertIn("/var/mobile/Library/OpenCode/assets", postinst)
+        self.assertIn("@opentui/core-ios-arm64/libopentui.dylib", postinst)
+        self.assertIn("cp -R", postinst)
+        self.assertRegex(postinst, r"chmod\s+0755\s+\S*libopentui\.dylib")
+        self.assertRegex(postinst, r"chown\s+-R\s+root:mobile")
+        self.assertIn("/var/mobile/Library/OpenCode/assets", postrm)
+        self.assertRegex(postrm, r"rm\s+-rf\s+/var/mobile/Library/OpenCode/assets")
+
 
 class VariantInferenceTest(unittest.TestCase):
     def test_normalize_variant(self):

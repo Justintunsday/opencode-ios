@@ -17,6 +17,9 @@ action="${1:-remove}"
 remove_package_caches() {
     rm -rf "$LIB/cli/.cache" "$LIB/runtime/.cache" "$LIB/.cache"
     rm -rf "$JB_ROOT/tmp/opencode-ios-cache" "$JB_ROOT/tmp/opencode"
+    # Package-owned node26 runtime asset mirror (iOS exec-mmap workaround);
+    # everything else under /var/mobile/Library/OpenCode is user data.
+    rm -rf /var/mobile/Library/OpenCode/assets
 }
 
 remove_user_caches() {

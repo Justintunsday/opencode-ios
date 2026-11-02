@@ -95,6 +95,12 @@ EXPERIMENTAL_RELEASE_LABELS = {
     VARIANT_NODE26: "v2.2.5-ios.5-node26test.1",
 }
 OPENTUI_REL_PATH = "var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib"
+# iOS exec-mmap sandbox: dylibs under /var/jb are mapped non-executable (calling
+# a renderer function SIGBUSes, device-verified). postinst mirrors the CLI asset
+# tree here and the node26 launcher points the asset env vars at it.
+NODE26_RUNTIME_ASSETS = "/var/mobile/Library/OpenCode/assets"
+NODE26_RUNTIME_ASSETS_OVERRIDE = "OPENCODE_IOS_RUNTIME_ASSETS"
+NODE26_ASSET_DYLIB_REL = "@opentui/core-ios-arm64/libopentui.dylib"
 VARIANT_CONTROL_DESCRIPTION = {
     VARIANT_NODE22: (
         "This build ships the primary Node.js 22.9.0 runtime variant with the\n"
@@ -1222,7 +1228,7 @@ def _check_paths(checks, ctx, mode):
           else "optional components absent (ripgrep stretch artifact / bundle-manifest / docs extras)")
 
 
-def _check_maintainer_scripts(checks, ctx, extract_dir):
+def _check_maintainer_scripts(checks, ctx, extract_dir, variant=VARIANT_NODE22):
     control_files = ctx["control_files"]
     problems = []
     contents = {}
@@ -1264,7 +1270,56 @@ def _check_maintainer_scripts(checks, ctx, extract_dir):
     else:
         check(checks, "pkg.maintainer-scripts", "package",
               "Maintainer scripts are POSIX sh, idempotent-safe and offline", "PASS",
-              "postinst/prerm/postrm: #!/bin/sh, set -e, no network, /var/jb only, mode 0755")
+              "postinst/prerm/postrm: #!/bin/sh, set -e, no network, rootless paths, mode 0755")
+
+    # Experimental node26: the exec-mapped asset tree must be mirrored under
+    # /var/mobile by postinst (iOS sandbox maps /var/jb executables non-exec) and
+    # removed by postrm on remove/purge.
+    if variant == VARIANT_NODE26 and not problems:
+        postinst_text = contents.get("postinst", b"").decode("utf-8", "replace")
+        postrm_text = contents.get("postrm", b"").decode("utf-8", "replace")
+        mobile_problems = []
+        if NODE26_RUNTIME_ASSETS not in postinst_text:
+            mobile_problems.append(
+                f"postinst must mirror the CLI assets to {NODE26_RUNTIME_ASSETS}"
+            )
+        if "cp -R" not in postinst_text:
+            mobile_problems.append("postinst must copy the CLI asset tree (cp -R)")
+        if NODE26_ASSET_DYLIB_REL not in postinst_text:
+            mobile_problems.append(
+                f"postinst must special-case {NODE26_ASSET_DYLIB_REL}"
+            )
+        if re.search(r"chmod\s+0755\s+\S*libopentui\.dylib", postinst_text) is None:
+            mobile_problems.append(
+                "postinst must set the mirrored renderer dylib mode to 0755"
+            )
+        if re.search(r"chown\s+-R\s+root:mobile", postinst_text) is None:
+            mobile_problems.append("postinst must chown the mirror root:mobile")
+        if re.search(r"rm\s+-rf\s+\S*mobile\S*OpenCode/assets", postrm_text) is None:
+            mobile_problems.append(
+                "postrm must remove the package-owned /var/mobile asset mirror on "
+                "remove/purge"
+            )
+        metrics = ctx["metrics"]
+        metrics["node26_runtime_assets"] = {
+            "path": NODE26_RUNTIME_ASSETS,
+            "postinst_mirror": not mobile_problems,
+            "postrm_cleanup": bool(
+                re.search(r"rm\s+-rf\s+\S*mobile\S*OpenCode/assets", postrm_text)
+            ),
+        }
+        if mobile_problems:
+            check(checks, "pkg.node26-mobile-assets", "package",
+                  "node26 runtime assets are mirrored to /var/mobile for exec-mmap",
+                  "FAIL", truncate("; ".join(mobile_problems), 1200))
+        else:
+            check(checks, "pkg.node26-mobile-assets", "package",
+                  "node26 runtime assets are mirrored to /var/mobile for exec-mmap",
+                  "PASS",
+                  f"postinst copies cli/assets -> {NODE26_RUNTIME_ASSETS} "
+                  f"(dirs 0755, dylib {NODE26_ASSET_DYLIB_REL} 0755, root:mobile); "
+                  "postrm removes the mirror on remove/purge; /var/jb copy kept for "
+                  "static validation only")
 
     # sh -n each maintainer script + execute idempotency against a rewritten root.
     if problems:
@@ -1303,6 +1358,8 @@ def _check_maintainer_scripts(checks, ctx, extract_dir):
             rewritten = (td / f"{name}-{action}.sh")
             script_text = contents[name].decode("utf-8", "replace")
             script_text = script_text.replace("/var/jb", str(root / "var/jb"))
+            # host test root: never touch the real /var/mobile path
+            script_text = script_text.replace("/var/mobile", str(root / "var/mobile"))
             rewritten.write_text(script_text, encoding="utf-8")
             rc, out, err = run_command(["sh", str(rewritten), action])
             if rc != 0:
@@ -1395,9 +1452,37 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
             )
         if "OTUI_ASSET_ROOT" not in code_text:
             problems.append(
-                "node26 launcher must export OTUI_ASSET_ROOT (absolute CLI assets "
-                "dir) so the OpenTUI loader resolves "
-                "@opentui/core-ios-arm64/libopentui.dylib under /var/jb"
+                "node26 launcher must export OTUI_ASSET_ROOT so the OpenTUI loader "
+                "resolves @opentui/core-ios-arm64/libopentui.dylib"
+            )
+        if NODE26_RUNTIME_ASSETS not in code_text:
+            problems.append(
+                f"node26 launcher must use the /var/mobile runtime asset tree "
+                f"({NODE26_RUNTIME_ASSETS}): iOS maps /var/jb executables "
+                "non-executable, so a renderer function call from /var/jb SIGBUSes "
+                "(device-verified)"
+            )
+        if NODE26_RUNTIME_ASSETS_OVERRIDE not in code_text:
+            problems.append(
+                f"node26 launcher must allow {NODE26_RUNTIME_ASSETS_OVERRIDE} to "
+                "override the runtime asset tree (diagnostics/alternate roots)"
+            )
+        if not re.search(
+            r'OPENCODE_NODE_ASSETS_DIR="\$RUNTIME_ASSETS"', code_text
+        ):
+            problems.append(
+                "node26 launcher must set OPENCODE_NODE_ASSETS_DIR to the "
+                "/var/mobile runtime asset tree ($RUNTIME_ASSETS)"
+            )
+        if not re.search(r'OTUI_ASSET_ROOT="\$RUNTIME_ASSETS"', code_text):
+            problems.append(
+                "node26 launcher must set OTUI_ASSET_ROOT to the /var/mobile "
+                "runtime asset tree ($RUNTIME_ASSETS)"
+            )
+        if re.search(r'OTUI_ASSET_ROOT="\$ASSETS"', code_text):
+            problems.append(
+                "node26 launcher must not point OTUI_ASSET_ROOT at the packaged "
+                "/var/jb asset tree (executables there map non-executable)"
             )
         if "OPENCODE_IOS_JITLESS" in code_text:
             problems.append(
@@ -1455,10 +1540,13 @@ def _check_launcher(checks, ctx, extract_dir, variant=VARIANT_NODE22):
                 "(/var/jb bin/usr/bin/usr/sbin/sbin), TMPDIR fallback, exec, "
                 "\"$@\" forwarding, --single-threaded (mandatory on iOS mprotect "
                 "W^X; no background V8 threads), --no-warnings, "
-                "OPENCODE_NODE_ASSETS_DIR + OTUI_ASSET_ROOT (OpenTUI renderer under "
-                "/var/jb), NODE_FLAGS/MAX_OLD_SPACE escape hatches; no node:ffi flags "
-                "needed (default-on in 26.13), no Node-22-only flags, no uname, "
-                "no credentials"
+                f"OPENCODE_NODE_ASSETS_DIR + OTUI_ASSET_ROOT point at the "
+                f"/var/mobile runtime asset mirror ({NODE26_RUNTIME_ASSETS}) because "
+                "iOS maps /var/jb executables non-executable (device-verified; the "
+                "packaged /var/jb copy is a static-validation fallback only), "
+                "NODE_FLAGS/MAX_OLD_SPACE/RUNTIME_ASSETS escape hatches; no node:ffi "
+                "flags needed (default-on in 26.13), no Node-22-only flags, no "
+                "uname, no credentials"
             )
         else:
             evidence = (
@@ -3409,6 +3497,7 @@ def _build_package_report(ctx, checks, sources, manifest, args):
             "ripgrep": metrics.get("ripgrep", {"included": False}),
             "jitshim": metrics.get("jitshim", {"included": False}),
             "open_dylib": metrics.get("opentui", {"included": False}),
+            "runtime_assets_mobile": metrics.get("node26_runtime_assets", {"included": False}),
         },
         "cli": metrics.get("cli", {}),
         "host_smoke": metrics.get("host_smoke", {}),
@@ -3711,7 +3800,7 @@ def cmd_verify(args):
     # ---- package checks --------------------------------------------------
     _check_control(checks, ctx, expected_version, variant)
     _check_paths(checks, ctx, mode)
-    _check_maintainer_scripts(checks, ctx, extract_dir)
+    _check_maintainer_scripts(checks, ctx, extract_dir, variant)
     _check_launcher(checks, ctx, extract_dir, variant)
     _check_docs(checks, ctx, extract_dir, variant)
     _check_no_secrets_and_junk(checks, ctx, extract_dir)
