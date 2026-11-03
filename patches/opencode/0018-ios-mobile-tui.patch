@@ -1,0 +1,984 @@
+# OpenCode iOS: mobile layout and NewTerm rendering profile.
+# Applies after 0001..0017 to upstream e8238bae9b807b72ecfc75afd3a9fe2e6b07b944.
+# No iPhoneOS SDK or new native runtime required; existing signed renderer is reused.
+# Design reference: pageton/tui-design-skill ec54092ea3a47fb3aafe3abc3363bc5e911d1a14.
+# Phone viewports keep the same focused composer across resizes, compact the home
+# screen and preserve error/status plugins. iOS defaults to reduced motion,
+# a steady cursor, 20fps/coalesced frames, synchronized output and legacy keys.
+# Explicit user cursor/animation settings win. Other runtime defaults are preserved.
+# String(platform) comparisons accommodate this port's extra iOS Node platform
+# without weakening upstream TypeScript's Platform union.
+# Tests (from packages/tui): bun run typecheck:tsc; bun test --timeout 30000
+# test/mobile-ui.test.tsx test/mobile-terminal.test.ts test/config-v2.test.tsx
+# test/feature-plugins/home-footer.test.ts test/feature-plugins/prompt-footer.test.tsx.
+# Real NewTerm visual acceptance is separate from native frame/SSH protocol tests.
+
+diff --git a/packages/core/src/persistent-pty/binary.node.ts b/packages/core/src/persistent-pty/binary.node.ts
+index c070633..d2b341b 100644
+--- a/packages/core/src/persistent-pty/binary.node.ts
++++ b/packages/core/src/persistent-pty/binary.node.ts
+@@ -1,6 +1,6 @@
+ // iPhoneOS: the @opencode/pty Rust daemon binary is not shipped for iOS, so the
+ // server must not advertise the persistent-PTY capability to clients.
+-export const available = process.platform !== "ios"
++export const available = String(process.platform) !== "ios"
+ 
+ export async function resolveBinary() {
+   return process.env.OPENCODE_PTY_BIN || "opencode-pty"
+diff --git a/packages/core/src/ripgrep/binary.ts b/packages/core/src/ripgrep/binary.ts
+index 6ee7798..15039af 100644
+--- a/packages/core/src/ripgrep/binary.ts
++++ b/packages/core/src/ripgrep/binary.ts
+@@ -126,7 +126,7 @@ export namespace RipgrepBinary {
+ 
+             const platformKey = `${process.arch}-${process.platform}` as keyof typeof PLATFORM
+             const config = PLATFORM[platformKey]
+-            if (!config && process.platform === "ios")
++            if (!config && String(process.platform) === "ios")
+               throw new Error(
+                 "ripgrep is not installed on this device and no iPhoneOS binary is bundled: " +
+                   "install it with `apt install ripgrep` (or put `rg` on PATH)",
+diff --git a/packages/core/src/shell/select.ts b/packages/core/src/shell/select.ts
+index e178eb8..bee76cb 100644
+--- a/packages/core/src/shell/select.ts
++++ b/packages/core/src/shell/select.ts
+@@ -128,7 +128,7 @@ async function unix() {
+   const shells = text
+     ? Array.from(new Set(text.split("\n").filter((line) => line.trim() && !line.startsWith("#"))))
+     : ["/bin/bash", "/bin/zsh", "/bin/sh"]
+-  if (process.platform !== "ios") return shells
++  if (String(process.platform) !== "ios") return shells
+   return Array.from(new Set([...shells, ...IOS_SHELLS]))
+ }
+ 
+@@ -151,7 +151,7 @@ export function gitbash(options?: Options, bin?: string) {
+ }
+ 
+ function fallback(bin?: string) {
+-  if (process.platform === "ios") {
++  if (String(process.platform) === "ios") {
+     const shell = IOS_SHELLS.find((file) => stat(file)?.isFile())
+     if (shell) return shell
+     // Last resort: the launcher's PATH prefix must provide a shell; a bare path
+diff --git a/packages/core/src/util/git-executable.ts b/packages/core/src/util/git-executable.ts
+index cb0c6c7..683c876 100644
+--- a/packages/core/src/util/git-executable.ts
++++ b/packages/core/src/util/git-executable.ts
+@@ -6,10 +6,7 @@ import { which } from "./which.js"
+ const darwinShim = "/usr/bin/git"
+ const xcodeSelectLink = "/var/db/xcode_select_link"
+ 
+-const defaultDeveloperDirs = [
+-  "/Applications/Xcode.app/Contents/Developer",
+-  "/Library/Developer/CommandLineTools",
+-]
++const defaultDeveloperDirs = ["/Applications/Xcode.app/Contents/Developer", "/Library/Developer/CommandLineTools"]
+ 
+ function readXcodeSelectLink(link: string) {
+   if (!existsSync(link)) return null
+@@ -56,7 +53,7 @@ export const gitExecutable = lazy(() => {
+   // through PATH (the launcher prepends /var/jb/bin and /var/jb/usr/bin) and
+   // fail with an actionable message when it is absent instead of returning a
+   // bare "git" that surfaces as a generic ENOENT.
+-  if (process.platform === "ios") {
++  if (String(process.platform) === "ios") {
+     const git = which("git")
+     if (!git) throw new Error("git is not installed; install it with `apt install git` (rootless: /var/jb/usr/bin/apt)")
+     return git
+diff --git a/packages/tui/src/app.tsx b/packages/tui/src/app.tsx
+index 569f217..04e91f2 100644
+--- a/packages/tui/src/app.tsx
++++ b/packages/tui/src/app.tsx
+@@ -112,6 +112,7 @@ import { SessionTerminalsProvider } from "./context/session-terminals"
+ import { ClientMcp } from "./context/client-mcp"
+ import { PanelProvider, usePanel } from "./context/panel"
+ import { SessionFrame } from "./component/session-frame"
++import { mobileViewport, terminalRendererOptions } from "./util/mobile"
+ import { createTuiClipboard } from "./clipboard"
+ 
+ const appGlobalBindingCommands = ["session.list", "session.new", "open.menu"] as const
+@@ -216,6 +217,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+   const global = yield* Global.Service
+   const config = Config.resolve(yield* Effect.tryPromise(() => input.config.get()), {
+     terminalSuspend: process.platform !== "win32",
++    mobile: String(process.platform) === "ios",
+   })
+   const headers = Service.headers(input.server.endpoint)
+   const options = {
+@@ -251,10 +253,9 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+     Effect.gen(function* () {
+       const options = {
+         externalOutputMode: "passthrough",
+-        targetFps: 60,
++        ...terminalRendererOptions(),
+         gatherStats: false,
+         exitOnCtrlC: false,
+-        useKittyKeyboard: {},
+         autoFocus: false,
+         openConsoleOnError: false,
+         useMouse: config.mouse,
+@@ -1480,6 +1481,22 @@ function App() {
+       </Show>
+       <MigrationOverlay />
+       <Toast />
++      <Show when={!mobileViewport(dimensions().width, dimensions().height).usable}>
++        <box
++          position="absolute"
++          left={0}
++          top={0}
++          width="100%"
++          height="100%"
++          zIndex={3000}
++          backgroundColor={theme.background.base}
++          paddingLeft={1}
++          paddingTop={1}
++        >
++          <text fg={theme.text.base}>Resize terminal</text>
++          <text fg={theme.text.muted}>Min. 24 × 8</text>
++        </box>
++      </Show>
+     </box>
+   )
+ }
+diff --git a/packages/tui/src/component/mobile-home.tsx b/packages/tui/src/component/mobile-home.tsx
+new file mode 100644
+index 0000000..b99b0db
+--- /dev/null
++++ b/packages/tui/src/component/mobile-home.tsx
+@@ -0,0 +1,27 @@
++import { TextAttributes } from "@opentui/core"
++import { Show } from "solid-js"
++import { useTheme } from "../context/theme"
++import { mobileViewport } from "../util/mobile"
++
++export function MobileHome(props: { width: number; height: number; status: string }) {
++  const theme = useTheme()
++  const viewport = () => mobileViewport(props.width, props.height)
++  return (
++    <box width="100%" flexShrink={0} paddingTop={viewport().short ? 0 : 1}>
++      <box flexDirection="row" justifyContent="space-between" height={1} gap={1}>
++        <text fg={theme.text.base} attributes={TextAttributes.BOLD}>
++          OpenCode
++        </text>
++        <text fg={theme.text.muted}>{props.status}</text>
++      </box>
++      <Show when={!viewport().short}>
++        <text fg={theme.text.base} marginTop={1}>
++          What would you like to build?
++        </text>
++      </Show>
++      <text fg={theme.text.muted} wrapMode="none" truncate>
++        {viewport().hints}
++      </text>
++    </box>
++  )
++}
+diff --git a/packages/tui/src/component/prompt/index.tsx b/packages/tui/src/component/prompt/index.tsx
+index 075f037..825f5c4 100644
+--- a/packages/tui/src/component/prompt/index.tsx
++++ b/packages/tui/src/component/prompt/index.tsx
+@@ -49,6 +49,7 @@ import { useToast } from "../../ui/toast"
+ import { createFadeIn } from "../../util/signal"
+ import { DialogSkill } from "../dialog-skill"
+ import { useConfig, useCursorStyle } from "../../config"
++import { mobileViewport } from "../../util/mobile"
+ import { usePromptMove } from "./move"
+ import { promptFilesForServer, resolvePastedAttachments } from "./local-attachment"
+ import { locationKey, useData } from "../../context/data"
+@@ -218,6 +219,7 @@ export function Prompt(props: PromptProps) {
+   const measure = (text: string) => measureEditText(text, { widthMethod: renderer.widthMethod })
+   const exit = useExit()
+   const dimensions = useTerminalDimensions()
++  const viewport = createMemo(() => mobileViewport(dimensions().width, dimensions().height))
+   const theme = useTheme()
+   const { currentSyntax: syntax } = useThemes()
+   const animationsEnabled = createMemo(() => config.animations ?? true)
+@@ -1615,6 +1617,7 @@ export function Prompt(props: PromptProps) {
+   })
+ 
+   const placeholderText = createMemo(() => {
++    if (viewport().compact) return store.mode === "shell" ? "Run a command…" : "Ask about this project…"
+     const value = (() => {
+       if (store.mode === "shell") {
+         if (!shell().length) return undefined
+@@ -1673,7 +1676,7 @@ export function Prompt(props: PromptProps) {
+       }),
+     }
+   })
+-  const maxHeight = createMemo(() => Math.max(6, Math.floor(dimensions().height / 3)))
++  const maxHeight = () => viewport().promptRows
+ 
+   const promptBg = createMemo(() => theme.decrease(theme.background.raised.base))
+ 
+@@ -1690,9 +1693,9 @@ export function Prompt(props: PromptProps) {
+           }}
+         >
+           <box
+-            paddingLeft={dimensions().width < 44 ? 1 : 2}
+-            paddingRight={dimensions().width < 44 ? 1 : 2}
+-            paddingTop={1}
++            paddingLeft={viewport().padding}
++            paddingRight={viewport().padding}
++            paddingTop={viewport().compact ? 0 : 1}
+             flexShrink={0}
+             backgroundColor={promptBg()}
+             flexGrow={1}
+@@ -1853,7 +1856,13 @@ export function Prompt(props: PromptProps) {
+               cursorColor={disabled() ? theme.background.raised.base : theme.text.base}
+               syntaxStyle={syntax()}
+             />
+-            <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
++            <box
++              flexDirection="row"
++              flexShrink={0}
++              paddingTop={viewport().compact ? 0 : 1}
++              gap={1}
++              justifyContent="space-between"
++            >
+               <PromptMetadataRow
+                 mode={store.mode}
+                 agent={agentLabel()}
+@@ -1871,32 +1880,34 @@ export function Prompt(props: PromptProps) {
+             </box>
+           </box>
+         </box>
+-        <box
+-          height={1}
+-          border={["left"]}
+-          borderColor={borderHighlight()}
+-          customBorderChars={{
+-            ...EmptyBorder,
+-            vertical: promptBg().a !== 0 ? "╹" : " ",
+-          }}
+-        >
++        <Show when={!viewport().compact}>
+           <box
+             height={1}
+-            border={["bottom"]}
+-            borderColor={promptBg()}
+-            customBorderChars={
+-              promptBg().a !== 0
+-                ? {
+-                    ...EmptyBorder,
+-                    horizontal: "▀",
+-                  }
+-                : {
+-                    ...EmptyBorder,
+-                    horizontal: " ",
+-                  }
+-            }
+-          />
+-        </box>
++            border={["left"]}
++            borderColor={borderHighlight()}
++            customBorderChars={{
++              ...EmptyBorder,
++              vertical: promptBg().a !== 0 ? "╹" : " ",
++            }}
++          >
++            <box
++              height={1}
++              border={["bottom"]}
++              borderColor={promptBg()}
++              customBorderChars={
++                promptBg().a !== 0
++                  ? {
++                      ...EmptyBorder,
++                      horizontal: "▀",
++                    }
++                  : {
++                      ...EmptyBorder,
++                      horizontal: " ",
++                    }
++              }
++            />
++          </box>
++        </Show>
+         <box width="100%" flexDirection="row" justifyContent="space-between" gap={2}>
+           <Slot path="prompt.footer" input={footerInput()}>
+             <Slot path="prompt.footer.status" input={footerInput()}>
+@@ -1945,22 +1956,31 @@ export function Prompt(props: PromptProps) {
+                     </box>
+                   </Match>
+                   <Match when={true}>
+-                    <Show when={locationLabelDisplay()} fallback={<text />}>
+-                      {(location) => (
+-                        <text
+-                          id="prompt.footer.location"
+-                          fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
+-                          wrapMode="none"
+-                          truncate
+-                          flexGrow={1}
+-                          flexShrink={1}
+-                          onMouseOver={locationActions.onMouseOver}
+-                          onMouseOut={locationActions.onMouseOut}
+-                          onMouseUp={locationActions.onMouseUp}
+-                        >
+-                          {location()}
++                    <Show
++                      when={!viewport().compact}
++                      fallback={
++                        <text fg={theme.text.muted} wrapMode="none">
++                          {store.mode === "shell" ? "Enter run" : "Enter send"}
+                         </text>
+-                      )}
++                      }
++                    >
++                      <Show when={locationLabelDisplay()} fallback={<text />}>
++                        {(location) => (
++                          <text
++                            id="prompt.footer.location"
++                            fg={locationActions.hovered() ? theme.text.base : theme.text.muted}
++                            wrapMode="none"
++                            truncate
++                            flexGrow={1}
++                            flexShrink={1}
++                            onMouseOver={locationActions.onMouseOver}
++                            onMouseOut={locationActions.onMouseOut}
++                            onMouseUp={locationActions.onMouseUp}
++                          >
++                            {location()}
++                          </text>
++                        )}
++                      </Show>
+                     </Show>
+                   </Match>
+                 </Switch>
+diff --git a/packages/tui/src/config/index.tsx b/packages/tui/src/config/index.tsx
+index 8af86e0..b9a5f0b 100644
+--- a/packages/tui/src/config/index.tsx
++++ b/packages/tui/src/config/index.tsx
+@@ -287,7 +287,7 @@ export type Resolved = Omit<Info, "attention" | "cursor" | "keybinds" | "leader"
+ 
+ export function resolve(
+   input: Info,
+-  options: { terminalSuspend: boolean; environment?: Readonly<Record<string, string | undefined>> },
++  options: { terminalSuspend: boolean; mobile?: boolean; environment?: Readonly<Record<string, string | undefined>> },
+ ): Resolved {
+   const tabsMode = input.tabs?.mode ?? (input.tabs?.enabled === undefined ? "auto" : input.tabs.enabled ? "on" : "off")
+   const keybinds: TuiKeybind.KeybindOverrides = { ...input.keybinds }
+@@ -303,6 +303,7 @@ export function resolve(
+ 
+   return {
+     ...input,
++    ...(options.mobile ? { animations: input.animations ?? false } : {}),
+     attention: {
+       notifications: input.attention?.notifications ?? false,
+       sound: input.attention?.sound ?? false,
+@@ -316,8 +317,8 @@ export function resolve(
+     leader: { timeout: input.leader?.timeout ?? 2000 },
+     mouse: input.mouse ?? true,
+     cursor: {
+-      style: input.cursor?.style ?? "block",
+-      blinking: input.cursor?.blinking ?? true,
++      style: input.cursor?.style ?? (options.mobile ? "line" : "block"),
++      blinking: input.cursor?.blinking ?? !options.mobile,
+     },
+     session: {
+       ...input.session,
+diff --git a/packages/tui/src/feature-plugins/home/footer.tsx b/packages/tui/src/feature-plugins/home/footer.tsx
+index d31888c..e258f97 100644
+--- a/packages/tui/src/feature-plugins/home/footer.tsx
++++ b/packages/tui/src/feature-plugins/home/footer.tsx
+@@ -3,6 +3,7 @@ import { createMemo, Match, Show, Switch } from "solid-js"
+ import { useTerminalDimensions } from "@opentui/solid"
+ import { usePlugin } from "../../plugin/context"
+ import { Slot } from "../../plugin/render"
++import { mobileViewport } from "../../util/mobile"
+ 
+ export function homeFooterVisibility(width: number) {
+   return {
+@@ -31,8 +32,7 @@ function Mcp(props: { context: Plugin.Context }) {
+             <Match when={true}>
+               <span
+                 style={{
+-                  fg:
+-                    count() > 0 ? props.context.theme.text.feedback.success.base : props.context.theme.text.muted,
++                  fg: count() > 0 ? props.context.theme.text.feedback.success.base : props.context.theme.text.muted,
+                 }}
+               >
+                 ⊙{" "}
+@@ -77,15 +77,16 @@ function Plugins(props: { context: Plugin.Context }) {
+ function View(props: { context: Plugin.Context }) {
+   const dimensions = useTerminalDimensions()
+   const visibility = createMemo(() => homeFooterVisibility(dimensions().width))
++  const viewport = () => mobileViewport(dimensions().width, dimensions().height)
+ 
+   return (
+-    <Show when={dimensions().height >= 14 && dimensions().width >= 44}>
++    <Show when={viewport().usable}>
+       <box
+         width="100%"
+-        paddingTop={dimensions().height < 16 ? 0 : 1}
+-        paddingBottom={dimensions().height < 16 ? 0 : 1}
+-        paddingLeft={2}
+-        paddingRight={2}
++        paddingTop={viewport().compact ? 0 : dimensions().height < 16 ? 0 : 1}
++        paddingBottom={viewport().compact ? 0 : dimensions().height < 16 ? 0 : 1}
++        paddingLeft={viewport().padding}
++        paddingRight={viewport().padding}
+         flexDirection="row"
+         flexShrink={0}
+         gap={2}
+diff --git a/packages/tui/src/feature-plugins/prompt/footer.tsx b/packages/tui/src/feature-plugins/prompt/footer.tsx
+index a997d9a..494ba92 100644
+--- a/packages/tui/src/feature-plugins/prompt/footer.tsx
++++ b/packages/tui/src/feature-plugins/prompt/footer.tsx
+@@ -6,6 +6,7 @@ import { TextAttributes } from "@opentui/core"
+ import { useInteractivity } from "../../context/interactivity"
+ import { stringWidth } from "../../util/string-width"
+ import { createGoal, GoalStatus } from "./goal"
++import { mobileViewport } from "../../util/mobile"
+ 
+ const money = new Intl.NumberFormat("en-US", {
+   style: "currency",
+@@ -19,6 +20,7 @@ export function PromptFooter(props: {
+   showDetails: boolean
+ }) {
+   const dimensions = useTerminalDimensions()
++  const viewport = () => mobileViewport(dimensions().width, dimensions().height)
+   const [liveHovered, setLiveHovered] = createSignal(false)
+   const subagents = createMemo(() => {
+     if (!props.sessionID) return 0
+@@ -66,6 +68,16 @@ export function PromptFooter(props: {
+ 
+   return (
+     <Switch>
++      <Match when={viewport().narrow && props.mode === "normal" && !live() && !goal()}>
++        <text
++          fg={props.context.theme.text.base}
++          wrapMode="none"
++          flexShrink={0}
++          onMouseUp={() => props.context.keymap.dispatch("command.palette.show")}
++        >
++          / commands
++        </text>
++      </Match>
+       <Match when={props.mode === "normal"}>
+         <Switch>
+           <Match when={goal() || live() || status().length > 0}>
+diff --git a/packages/tui/src/routes/home.tsx b/packages/tui/src/routes/home.tsx
+index 71e7b64..18d4d95 100644
+--- a/packages/tui/src/routes/home.tsx
++++ b/packages/tui/src/routes/home.tsx
+@@ -15,6 +15,8 @@ import { useTheme } from "../context/theme"
+ import { useUpdateNotification } from "../context/update-notification"
+ import { useExit } from "../context/exit"
+ import { FadeInText } from "../component/fade-in-text"
++import { MobileHome } from "../component/mobile-home"
++import { mobileViewport } from "../util/mobile"
+ 
+ let once = false
+ const placeholder = {
+@@ -32,6 +34,7 @@ export function Home() {
+   const data = useData()
+   const location = useLocation()
+   const dimensions = useTerminalDimensions()
++  const viewport = createMemo(() => mobileViewport(dimensions().width, dimensions().height))
+   const [logoWidth, setLogoWidth] = createSignal(0)
+   // Global MCP elicitations can arrive without a session route, so keep them reachable from Home.
+   const currentLocation = () => route.location ?? data.location.default()
+@@ -82,26 +85,43 @@ export function Home() {
+     <>
+       <box
+         flexGrow={1}
++        minHeight={0}
+         alignItems="center"
+-        paddingLeft={dimensions().width < 44 ? 1 : 2}
+-        paddingRight={dimensions().width < 44 ? 1 : 2}
++        paddingLeft={viewport().padding}
++        paddingRight={viewport().padding}
+       >
++        <Show when={viewport().compact}>
++          <MobileHome
++            width={dimensions().width}
++            height={dimensions().height}
++            status={local.model.ready ? (local.model.current() ? "Ready" : "Connect") : "Loading"}
++          />
++        </Show>
+         <box flexGrow={1} minHeight={0} />
+-        <box height={3} minHeight={0} flexShrink={1} />
++        <Show when={!viewport().compact}>
++          <box height={3} minHeight={0} flexShrink={1} />
++          <box
++            flexShrink={0}
++            onSizeChange={function () {
++              setLogoWidth(this.width)
++            }}
++          >
++            <Logo />
++          </box>
++          <box height={1} flexShrink={0} />
++          <UpdateNotification width={logoWidth()} />
++        </Show>
+         <box
++          width="100%"
++          maxWidth={viewport().compact ? undefined : 75}
++          zIndex={1000}
++          paddingTop={viewport().compact ? 0 : 1}
+           flexShrink={0}
+-          onSizeChange={function () {
+-            setLogoWidth(this.width)
+-          }}
++          position="relative"
+         >
+-          <Logo />
+-        </box>
+-        <box height={1} flexShrink={0} />
+-        <UpdateNotification width={logoWidth()} />
+-        <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1} flexShrink={0} position="relative">
+           <Prompt ref={bind} placeholders={placeholder} disabled={forms().length > 0} />
+         </box>
+-        <box flexGrow={1} minHeight={0} />
++        <box flexGrow={viewport().compact ? 0 : 1} minHeight={0} />
+       </box>
+       <box width="100%" flexShrink={0}>
+         <Slot path="home.footer" />
+diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
+index ce5d3cb..662f37a 100644
+--- a/packages/tui/src/routes/session/index.tsx
++++ b/packages/tui/src/routes/session/index.tsx
+@@ -23,14 +23,7 @@ import { useTuiTerminalEnvironment } from "../../context/runtime"
+ import { Spinner, SPINNER_FRAMES } from "../../component/spinner"
+ import { PatchDiff } from "../../component/patch-diff"
+ import { useTheme, useThemes } from "../../context/theme"
+-import {
+-  BoxRenderable,
+-  ScrollBoxRenderable,
+-  addDefaultParsers,
+-  TextAttributes,
+-  RGBA,
+-  MouseEvent,
+-} from "@opentui/core"
++import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA, MouseEvent } from "@opentui/core"
+ import { Prompt, type PromptRef } from "../../component/prompt"
+ import {
+   mediaHashFromUri,
+@@ -116,6 +109,7 @@ import {
+ import { switchLabel } from "../../util/model"
+ import { findMessageBoundary, messageNavigationSlack } from "./message-navigation"
+ import { stringWidth } from "../../util/string-width"
++import { mobileViewport } from "../../util/mobile"
+ import { useArgs } from "../../context/args"
+ import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
+ import { SessionTurn } from "@opencode/util/session-turn"
+@@ -240,6 +234,7 @@ export function Session(props: {
+ 
+   const renderer = useRenderer()
+   const dimensions = useTerminalDimensions()
++  const viewport = createMemo(() => mobileViewport(dimensions().width, dimensions().height))
+   const thinkingMode = createMemo<ThinkingMode>(() => config.session?.thinking ?? "hide")
+   const showScrollbar = createMemo(() => config.session?.scrollbar ?? false)
+   const markdownMode = createMemo(() => config.session?.markdown ?? "rendered")
+@@ -258,7 +253,9 @@ export function Session(props: {
+     enabled: () => props.sidebarVisible && dimensions().width - props.verticalTabsWidth <= 120 && !disabled(),
+     commands: [{ bind: "escape,ctrl+c", title: "Close sidebar", group: "Session", run: props.onToggleSidebar }],
+   }))
+-  const contentWidth = createMemo(() => (props.width ?? dimensions().width - props.verticalTabsWidth) - 4)
++  const contentWidth = createMemo(() =>
++    Math.max(1, (props.width ?? dimensions().width - props.verticalTabsWidth) - viewport().padding * 2),
++  )
+   const models = createMemo(() => data.location.model.list(location()) ?? [])
+ 
+   const scrollAcceleration = createMemo(() => getScrollAcceleration(config))
+@@ -1265,7 +1262,9 @@ export function Session(props: {
+       },
+       run: () => {
+         const lastAssistantMessage = messagesBeforeRevert().findLast(
+-          (msg) => msg.type === "assistant" || (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
++          (msg) =>
++            msg.type === "assistant" ||
++            (msg.type === "compaction" && msg.status === "completed" && msg.summary.trim() !== ""),
+         )
+         if (!lastAssistantMessage) {
+           toast.show({ message: "No assistant messages found", variant: "error" })
+@@ -1502,9 +1501,9 @@ export function Session(props: {
+         <box
+           flexGrow={1}
+           minHeight={0}
+-          paddingBottom={1}
+-          paddingLeft={dimensions().width < 44 ? 1 : 2}
+-          paddingRight={dimensions().width < 44 ? 1 : 2}
++          paddingBottom={viewport().compact ? 0 : 1}
++          paddingLeft={viewport().padding}
++          paddingRight={viewport().padding}
+         >
+           <Show when={session()}>
+             <box flexGrow={1} minHeight={0} position="relative">
+@@ -1569,9 +1568,7 @@ export function Session(props: {
+                   onMouseOut={() => setLatestHovered(false)}
+                   onMouseUp={toBottom}
+                 >
+-                  <text
+-                    fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}
+-                  >
++                  <text fg={latestHovered() ? theme.text.action.secondary.hovered : theme.text.action.secondary.base}>
+                     Jump to latest ↓
+                   </text>
+                 </box>
+@@ -1617,12 +1614,7 @@ export function Session(props: {
+                     }}
+                   </Show>
+                 </Match>
+-                <Match
+-                  when={
+-                    session() &&
+-                    currentLocation.error?.location.directory === session()!.location.directory
+-                  }
+-                >
++                <Match when={session() && currentLocation.error?.location.directory === session()!.location.directory}>
+                   <SessionLocationMissing
+                     directory={session()!.location.directory}
+                     projectID={session()!.projectID}
+@@ -2916,9 +2908,7 @@ function BlockTool(props: BlockToolProps) {
+               <Show
+                 when={props.spinner}
+                 fallback={
+-                  <text
+-                    fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}
+-                  >
++                  <text fg={permission() ? theme.text.feedback.warning.base : (props.headerColor ?? theme.text.muted)}>
+                     {title()}
+                   </text>
+                 }
+@@ -3106,11 +3096,7 @@ function ShellDisplay(props: {
+           <Show
+             when={isRunning()}
+             fallback={
+-              <text
+-                fg={theme.text.base}
+-                wrapMode={expanded() ? "word" : "char"}
+-                maxHeight={expanded() ? undefined : 2}
+-              >
++              <text fg={theme.text.base} wrapMode={expanded() ? "word" : "char"} maxHeight={expanded() ? undefined : 2}>
+                 {limitedInput()}
+               </text>
+             }
+@@ -3211,7 +3197,9 @@ function Read(props: ToolProps) {
+         Read {pathFormatter.format(stringValue(props.input.path))}
+         <Show when={props.input.offset !== undefined || props.input.limit !== undefined}>
+           :{finiteNumber(props.input.offset) || 1}-
+-          {props.input.limit ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1 : ""}
++          {props.input.limit
++            ? (finiteNumber(props.input.offset) || 1) + (finiteNumber(props.input.limit) || 0) - 1
++            : ""}
+         </Show>
+       </InlineTool>
+       <For each={loaded()}>
+diff --git a/packages/tui/src/ui/dialog.tsx b/packages/tui/src/ui/dialog.tsx
+index fe5da51..d2b8c39 100644
+--- a/packages/tui/src/ui/dialog.tsx
++++ b/packages/tui/src/ui/dialog.tsx
+@@ -20,6 +20,7 @@ import { useToast } from "./toast"
+ import { useClipboard } from "../context/clipboard"
+ import { useConfig, useNewDesigns } from "../config"
+ import { copy, copyOnSelectRelease } from "../util/selection"
++import { mobileViewport } from "../util/mobile"
+ 
+ export type DialogSize = "medium" | "large" | "xlarge"
+ 
+@@ -64,7 +65,13 @@ export function Dialog(
+         justifyContent={props.centered ? "center" : undefined}
+         position="absolute"
+         zIndex={3000}
+-        paddingTop={props.centered ? 0 : dimensions().height / 4}
++        paddingTop={
++          props.centered
++            ? 0
++            : mobileViewport(dimensions().width, dimensions().height).compact
++              ? 1
++              : dimensions().height / 4
++        }
+         left={0}
+         top={0}
+         backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
+@@ -111,11 +118,7 @@ export function DialogHeader(
+         </text>
+       )}
+       {props.children}
+-      <text
+-        fg={theme.text.muted}
+-        flexShrink={0}
+-        onMouseUp={() => (props.onClose ?? dialog.clear)()}
+-      >
++      <text fg={theme.text.muted} flexShrink={0} onMouseUp={() => (props.onClose ?? dialog.clear)()}>
+         {props.closeLabel ?? "esc"}
+       </text>
+     </box>
+diff --git a/packages/tui/src/util/mobile.ts b/packages/tui/src/util/mobile.ts
+new file mode 100644
+index 0000000..780752f
+--- /dev/null
++++ b/packages/tui/src/util/mobile.ts
+@@ -0,0 +1,27 @@
++import type { CliRendererConfig } from "@opentui/core"
++
++export function mobileViewport(width: number, height: number) {
++  const compact = width < 72 || height < 20
++  return {
++    compact,
++    narrow: width < 72,
++    short: height < 16,
++    usable: width >= 24 && height >= 8,
++    padding: compact ? 1 : 2,
++    promptRows: compact ? Math.max(1, Math.min(3, Math.floor(height / 4))) : Math.max(6, Math.floor(height / 3)),
++    hints: width < 40 ? "/models  /exit" : "/models  /sessions  /exit",
++  }
++}
++
++export function terminalRendererOptions(platform: string = process.platform): CliRendererConfig {
++  if (platform !== "ios") return { targetFps: 60, useKittyKeyboard: {} }
++  // NewTerm may not advertise synchronized output. Always envelope complete
++  // frames, and avoid animation/resize bursts on a phone's terminal compositor.
++  return {
++    targetFps: 20,
++    maxFps: 20,
++    debounceDelay: 80,
++    synchronizedOutput: "always",
++    useKittyKeyboard: null,
++  }
++}
+diff --git a/packages/tui/test/__snapshots__/mobile-ui.test.tsx.snap b/packages/tui/test/__snapshots__/mobile-ui.test.tsx.snap
+new file mode 100644
+index 0000000..2d5952d
+--- /dev/null
++++ b/packages/tui/test/__snapshots__/mobile-ui.test.tsx.snap
+@@ -0,0 +1,17 @@
++// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
++
++exports[`phone home keeps the composer and commands visible with the keyboard open 1`] = `
++" OpenCode                       Connect
++ /models  /sessions  /exit
++
++
++
++
++
++
++
++ ┃ Ask about this project…
++ ┃
++ Enter send                  / commands
++"
++`;
+diff --git a/packages/tui/test/app-lifecycle.test.tsx b/packages/tui/test/app-lifecycle.test.tsx
+index 959bdfa..dc313f1 100644
+--- a/packages/tui/test/app-lifecycle.test.tsx
++++ b/packages/tui/test/app-lifecycle.test.tsx
+@@ -1389,10 +1389,10 @@ test("ctrl+c dismisses autocomplete and shell mode before exiting", async () =>
+ 
+ test.skipIf(process.platform === "win32").each(["manual", "select"] as const)(
+   "selection copy and pane management respect %s mode in the prompt and terminal pane",
+-    async (copy) => {
+-      await using state = await tmpdir()
+-      const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
+-      await setup.renderer.setupTerminal()
++  async (copy) => {
++    await using state = await tmpdir()
++    const setup = await createTestRenderer({ width: 100, height: 30, kittyKeyboard: true })
++    await setup.renderer.setupTerminal()
+     setup.renderer.start()
+     const ready = Promise.withResolvers<void>()
+     const session = {
+@@ -1987,9 +1987,7 @@ test("free usage limit offers OpenCode Go once per 24h, transitions Subscribe to
+   setup.mockInput.pressEnter()
+   await setup.waitForFrame((frame) => frame.includes("GOGO-1234"))
+   expect(openSpy).toHaveBeenCalledWith("https://opencode.ai/go")
+-  expect(oauthRequests).toEqual([
+-    { methodID: "device", answer: { server: "https://opencode.ai/console" } },
+-  ])
++  expect(oauthRequests).toEqual([{ methodID: "device", answer: { server: "https://opencode.ai/console" } }])
+   const connectFrame = setup.captureCharFrame()
+   expect(connectFrame).toContain("OpenCode Console account")
+   expect(connectFrame).not.toContain("Enter Go API key")
+@@ -2278,7 +2276,13 @@ test("free usage limit Subscribe handles mid-auth/mid-sync Escape, sync failure,
+     created: 6,
+     type: "session.step.started",
+     durable: { aggregateID: session.id, seq: 6, version: 1 },
+-    data: { sessionID: session.id, assistantMessageID: "msg_free_assistant_expired", agent: "build", model, started: 6 },
++    data: {
++      sessionID: session.id,
++      assistantMessageID: "msg_free_assistant_expired",
++      agent: "build",
++      model,
++      started: 6,
++    },
+   })
+   setup.events.emit({
+     id: "evt_free_limit_expired_fail",
+@@ -2801,7 +2805,7 @@ test.each([44, 100])(
+     await setup.ready
+     await setup.waitForFrame((frame) => frame.includes("Retrying in 3s"))
+     expect(setup.captureCharFrame()).toContain("attempt 2")
+-    expect(setup.captureCharFrame()).toContain("Provider unavailable")
++    expect(setup.captureCharFrame()).toMatch(/Provider\s+unavailable/)
+     expect(setup.captureCharFrame()).not.toContain("Error:")
+     await setup.waitForFrame((frame) => frame.includes("Retrying in 2s"), { maxPasses: 200 })
+     await setup.waitForFrame((frame) => frame.includes("Retrying in 1s"), { maxPasses: 200 })
+@@ -2845,4 +2849,3 @@ test.each([44, 100])(
+   },
+   15_000,
+ )
+-
+diff --git a/packages/tui/test/mobile-terminal.test.ts b/packages/tui/test/mobile-terminal.test.ts
+new file mode 100644
+index 0000000..06662f5
+--- /dev/null
++++ b/packages/tui/test/mobile-terminal.test.ts
+@@ -0,0 +1,86 @@
++import { expect, test } from "bun:test"
++import { CliRenderer, TextRenderable } from "@opentui/core"
++import { ManualClock } from "@opentui/core/testing"
++import { Readable, Writable } from "node:stream"
++import { resolve } from "../src/config"
++import { mobileViewport, terminalRendererOptions } from "../src/util/mobile"
++
++test("iOS defaults use reduced motion without overriding explicit preferences", () => {
++  const mobile = resolve({}, { terminalSuspend: false, mobile: true })
++  expect(mobile.animations).toBe(false)
++  expect(mobile.cursor).toEqual({ style: "line", blinking: false })
++  const custom = resolve(
++    { animations: true, cursor: { style: "block", blinking: true } },
++    {
++      terminalSuspend: false,
++      mobile: true,
++    },
++  )
++  expect(custom.animations).toBe(true)
++  expect(custom.cursor).toEqual({ style: "block", blinking: true })
++  expect(resolve({}, { terminalSuspend: true }).cursor).toEqual({ style: "block", blinking: true })
++})
++
++test("phone viewport reserves room for input when the software keyboard reduces its height", () => {
++  expect(mobileViewport(40, 12)).toMatchObject({ compact: true, short: true, usable: true, padding: 1, promptRows: 3 })
++  expect(mobileViewport(28, 8)).toMatchObject({ usable: true, promptRows: 2 })
++  expect(mobileViewport(16, 5).usable).toBe(false)
++  expect(mobileViewport(100, 30).compact).toBe(false)
++  expect(mobileViewport(100, 12).compact).toBe(true)
++})
++
++test("iOS renderer envelopes changed frames, suppresses idle output and restores the terminal", async () => {
++  const writes: Buffer[] = []
++  const stdout = Object.assign(
++    new Writable({
++      write(chunk, _encoding, complete) {
++        writes.push(Buffer.from(chunk))
++        complete()
++      },
++    }),
++    { isTTY: true, columns: 40, rows: 12, getColorDepth: () => 24 },
++  ) as unknown as NodeJS.WriteStream
++  const stdin = new Readable({ read() {} }) as NodeJS.ReadStream
++  const renderer = new CliRenderer(stdin, stdout, 40, 12, {
++    ...terminalRendererOptions("ios"),
++    clock: new ManualClock(),
++    consoleMode: "disabled",
++    remote: true,
++    environment: { TERM: "xterm-256color" },
++    exitOnCtrlC: false,
++  })
++  try {
++    await renderer.setupTerminal()
++    // A legacy terminal reports no synchronized-update capability.
++    stdin.emit("data", Buffer.from("\x1b[?2026;0$y"))
++    const text = new TextRenderable(renderer, { content: "Ready", height: 1 })
++    renderer.root.add(text)
++    writes.length = 0
++    await renderer["loop"]()
++    await renderer["nativeSession"].idle()
++    const frame = Buffer.concat(writes).toString()
++    expect(frame.indexOf("\x1b[?2026h")).toBeLessThan(frame.indexOf("Ready"))
++    expect(frame).toContain("\x1b[?2026l")
++    expect(renderer.targetFps).toBe(20)
++    expect(renderer.maxFps).toBe(20)
++    writes.length = 0
++    await renderer["loop"]()
++    await renderer["nativeSession"].idle()
++    expect(Buffer.concat(writes).length).toBe(0)
++    for (let index = 0; index < 30; index++) text.content = `Reply ${index}`
++    await renderer["loop"]()
++    await renderer["nativeSession"].idle()
++    const changed = Buffer.concat(writes).toString()
++    // A diff emits changed cells, rather than repeating the unchanged "Re".
++    expect(changed).toContain("29")
++    expect(changed.match(/\x1b\[\?2026h/g)?.length).toBe(1)
++    expect(changed).not.toContain("\x1b[2J")
++    expect(changed).not.toContain("\x1b[?1049h")
++  } finally {
++    renderer.destroy()
++    await renderer.closed
++  }
++  const restored = Buffer.concat(writes).toString()
++  expect(restored).toContain("\x1b[?1049l")
++  expect(restored).toContain("\x1b[?25h")
++})
+diff --git a/packages/tui/test/mobile-ui.test.tsx b/packages/tui/test/mobile-ui.test.tsx
+new file mode 100644
+index 0000000..8d4fad6
+--- /dev/null
++++ b/packages/tui/test/mobile-ui.test.tsx
+@@ -0,0 +1,64 @@
++import { expect, test } from "bun:test"
++import { TextareaRenderable } from "@opentui/core"
++import { createAppFixture } from "./fixture/app"
++
++test("phone home keeps the composer and commands visible with the keyboard open", async () => {
++  await using setup = await createAppFixture({ width: 40, height: 12 })
++  await setup.ready
++  await setup.waitForFrame(() => setup.renderer.currentFocusedRenderable instanceof TextareaRenderable)
++  const input = setup.renderer.currentFocusedRenderable as TextareaRenderable
++  input.clear()
++  const frame = await setup.waitForFrame((frame) => frame.includes("Enter send"))
++  expect(frame).toContain("OpenCode")
++  expect(frame).toContain("/ commands")
++  expect(frame).toContain("/models")
++  expect(frame).toContain("/exit")
++  expect(setup.renderer.currentFocusedRenderable).toBeInstanceOf(TextareaRenderable)
++  expect(
++    frame
++      .split("\n")
++      .map((line) => line.trimEnd())
++      .join("\n"),
++  ).toMatchSnapshot()
++})
++
++test("phone resizing preserves the draft, Unicode and focused editor", async () => {
++  await using setup = await createAppFixture({ width: 40, height: 18 })
++  await setup.ready
++  await setup.waitForFrame(() => setup.renderer.currentFocusedRenderable instanceof TextareaRenderable)
++  const input = setup.renderer.currentFocusedRenderable as TextareaRenderable
++  input.clear()
++  const draft = "中文 café e\u0301 👩‍💻 مرحبا"
++  await setup.mockInput.pasteBracketedText(draft)
++  await setup.waitForFrame(() => input.plainText === draft)
++  for (const [width, height] of [
++    [28, 10],
++    [16, 5],
++    [100, 30],
++    [40, 12],
++  ]) {
++    setup.resize(width, height)
++    await setup.renderOnce()
++    expect(input.plainText).toBe(draft)
++    expect(setup.renderer.currentFocusedRenderable).toBe(input)
++    if (width === 16) expect(setup.captureCharFrame()).toContain("Resize")
++  }
++  expect(setup.captureCharFrame()).toContain("Enter send")
++  input.clear()
++  await setup.waitForFrame(() => input.plainText === "")
++})
++
++test.each(["dark", "light"] as const)("phone commands remain keyboard-accessible in %s mode", async (mode) => {
++  await using setup = await createAppFixture({ width: 40, height: 18, config: { animations: false, theme: { mode } } })
++  await setup.ready
++  await setup.waitForFrame(() => setup.renderer.currentFocusedRenderable instanceof TextareaRenderable)
++  const input = setup.renderer.currentFocusedRenderable as TextareaRenderable
++  input.clear()
++  await setup.mockInput.typeText("/")
++  await setup.waitForFrame((frame) => frame.includes("models"))
++  await setup.mockInput.pressEscape()
++  await setup.waitForFrame(() => setup.renderer.currentFocusedRenderable instanceof TextareaRenderable)
++  expect(setup.captureCharFrame()).toContain("/ commands")
++  input.clear()
++  await setup.waitForFrame(() => input.plainText === "")
++})
