@@ -97,13 +97,13 @@ SQLJS_TARBALL_SHA256="74fbdd373ad7eb2bbe74c7807581c1c39e424ee53ed95042a02208cbc9
 SQLJS_JS_SHA256="b46d4bddfdde8a787fc4764bd0a405cdfdf96fbd77e6a4e95446106826ecfa47"
 SQLJS_WASM_SHA256="0dfeecda2070b36da0cd4f6afa250af9453de528a983770f85b13d5d6b667572"
 # Node 26 (Phase D real-TUI) variant: the OpenTUI iPhoneOS renderer dylib shipped in the CLI
-# assets. Pinned to the codesign-adhoc renderer build (opencode-ios `opentui-ios-renderer` run
-# 41487998437; ldid-signed renderer dylibs are mapped non-executable on the device, so Apple
-# codesign ad-hoc is used);
+# assets. Pinned to renderer run 41582979506: clang/ld64 final link, Apple codesign ad-hoc,
+# and no-builtin compiler-rt. Earlier Zig-linked / ldid-signed images could not execute;
+# the old clang-linked compiler-rt also had recursive memory routines.
 # the workflow downloads that artifact and this script verifies the sha256 + Mach-O before use.
 OPENTUI_IOS_ASSET_KEY="${OPENCODE_OPENTUI_IOS_ASSET_KEY:-@opentui/core-ios-arm64/libopentui.dylib}"
 OPENTUI_IOS_DYLIB="${OPENCODE_OPENTUI_IOS_DYLIB:-}"
-OPENTUI_IOS_DYLIB_SHA256="${OPENCODE_OPENTUI_IOS_DYLIB_SHA256:-c2123919402a3ab418f6e431d3c21bec4c33e130bb439c657a8ac17479da62a9}"
+OPENTUI_IOS_DYLIB_SHA256="${OPENCODE_OPENTUI_IOS_DYLIB_SHA256:-4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868}"
 NODE_BIN="${NODE_BIN:-node}"
 
 log() { printf '[build-opencode] %s\n' "$*"; }

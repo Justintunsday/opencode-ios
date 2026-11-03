@@ -8,7 +8,7 @@ on a native iPhoneOS arm64 **Node.js 22.9.0** runtime, entirely beneath
 > **Verification status:** the released package is **DEVICE-VERIFIED** on the
 > target iPhone SE 2 (iOS 16.1.1, Dopamine rootless): packaged acceptance
 > **PASS=14 / FAIL=0** for `OpenCode-iOS-rootless.deb` SHA-256
-> `2f96fc183416ef336fc9855b9dedc51e6baaf89cda996b0147b31444dbef446b`
+> `b23ed1fc6f99ab67c0882cfed5c990d941e99984e4ccbaa622e23bbd75f0f073`
 > (2026-11-01), including a mock-provider agent turn whose shell tool executed on
 > the device. Raw evidence:
 > [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md); condensed matrix:
@@ -40,7 +40,7 @@ Rootless environment facts (device-verified on the target iPhone):
 | `PATH` | SSH default: `/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin`. The packaged launcher prepends `/var/jb/bin:/var/jb/usr/bin` so shells/tools spawned by the CLI resolve. |
 | `git` | **Not installed by default.** The package `Recommends: git`; install it with `sudo apt-get install -y git` (Procursus apt, git 2.39.1) for git tool support. |
 | Entitlements | The device-verified minimal runtime entitlement set is `platform-application` + `com.apple.private.security.no-sandbox` (the `.deb` ships it as `runtime/entitlements.xml`). Older allow-jit/executable-memory sets are **not** sufficient. The current Node 18 and Node 22 runtime builds use this 2-key set. |
-| Runtime variants | The package is built from **one** of two runtimes and ships exactly one: **Node 22.9.0 (v6 mprotect-W^X runtime; primary, device-working with `--single-threaded`)** or **Node 18.20.4 (fallback; V8 10.2 device-proven memory model, sql.js sqlite shim)**. Detect the installed variant with `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`; the `.deb` metadata description and `package-report.json` (`variant`/`runtime_kind`) also state it. |
+| Runtime variants | Each package ships exactly one runtime. The stable/fallback lines use **Node 22.9.0 (v6 mprotect-W^X runtime; primary, device-working with `--single-threaded`)** or **Node 18.20.4 (fallback; V8 10.2 device-proven memory model, sql.js sqlite shim)**; experimental Node 26.13.0 runs the real TUI (§2b). Detect the installed variant with `/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node`; the `.deb` metadata description and `package-report.json` (`variant`/`runtime_kind`) also state it. |
 | Runtime capabilities | The shipped runtime must be **full-ICU** with **WebAssembly and JIT enabled** (Node's built-in fetch/undici requires wasm llhttp; a wasm-disabled runtime fails on device with `ReferenceError: WebAssembly is not defined`). Packaging CI rejects runtimes built `--with-intl=none` or with `--jitless`/WebAssembly disabled, and requires `Intl.Segmenter` data (full-ICU; small-ICU trims it). |
 | sqlite implementation | **Node 18**: the CLI maps `node:sqlite` to a bundled **sql.js WebAssembly shim** (`cli/assets/node18-sqlite/`), which persists the database as a whole file (no WAL; a crash can lose recent writes — see `KNOWN_LIMITATIONS.md`). **Node 22**: uses built-in `node:sqlite`. |
 | Optional JIT shim | Node 22 variant only: if the `ios-jit-shim` artifact is published, the package installs `/var/jb/usr/lib/opencode/runtime/libjitshim.dylib` (0755) and the launcher exports `DYLD_INSERT_LIBRARIES` for it **only when present**. It is a jailbreak-only JIT interposer (relaxes W^X/mprotect for V8) and is recorded in `package-report.json`; without it the launcher behaves normally. The Node 18 variant does not use the shim. |
@@ -94,9 +94,9 @@ experimental node26 line:
 | --- | --- | --- | --- |
 | `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite, **v6 mprotect-W^X runtime** | **Primary — DEVICE-VERIFIED (packaged, PASS=14/0)** with the mandatory `--single-threaded` launcher flag; CLI matrix + mock-provider agent turn PASS through the packaged launcher. | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
 | `node18` | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 device-proven memory model, bundled sql.js sqlite shim | **Fallback**, CI-validated only (UNVERIFIED ON DEVICE); CLI bundle runs on a community Node 18 runtime | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
-| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 mprotect W^X, **node:ffi + OpenTUI iOS renderer** (`libopentui.dylib`) | **EXPERIMENTAL Phase D — NOT device-verified.** Expected to run the real interactive TUI; the stable device-verified release remains node22 v6. | artifact `OpenCode-iOS-rootless-node26.deb`; `package-report.json`: `"variant": "node26"`, `"experimental": true`, `runtime.open_dylib`; `runtime.node.node_version` starts `26.` |
+| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 W^X + foreground wasm jobs, **node:ffi + OpenTUI renderer** | **DEVICE-VERIFIED real TUI in experimental node26test.4**; normal/long PTY input and `/exit` rc=0, headless and local-mock E2E accepted. Stable node22 release unchanged. | `OpenCode-iOS-rootless-node26.deb`; exact pins and installation in §2b |
 
-Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`
+Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node`
 prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manifest.json`
 declares the capability profile.
 
@@ -136,35 +136,69 @@ declares the capability profile.
 > artifact whose `SHA256SUMS` matches a device-tested SHA recorded in
 > `docs/VERIFICATION.md`.
 
-## 2b. Experimental node26 + OpenTUI candidate (input acceptance pending)
+## 2b. Experimental node26 + OpenTUI variant (DEVICE-VERIFIED real TUI)
 
-The first `v2.2.5-ios.5-node26test.4` candidate failed real-device input and non-TTY
-acceptance. A displayed TUI is not sufficient evidence of interactive operation.
-The current runtime/CLI callback and TTY fixes still require final packaged acceptance;
-use the exact accepted SHA from [`VERIFICATION.md`](VERIFICATION.md) when available.
-The stable `v2.2.5-ios.5` release remains unchanged.
+`v2.2.5-ios.5-node26test.4` passed packaged real-TUI acceptance on iPhone SE 2 / iOS 16.1.1 /
+Dopamine rootless. It is distributed as a separate Actions artifact; the stable
+`v2.2.5-ios.5` release is unchanged. Installing it replaces the installed `opencode` package
+because both variants use the same package name/version.
 
-The required components are Node 26.13.0 **FFI-enabled** iPhoneOS runtime with V8 W^X,
-wasm fixes and libffi callback patches 0014/0015; the node26 CLI with patch 0017; and
-renderer run `41531609826`, dylib SHA-256
-`5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242` (4,181,456 B).
-The renderer must be linked with Xcode clang/ld64 and signed with Apple codesign ad-hoc.
-The Node executable uses the separate device-proven ldid two-key entitlement set.
+| Item | Verified value |
+| --- | --- |
+| Label / package | `v2.2.5-ios.5-node26test.4`; `opencode` `2.2.5-1`, `iphoneos-arm64` |
+| Package run | [41584835462](https://github.com/Justintunsday/opencode-ios/actions/runs/41584835462); artifact `opencode-ios-rootless-node26` |
+| `.deb` | `OpenCode-iOS-rootless-node26.deb`, **56,849,780 bytes**, SHA-256 **`c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`** |
+| CLI run | [41584007287](https://github.com/Justintunsday/opencode-ios/actions/runs/41584007287); artifact `opencode-cli-node26-ios` |
+| `opencode.mjs` | **21,398,737 bytes**, SHA-256 **`1aab71859d5992e49b54f91fbe574578679dee3970693dc0176f9257869a3283`** |
+| Renderer run | [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506); `libopentui.dylib` **4,181,472 bytes**, SHA-256 **`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868`** |
+| Runtime run | [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128); `ios-node26-runtime-ffi`, Node 26.13.0, **134,710,336 bytes**, SHA-256 **`84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`** |
+| Runtime source | `wasm-trap-handler-fix` commit `7cd359f377d9d37dfe13d929927cf67274451ec2`; W^X 0007/0009, wasm allocator 0011, platform 0012, trap-handler 0013, **libffi callback table 0014 + anonymous RW→RX code 0015**, and **foreground-only V8 JobHandles 0016** |
+| Static package validation | **50 PASS / 0 FAIL / 2 SKIP**; `experimental=true`, `bootstrap_prep=false`, `require_ffi_runtime=true` |
 
-Runtime assets must load from **`/var/jb/usr/lib/opencode/cli/assets`**. Both
-`OPENCODE_NODE_ASSETS_DIR` and `OTUI_ASSET_ROOT` point there. The old mobile asset mirror
-was an incorrect workaround and is removed; executable dylib mmap from real `/var/mobile`
-is sandbox-denied. The dylib is installed at
-`/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib`, mode 0755.
-`OPENCODE_IOS_RUNTIME_ASSETS` is a diagnostic override, not a mobile mirror requirement.
+Download the pinned experimental artifact with authenticated GitHub CLI:
 
-The launcher and spawned children must retain `--single-threaded`. A new candidate is
-installed with `sudo dpkg -i OpenCode-iOS-rootless-node26.deb`, replacing the same-named
-installed `opencode` package. Verify its exact SHA first, then runtime identity, callback
-regression and actual TTY input/exit. Pipes must print guidance and return 1; headless
-commands use `opencode run ...`. Reinstall stable `OpenCode-iOS-rootless.deb` to roll back;
-user config/sessions are preserved. Do not reinstall rejected test.3 or the first test.4
-candidate for interactive use. Complete pins/results: [`VERIFICATION.md`](VERIFICATION.md).
+```sh
+gh run download 41584835462 -R Justintunsday/opencode-ios -n opencode-ios-rootless-node26 -D node26test4
+```
+
+Transfer the `.deb` to the device, then run in the device shell:
+
+```sh
+echo 'c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f  OpenCode-iOS-rootless-node26.deb' | sha256sum -c -
+sudo dpkg -i OpenCode-iOS-rootless-node26.deb
+/var/jb/usr/lib/opencode/runtime/node --single-threaded -p "process.version+' '+process.platform"
+# v26.13.0 ios
+/var/jb/usr/lib/opencode/runtime/node --single-threaded --no-warnings -e "console.log(typeof require('node:ffi').dlopen); console.log(new WebAssembly.Memory({initial:1}).buffer.byteLength)"
+# function / 65536
+sha256sum /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib
+# 4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868
+opencode --version
+opencode models
+opencode debug paths
+cd /var/mobile/Documents
+opencode  # real OpenTUI in NewTerm / SSH PTY; /exit quits
+opencode < /dev/null; echo "rc=$?"  # guidance, rc=1
+```
+
+The launcher always passes `--single-threaded` and the CLI forwards it to server children.
+Runtime patch 0016 also keeps wasm publication jobs on the foreground joining thread;
+the flag alone did not prevent the reproduced Node 26 wasm worker race.
+Tree-sitter worker syntax highlighting is disabled on iOS: Node user workers also
+race process-wide W^X. Code blocks use the existing plain-text fallback.
+Assets load from **`/var/jb/usr/lib/opencode/cli/assets`**, through `OPENCODE_NODE_ASSETS_DIR`
+and `OTUI_ASSET_ROOT`. The renderer must be **clang/ld64-linked and Apple codesign ad-hoc
+signed**, mode 0755. The earlier mobile asset mirror was an incorrect workaround and is
+removed; `/var/mobile` renderer mmap is sandbox-denied. `OPENCODE_IOS_RUNTIME_ASSETS`
+overrides the root for diagnostics.
+
+Acceptance used a local mock with a dummy key; real external provider authentication
+and API calls were not exercised. Clipboard / interactive tool PTYs remain unavailable. For all raw results,
+exit codes, crash comparison and remaining limits see [`VERIFICATION.md`](VERIFICATION.md)
+and [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
+
+To roll back, reinstall the stable `OpenCode-iOS-rootless.deb` from `v2.2.5-ios.5` with
+`sudo dpkg -i`. User config/sessions are preserved. Avoid reinstalling superseded test.3,
+which would overwrite the working renderer with its old copy.
 
 ## 3. Transfer the package to the device
 
@@ -222,7 +256,7 @@ and does **not** depend on any node/nodejs package.
 
 ```sh
 opencode --version
-/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 18.x or 22.x
+/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node   # 18.x, 22.x or 26.x
 opencode --help
 ```
 
@@ -311,8 +345,7 @@ opencode run "summarise this repository"   # headless one-shot, needs auth+netwo
 opencode models          # offline model catalog
 ```
 
-**Interactive mode on iOS is a line-based REPL (line REPL patch `0012`), not the
-full-screen TUI.** The full OpenTUI interface cannot run on the iPhoneOS Node
+**Interactive mode in the stable Node 22 release is a line-based REPL (patch `0012`).** The full OpenTUI interface cannot run on the iPhoneOS Node
 22.9.0 runtime (`@opentui/core` needs Node >= 26.4 + `node:ffi`/`--experimental-ffi`,
 which this runtime does not have). In a TTY (NewTerm 3 / SSH) `opencode` enters a
 plain readline REPL (streamed assistant text and tool activity, `/help`, `/new`,
@@ -331,7 +364,7 @@ non-TTY guidance checks (rc=1, no stack trace). The earlier candidate
 `v2.2.5-ios.4` failed packaged REPL agent turns (connection reuse; fixed in CLI
 patches `0013`/`0014`) and is superseded/NOT device-verified. See
 [`VERIFICATION.md`](VERIFICATION.md) for exact artifact status.
-A future Node 26+ iPhoneOS runtime could enable the real TUI. See
+The experimental Node 26 test.4 package runs the device-verified real TUI (§2b). See
 [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).
 
 Git support: `git` is not installed by the rootless bootstrap by default; the
@@ -344,7 +377,7 @@ sudo apt-get install -y git   # Procursus apt, device-verified: git 2.39.1
 git --version
 ```
 
-TUI/terminal caveats: the full-screen TUI is unavailable (OpenTUI needs Node >= 26.4
+Stable Node 22 TUI/terminal caveats: the full-screen TUI is unavailable (OpenTUI needs Node >= 26.4
 + `node:ffi`); interactive `opencode` in a TTY uses the line-based REPL instead.
 Interactive PTY panes and native file watchers have no iPhoneOS builds, so shell
 tool calls use pipe-based `child_process` fallback and file-watch features degrade
@@ -401,7 +434,7 @@ Manual equivalent (what proves success):
 
 ```sh
 opencode --version; echo "exit=$?"      # exit=0 and a version string
-/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 18.x or 22.x
+/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node   # 18.x, 22.x or 26.x
 opencode --help;    echo "exit=$?"      # exit=0 and usage text (full-ICU)
 opencode debug paths                    # config/data under /var/jb/var/mobile (optional)
 opencode models                         # offline model list (optional)
@@ -440,8 +473,8 @@ test.
 | `opencode: CLI bundle not found` | Incomplete extraction. Reinstall the `.deb`. |
 | Out-of-memory / jetsam kill during a large session | Lower the heap: `OPENCODE_IOS_MAX_OLD_SPACE_MB=1024 opencode`, or set it in `~/.profile`. |
 | Provider requests keep failing with `Transport: terminated` / `Transport: fetch failed` | Retry first (the REPL retries up to 3 attempts with a fresh connection). If it persists, **stale leftover Node processes are aggravating the flaky iOS transport** — kill them and retry: `pkill -f 'serve --service'`; `pkill -f ocdev-mock-ai.cjs`; check `ps -ax \| grep runtime/node` and kill stragglers; restart the mock/provider, then retry. |
-| Bare `opencode` in a **non-TTY** exits with guidance (rc=1) | Expected: interactive iOS mode needs a TTY for the line-based REPL. Use NewTerm 3 / SSH for interactive sessions, or `opencode run "..."` for scripts/automation. |
-| Full-screen TUI unavailable | Expected: OpenTUI needs Node >= 26.4 + `node:ffi`, which the iPhoneOS Node 22.9 runtime lacks. Interactive `opencode` in a TTY uses the line-based REPL instead; `opencode mini` aliases it. |
+| Bare `opencode` in a **non-TTY** exits with guidance (rc=1) | Expected: interactive iOS mode needs a TTY for the Node 26 TUI or stable Node 22 REPL. Use NewTerm 3 / SSH for interactive sessions, or `opencode run "..."` for scripts/automation. |
+| Stable Node 22 full-screen TUI unavailable | Experimental Node 26 has the verified real TUI (§2b). For Node 22 this is expected: OpenTUI needs Node >= 26.4 + `node:ffi`, which the iPhoneOS Node 22.9 runtime lacks. Interactive `opencode` in a TTY uses the line-based REPL instead; `opencode mini` aliases it. |
 | File changes are not picked up live | Expected watcher fallback (polling/none). Re-run the command or use a watch-free workflow. |
 | `firmware` dependency error from `dpkg` | Rootless bootstrap package is missing/broken; repair the bootstrap via Sileo rather than `--force-depends`. |
 | No provider requests / TLS errors | Check network and certificate trust; agent calls require internet and configured auth. Basic device HTTPS/TLS and `curl` were verified on the target device; proxied/managed networks remain untested. |
@@ -451,7 +484,7 @@ Collect diagnostics for bug reports:
 ```sh
 uname -a
 dpkg -s opencode
-/var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # runtime variant
+/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node   # runtime variant
 opencode --version; echo "exit=$?"
 sh /var/jb/usr/share/doc/opencode/device-smoke.sh
 ```
@@ -471,7 +504,7 @@ install). Open an issue with:
 1. Device model, iOS version, jailbreak (e.g. "iPhone SE2, iOS 16.1.1, Dopamine rootless").
 2. The exact package version, `.deb` SHA-256 (from `SHA256SUMS`) **and variant**
    (`package-report.json` → `variant`, or
-   `/var/jb/usr/lib/opencode/runtime/node -p process.versions.node`).
+   `/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node`).
 3. Full output of `sh /var/jb/usr/share/doc/opencode/device-smoke.sh`.
 4. Which device tests in [`VERIFICATION.md`](VERIFICATION.md) passed/failed.
 5. Whether `opencode auth login` + a minimal `opencode run` worked.

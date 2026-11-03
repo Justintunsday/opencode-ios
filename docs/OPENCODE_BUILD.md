@@ -1,11 +1,8 @@
 # OpenCode CLI bundle for the iPhoneOS Node.js runtime
 
-Status: **CI build + host-Node smoke + .deb package build verified; device execution pending**
-(`UNVERIFIED ON DEVICE`). The first device attempt exposed a runtime capability gap (initial iPhoneOS runtime was built
-`--with-intl=none` and without WebAssembly, which makes V8 reject the bundle's Unicode
-property escapes at parse time and breaks Node's wasm-based `fetch` llhttp - see §11). The
-runtime is now built with full-icu + WebAssembly + JIT; the CLI matrix on hardware is the
-last step (§12).
+Status: **CI build and host smoke verified; stable Node 22 release and experimental
+node26test.4 packaged real TUI DEVICE-VERIFIED on iPhone SE 2 / iOS 16.1.1.**
+Exact artifact scope and device evidence: [`VERIFICATION.md`](VERIFICATION.md).
 
 This document describes how `.github/workflows/build-opencode.yml` produces the
 `opencode-cli-node-ios` artifact: the OpenCode v2 CLI as a Vite ESM bundle that runs on
@@ -15,8 +12,8 @@ Since Phase D the workflow also builds a **Node 26.13.0 real-TUI variant**
 (`opencode-cli-node26-ios`) that ships the prebuilt OpenTUI iPhoneOS renderer
 (`libopentui.dylib`) so `opencode` can start the real TUI through `node:ffi` instead of the
 iOS line REPL. It is conditional and does not change the default Node 22 artifact; see §14.
-Its end-to-end TUI is **UNVERIFIED ON DEVICE** (the dlopen precondition and the Node 26
-JIT/WASM runtime are device-verified; the FFI-enabled runtime and the full TUI are not yet).
+Its packaged real TUI is **DEVICE-VERIFIED in node26test.4**; it remains experimental and
+does not modify the stable release. See §14 for the pinned build chain.
 
 ## 1. What the workload produces
 
@@ -367,8 +364,8 @@ not contain; they are patched to degrade gracefully rather than crash:
 | Persistent PTY (`@opencode/pty` Rust binary) | binary not shipped for iPhoneOS; the server reports `persistentPty: false` so clients do not attempt it (patch 0006). | asset set excludes it |
 | File watcher (`@parcel/watcher`) | native binding absent → no native watcher; consumers already fall back (watcher-less). | upstream fallback + asset set |
 | Image resize (photon WebAssembly) | unavailable in v1: the port deliberately keeps the `@silvia-odwyer/photon-node` wasm-bindgen JS module external/lazy and the single-file bundle does not ship that JS glue nor the photon worker entry, so `photon-normalize` reports “unavailable” and image files pass through unchanged. (WebAssembly itself is available on the shipped runtime; enabling image resize needs a follow-up patch that ships the photon JS payload.) | patch 0003 + prelude does not set `OPENCODE_PHOTON_WASM_PATH` |
-| TUI syntax highlighting (web-tree-sitter wasm) | tree-sitter wasm payload is included and WebAssembly is available on the shipped runtime; the TUI renderer itself is unavailable (see next row), so syntax highlighting only matters if the TUI is ever brought up. | asset set + TUI renderer gap |
-| TUI renderer (`@opentui/core` native library) | the real TUI cannot run on iPhoneOS: OpenTUI's Node binding loads its native core via `node:ffi` (Node >= 26.4 + `--experimental-ffi`), and the shipped runtime is Node 22.9 without `node:ffi`. In a terminal, `opencode` (no args) and `opencode mini` fall back to a pure-JS **line REPL** (readline, streaming text + tool lines, `/help`, `/new`, `/exit`, Ctrl-C cancels a turn, session continuity; patch 0012). Non-TTY invocations print the headless-CLI guidance and exit 1 (patch 0011/0012). Headless CLI (`run`, `serve`, `models`, …) is otherwise unchanged. | patch 0011/0012 + asset set excludes the dylib |
+| TUI syntax highlighting (web-tree-sitter wasm) | wasm payloads are shipped, but iOS tree-sitter workers are disabled because worker isolates race process-wide W^X. Code blocks use plain text; the native full-screen TUI and Markdown layout remain active. | asset inventory; node26 device acceptance in §14 |
+| TUI renderer (`@opentui/core` native library) | Stable Node 22 lacks `node:ffi` and uses the pure-JS line REPL. The separate experimental Node 26 test.4 package loads the clang/ld64 + codesign renderer and has DEVICE-VERIFIED real TUI rendering, input and `/exit`. Both variants reject non-TTY interactive invocations with guidance/1. | patches 0011/0012/0016/0017; exact node26 chain in §14 |
 | grep/glob (ripgrep binary) | no `rg` in the artifact; the tool reports an actionable error (patch 0006). If a system `rg` is present in `PATH` (runtime team may ship one under `/var/jb`), it is used. | upstream `which("rg")` first |
 | Plugin loading/registration | plugins load, but Node 22.9 has no `module.registerHooks`, so live reload of a local plugin’s relative module graph degrades and the special `@opencode/plugin` runtime specifier mapping is unavailable to external plugin code. | patch 0002 |
 | git integration | git is not installed by default on the device; commands needing git fail with “install it with `apt install git`” instead of a generic ENOENT. | patch 0004 |
@@ -517,13 +514,14 @@ device identity (`id -un`), `git --version` (2.39.1) and `pwd`; the mock server 
 This evidence was obtained with a local one-line hack of patch 0010's forwarding on the
 device; the official artifact (patch 0010) is being retested at the time of writing.
 
-**The real TUI is impossible on the shipped runtime; iOS provides a line REPL instead.**
+**Historical stable Node 22 finding: it provides the line REPL because it lacks `node:ffi`.**
+The experimental Node 26 real TUI is now device-verified (§14).
 Root cause (verified): `@opentui/core` 0.8.0's Node binding loads its Zig native core
 (`libopentui.dylib`) through `node:ffi`, which requires **Node.js >= 26.4 with
 `--experimental-ffi`**. The device-verified iPhoneOS runtime is **Node 22.9.0**, which has no
 `--experimental-ffi` (device: `bad option`) and no `node:ffi`, so an iPhoneOS OpenTUI build
-could never be loaded — the real TUI needs a future Node 26+ iOS runtime (major runtime work,
-out of scope). Patch 0011 made the failure clean (guidance + exit 1, no native stack trace);
+cannot be loaded by Node 22. The experimental Node 26 runtime and renderer now provide
+the real TUI (§14). Patch 0011 made the failure clean (guidance + exit 1, no native stack trace);
 **patch 0012 adds the actually-usable interactive path**: on iOS, `opencode` (no args) and
 `opencode mini` with a terminal start a pure-JS **line REPL** (node:readline, no OpenTUI/FFI
 imports): prompts are streamed through the same non-interactive run pipeline used by
@@ -715,158 +713,83 @@ Implementation effort for this variant: ≈2 h from the device finding (analysis
 0007/0008 + shim + build/smoke/manifest/workflow wiring), plus CI runtime. It is a hedge
 only; the primary path remains fixing the Node 22.9 runtime's V8 W^X/JIT issue.
 
-## 14. Node 26 real-TUI variant (Phase D) — conditional variant
+## 14. Node 26 real-TUI variant (Phase D — DEVICE-VERIFIED, experimental)
 
-The default Node 22 bundle cannot start the real OpenTUI TUI: OpenTUI's Node binding needs
-`node:ffi` (and loads its native Zig core `libopentui.dylib` through it), which exists only in
-Node >= 26.4. This variant targets the native iPhoneOS **Node 26.13.0** runtime and ships the
-prebuilt OpenTUI iPhoneOS renderer as a CLI asset, so `opencode` in a TTY can start the real
-TUI instead of the line REPL (patches 0011–0014 remain the fallback for the Node 22 variant).
+The `bundle-node26` job builds `opencode-cli-node26-ios` separately from Node 22/18. It uses
+patches 0001–0017 plus two OpenTUI dependency patches: patch 0015 collects the iOS renderer,
+dependency patch 0001 resolves the iOS asset key, 0002 disables unsafe tree-sitter workers,
+and CLI patch 0016 runs the real TUI when
+`node:ffi` is available. Node 22/18 retain the line REPL fallback.
 
-Status (honest):
-
-| Check | Status |
+| Item | Verified value |
 | --- | --- |
-| Node 26.13.0 iPhoneOS runtime builds and runs JIT-dependent JS (`--single-threaded`) | device-verified (Phase A/B runtime; WebAssembly runtime patch pending) |
-| `node:ffi` availability + API compatibility on stock Node 26.13.0 | host-verified (`require('node:ffi')` default-on; `ffi.dlopen(path, defs)` → `{lib, functions}`; OpenTUI destructures exactly that) |
-| OpenTUI renderer dylib `dlopen` on the device | device-verified from `/var/jb` paths (probe run 41315221320); `/var/mobile` and `/tmp` are sandbox-blocked (`file system sandbox blocked mmap()`) |
-| OpenTUI renderer build (iPhoneOS arm64 dylib) | CI green (opencode-ios run 41313921358; dylib sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`) |
-| CLI bundle + renderer asset staged and host-verified | this workflow (`bundle-node26` job); see artifact below |
-| Packaged as `node26test.2` with the FFI-enabled runtime | packager run 41447424080: CLI pin enforced, `ffi_support=enabled`, deb sha256 `ef188de4…` (56,790,908 B); device TUI run pending |
-| FFI-enabled Node 26 iPhoneOS runtime | pending (Phase A/B artifact is `--without-ffi`; follow-up FFI build required) |
-| **End-to-end real TUI on the device** | **NOT verified** — needs the FFI-enabled runtime + this bundle |
+| Label / package | `v2.2.5-ios.5-node26test.4`; `opencode` `2.2.5-1`, `iphoneos-arm64` |
+| Package run | [41584835462](https://github.com/Justintunsday/opencode-ios/actions/runs/41584835462); artifact `opencode-ios-rootless-node26` |
+| `.deb` | `OpenCode-iOS-rootless-node26.deb`, **56,849,780 bytes**, SHA-256 **`c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`** |
+| CLI run | [41584007287](https://github.com/Justintunsday/opencode-ios/actions/runs/41584007287); artifact `opencode-cli-node26-ios` |
+| `opencode.mjs` | **21,398,737 bytes**, SHA-256 **`1aab71859d5992e49b54f91fbe574578679dee3970693dc0176f9257869a3283`** |
+| Renderer run | [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506); `libopentui.dylib` **4,181,472 bytes**, SHA-256 **`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868`** |
+| Runtime run | [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128); `ios-node26-runtime-ffi`, Node 26.13.0, **134,710,336 bytes**, SHA-256 **`84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`** |
+| Runtime source | `wasm-trap-handler-fix` commit `7cd359f377d9d37dfe13d929927cf67274451ec2`; W^X 0007/0009, wasm allocator 0011, platform 0012, trap-handler 0013, **libffi callback table 0014 + anonymous RW→RX code 0015**, and **foreground-only V8 JobHandles 0016** |
+| Static package validation | **50 PASS / 0 FAIL / 2 SKIP**; `experimental=true`, `bootstrap_prep=false`, `require_ffi_runtime=true` |
 
-### Build
+### Build and artifact policy
 
-```bash
-# download the renderer artifact (Phase C green run) and the CLI bundle is built against it:
-gh run download 41313921358 -R Justintunsday/opencode-ios -n opentui-ios-renderer -D dist/opentui-ios-renderer
-export OPENCODE_OPENTUI_IOS_DYLIB="$PWD/dist/opentui-ios-renderer/libopentui.dylib"
-export OPENCODE_OPENTUI_IOS_DYLIB_SHA256=954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638
+`build-opencode.yml` downloads renderer run `41582979506`, hard-checks SHA
+`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868`, iPhoneOS Mach-O and
+`Signature=adhoc`, then stages it as `assets/@opentui/core-ios-arm64/libopentui.dylib`.
+The final dylib is linked with Xcode clang/ld64 from Zig's static archive; Zig self-linking
+and ldid-signing renderer variants failed executable mappings on the device.
+The compiler-rt archive uses `-fno-builtin -fno-stack-check -fno-stack-protector`;
+`check-macho-builtins.py` rejects the self-recursive memory routines found in the
+superseded renderer. Dependency patch 0002 disables iOS tree-sitter worker isolates
+because they also race process-wide W^X; fenced code uses the existing plain-text fallback.
 
-# everything the workflow does, locally (macOS or POSIX host with bun + python3 + node):
-export OPENCODE_IOS_NODE26=1 OPENCODE_IOS=1 OPENCODE_TARGET=ios-arm64
-bash scripts/build-opencode-bundle.sh fetch
-bash scripts/build-opencode-bundle.sh patches
-bash scripts/build-opencode-bundle.sh install
-bash scripts/build-opencode-bundle.sh deps-patches      # patch installed @opentui/core
-bash scripts/build-opencode-bundle.sh build
-bash scripts/build-opencode-bundle.sh stage             # verifies staged renderer sha256
-bash scripts/build-opencode-bundle.sh assetcheck        # OpenTUI iOS asset/resolver check
-OPENCODE_NODE_MATRIX='26.13.0 24.22.2' OPENCODE_SMOKE_REQUIRED=26.13.0 \
-  bash scripts/build-opencode-bundle.sh smoke
-bash scripts/build-opencode-bundle.sh manifest
-bash scripts/build-opencode-bundle.sh verify
-```
+The job sets `OPENCODE_IOS_NODE26=1`, target `ios-arm64`, Bun 1.4.4, required stock-host
+Node smoke **26.13.0** and informational smoke **24.22.2**. Stages are `fetch`, `patches`,
+`install`, `deps-patches`, `build`, `stage`, `assetcheck`, `smoke`, `manifest`, `verify` in
+`scripts/build-opencode-bundle.sh`. Resolver/hash gates and required host smoke passed.
+`bundle-manifest.json` records the actual embedded renderer SHA and runtime target;
+`verification_status.device_verified=false` remains correct for this host-produced manifest.
 
-The build script verifies the dylib sha256 against the pin and runs
-`scripts/check_macho.py <dylib> --kind dylib --max-minos 16.1.1` before staging. The
-workflow (`bundle-node26` job) downloads the pinned `opentui-ios-renderer` artifact from
-run 41313921358 directly (same repository, `actions: read` permission), re-verifies it, then
-runs the same commands. The `assetcheck` step is a host-Node unit check:
-`src/opencode-ios/opentui_ios_asset_check.mjs` imports the patched build-time resolver with
-`process.platform` stubbed to `"ios"`, asserts the descriptor/key/source, and checks the staged
-asset + runtime FFI chunk + bundle contain the expected strings.
+The explicit package dispatch pins runtime artifact `ios-node26-runtime-ffi` / run
+`41549633128`, the CLI run/SHA above, renderer run `41582979506` / SHA above,
+`require_ffi_runtime=true`, label `v2.2.5-ios.5-node26test.4`. No stable release is published.
 
-Artifact contract: same layout as §1 plus
-`assets/@opentui/core-ios-arm64/libopentui.dylib` (3,785,600 bytes renderer at the pinned
-Phase C build), artifact name `opencode-cli-node26-ios`, manifest `variant=node26`,
-`build.runtime_node_version=26.13.0`, `verification_status.host_smoke_required_node_version`
-= `26.13.0`, `verification_status.device_verified = false`.
-
-### Launcher contract (node26 variant)
+### Installed launcher contract
 
 ```sh
-exec /var/jb/usr/lib/opencode/runtime/node \
-  --single-threaded \
-  --no-warnings \
-  --max-old-space-size=1536 \
-  /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
+OPENCODE_IOS=1 \
+OPENCODE_NODE_ASSETS_DIR=/var/jb/usr/lib/opencode/cli/assets \
+OTUI_ASSET_ROOT=/var/jb/usr/lib/opencode/cli/assets \
+/var/jb/usr/lib/opencode/runtime/node --single-threaded --no-warnings \
+  --max-old-space-size=1536 /var/jb/usr/lib/opencode/cli/opencode.mjs "$@"
 ```
 
-Environment (the CLI iOS prelude also sets most of these; the wrapper should provide the
-absolute rootless paths):
+The launcher prepends rootless shell/tool directories to PATH and supplies writable TMPDIR.
+CLI patch 0010 forwards `--single-threaded` / heap cap to `serve --service` and standalone
+children; the packaged device run captured that actual argv. Node 26.13 has default-on
+`node:ffi` and native sqlite; do not disable FFI or use the Node-22-only sqlite launch flag.
+The renderer stays under `/var/jb`; the earlier mobile asset mirror was incorrect and is removed.
 
-- `OPENCODE_IOS=1`
-- `OPENCODE_NODE_ASSETS_DIR=/var/jb/usr/lib/opencode/cli/assets`
-- `OTUI_ASSET_ROOT=/var/jb/usr/lib/opencode/cli/assets` (the OpenTUI loader joins the native
-  asset key `@opentui/core-ios-arm64/libopentui.dylib` onto it; the asset must exist at that
-  absolute path)
-- `HOME` writable (device: `/var/jb/var/mobile`); `TMPDIR` writable (prelude falls back to
-  `$HOME/.cache/opencode/tmp` when unset)
-- `PATH` should start with `/var/jb/bin:/var/jb/usr/bin:/var/jb/usr/sbin:/var/jb/sbin`
-  (the prelude only prepends them when `process.platform === "ios"`; the Node 26 runtime may
-  report `darwin` until the FFI rebuild, so the wrapper should set PATH itself)
+### Device evidence and limits
 
-Flags: `--single-threaded` is **required** (same process-wide V8 W^X constraint as Node 22);
-do **not** pass `--experimental-sqlite` (not needed; Node 26 has `node:sqlite`) or
-`--no-experimental-ffi` (would disable the renderer). `--experimental-ffi` is accepted but
-redundant on 26.13; `--allow-ffi` is only for the permission model.
+The downloaded test.4 deb was installed and its node / CLI / renderer hashes matched.
+An actual 80×24 SSH PTY rendered the OpenTUI notification channel, alternate screen and
+OpenCode title; `/exit` returned 0. A 132.3-second PTY accepted input and exited 0.
+`--version`, `models`, `debug paths` returned 0; non-TTY guidance returned 1. The local-mock
+headless agent used the shell tool, wrote its marker and returned `E2E_OK` / rc=0.
+No new crash report appeared relative to the pre-install baseline; leftover runtimes were killed.
+Raw excerpts, process argv, transcript hashes and the old SIGBUS analysis are in
+[`VERIFICATION.md`](VERIFICATION.md).
 
-### CI evidence (this workflow's `bundle-node26` job)
-
-Run [41431113315](https://github.com/Justintunsday/opencode-ios/actions/runs/41431113315) (all
-three jobs green; `bundle-node26` all steps success) — this is the Phase D real-TUI bundle with
-patch 0016 (the node:ffi-conditional TUI gate). Artifact `opencode-cli-node26-ios` (zip
-32,693,073 bytes):
-
-| Field | Value |
-| --- | --- |
-| `opencode.mjs` | 21,398,198 bytes, sha256 `d031509c318fe1f8cdbde17ee574373dddad43cebfd08aba54d9991f9f21b2ce` |
-| Assets | 23 files / 36,667,080 bytes (app-archive 1, audio 5, data 8, wasm 8, **ios-native-library 1**) |
-| Renderer asset | `assets/@opentui/core-ios-arm64/libopentui.dylib`, 3,785,600 bytes, sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638` (= pinned Phase C artifact; manifest `sha256_matches_expected: true`) |
-| Manifest | `variant=node26`, `build.runtime_node_version=26.13.0`, **16** upstream patches + 1 dependency patch (0016 sha256 `63ebc1464cd0c334d5406917ff81d11d7024b5890e06a6480f50caec802f0e0f`), `host_smoke_required_node_version=26.13.0`, `host_smoke_required_passed=true`, `device_verified=false` |
-| Host smoke | 12/12 commands pass on stock Node 26.13.0 (required) and 24.22.2 (informational): `--version`, `--help`, `debug paths`, `models`, `auth list`, `session list`; native `node:sqlite` (no flag needed) |
-| Resolver/asset check | `assetcheck` step passed (patched build-time resolver maps `process.platform="ios"` to the key; staged dylib hash matches; runtime FFI chunk + bundle contain the iOS entry/fallback) |
-| Real-TUI gate (patch 0016) | bundle contains `IOS_TUI_FFI_GATE` (prelude marker), `hasNodeFFI`, `runIOSRepl` and `node:ffi`; both handlers bundle the conditional shape `const ffi = yield* Effect.promise(() => hasNodeFFI()); if (isIOS() && !ffi) { …line-REPL fallback… }` — so on the FFI-enabled Node 26 runtime the handlers fall through to the real TUI, while the Node 22/no-FFI path keeps the line REPL/guidance exactly as before |
-
-Two CI-only fixes this run needed: bun 1.4 installs `@opentui/core` in the **isolated**
-`node_modules/.bun/@opentui+core@0.8.0+<hash>/node_modules/@opentui/core` layout (the build
-script now locates it via `find` and applies the dependency patch with
-`git apply --directory`), and `OPENCODE_OPENTUI_IOS_DYLIB` must be absolute because the
-upstream build runs with cwd `packages/cli` (the script normalizes it).
-
-**Packaged chain (final node26 test package, `v2.2.5-ios.5-node26test.2`):**
-
-| Input | Pinned value |
-| --- | --- |
-| CLI bundle | run [41431113315](https://github.com/Justintunsday/opencode-ios/actions/runs/41431113315); `opencode.mjs` 21,398,198 B sha256 `d031509c318fe1f8cdbde17ee574373dddad43cebfd08aba54d9991f9f21b2ce`; artifact zip 32,693,073 B (pin enforced by the package dispatch `expected_cli_sha256` + bundle-manifest artifact-policy gate) |
-| Renderer | run [41313921358](https://github.com/Justintunsday/opencode-ios/actions/runs/41313921358); `libopentui.dylib` 3,785,600 B sha256 `954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638`; packaged 0755 at `/var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib` (report `runtime.open_dylib`: iOS / arm64 / MH_DYLIB / minOS 15.0.0 / 2-key ldid verified / system-only deps) |
-| Runtime | `ios-node26-runtime-ffi` (Justintunsday/nodejs26-ios run [41423525481](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41423525481), branch `ffi-variant`; artifact id 13141318672, zip 41,535,556 B): node 26.13.0 **134,682,704 B** sha256 `f4b75cc83c0538010b3bb788d5c916e6ef77180cd94e1f54fed46c71f49218ad`; runtime-manifest.json sha256 `f1203eb3d1b4a6798fd7a17fd536b78660893e396e914527a8222b98f8cff504`; `variant=node26-phaseab-ffi`, `ffi_support="enabled (node:ffi default-on in Node 26.13; bundled deps/libffi cross-built for iPhoneOS)"`, patches 0001–0012, `runtime_policy.launcher.required_flags=["--single-threaded"]` |
-| Package | opencode-ios run [41447424080](https://github.com/Justintunsday/opencode-ios/actions/runs/41447424080); artifact `opencode-ios-rootless-node26` (id 13142693909, zip 56,816,370 B); deb `OpenCode-iOS-rootless-node26.deb` **56,790,908 B**, sha256 `ef188de4b26ea3ea55d6707d2e3da91c1b27dce317cb306ded9d1d0867051416`; `SHA256SUMS` contains exactly that deb line; report `variant=node26`, `runtime_kind=node26`, `experimental=true`, `bootstrap_prep=false`, `release_label=v2.2.5-ios.5-node26test.2`, CI `49 PASS / 0 FAIL / 2 SKIP` (SKIPs = optional jit-shim + ripgrep not shipped), `ci_status=PASS`, `device_status=UNVERIFIED ON DEVICE` |
-
-The full static/host chain is pinned end-to-end. The remaining acceptance item is the Lead-executed
-device PTY run with the FFI-enabled runtime; the deb ships `node26-install-instructions.txt` with
-the node:ffi/dlopen preflight (`node -p process.platform`, `typeof require('node:ffi').dlopen`,
-dylib `ls -l`).
-
-### Device verification checklist (human-executed; CI cannot do this)
-
-1. Build/obtain the **FFI-enabled** Node 26.13.0 iPhoneOS runtime (not `--without-ffi`) and
-   confirm on the device: `node -e "console.log(typeof require('node:ffi').dlopen)"`.
-2. Install this bundle + the renderer dylib under `/var/jb/usr/lib/opencode/cli/assets/...`
-   (root-owned, 0755 for the dylib), then run the launcher in a real PTY.
-3. Expect: no `Unsupported OpenTUI Node asset target`, no stack trace; the full TUI renders
-   and accepts a prompt.
-4. Capture evidence (run id/build sha, runtime sha, exact argv/env, screenshot/transcript,
-   exit codes); if it crashes, capture the crash type/symbol before reporting failure.
-
-### Risks / open questions
-
-- **FFI runtime provenance:** the Phase A/B Node 26 runtime is built `--without-ffi`. Loading
-  the renderer requires the FFI-enabled build (`deps/libffi` iOS cross-build risk noted by the
-  runtime workstream). Without it the TUI cannot start.
-- **WebAssembly runtime patch pending:** Node 26's `fetch` (llhttp wasm) needs WebAssembly;
-  the runtime patch is in flight. Without it provider network calls fail even though the TUI
-  renders.
-- **Hybrid C++ ABI in the renderer:** the dylib is compiled with Zig 0.16 bundled libc++
-  headers but links the iPhoneOS SDK libc++ stubs (Zig 0.16 cannot build its bundled libc++ for
-  `aarch64-ios`). Both are libc++ ABI v1; the device TUI load is the final confirmation.
-- **Renderer asset versioning:** the dylib is ldid-signed (2-key entitlements); its hash is not
-  reproducible across builds because the signature blob is nondeterministic. The CLI build pins
-  the Phase C artifact hash and the manifest records the staged hash; when the renderer is
-  rebuilt, update the pin in `build-opencode.yml`/build script together.
-- **Device UX:** real TUI keyboard/PTY limitations on iPhone (no hardware keyboard assumptions,
-  PTY only, no clipboard until an iOS clipboard port, performance) are tracked in
-  `docs/KNOWN_LIMITATIONS.md` by the packaging workstream.
-
+The runtime includes the V8 14.6 W^X and wasm fixes. `--single-threaded` remains
+mandatory. Runtime patch 0016 additionally supplies zero background workers to V8
+JobHandles, so foreground `Join()` compiles/publishes wasm without racing JIT execution.
+The installed runtime passed 192 localhost fetches and 24 varied wasm modules amid JIT
+loops. Patches 0014/0015 provide iOS libffi callback tables with separate RW data
+and anonymous RX instruction pages; CLI patch 0017
+rejects non-TTY invocations before loading the renderer. External provider API keys/auth,
+clipboard, interactive tool PTYs / Ghostty panes,
+audio and other devices/iOS versions remain outside this acceptance. See
+[`OPENTUI_IOS.md`](OPENTUI_IOS.md) and [`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md).

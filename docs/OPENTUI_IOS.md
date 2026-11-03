@@ -1,9 +1,11 @@
 # OpenTUI iPhoneOS renderer
 
-The renderer from [run 41531609826](https://github.com/Justintunsday/opencode-ios/actions/runs/41531609826)
+The renderer from [run 41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506)
 is **DEVICE-VERIFIED for node:ffi loading and execution** on iPhone SE 2 / iOS 16.1.1 /
-Dopamine rootless: `dlopen` plus `imageRetainIccCache()` returned `RENDERER_CALL_OK`, and
-real OpenTUI rendering was observed. Packaged acceptance is recorded in
+Dopamine rootless: installed `node:ffi` editor creation, insertion and JS callbacks returned 0, and
+real OpenTUI rendering was observed. **Packaged node26test.4 is DEVICE-VERIFIED**
+(package run [41584835462](https://github.com/Justintunsday/opencode-ios/actions/runs/41584835462), deb SHA `c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`): normal and long PTYs
+rendered, accepted input and `/exit` returned 0; no new crash reports. Full acceptance is in
 [`VERIFICATION.md`](VERIFICATION.md).
 
 The final dylib must be linked with **Xcode clang/ld64 from the Zig static archive**, then
@@ -18,8 +20,8 @@ line REPL; the separate experimental Node 26 package loads this renderer through
 | Zig | `0.16.0`; archive SHA-256 `b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489` |
 | Target | `aarch64-ios.15.0`, thin arm64 `MH_DYLIB`, platform IOS, minOS 15.0, SDK 18.5 |
 | Final linker | Apple clang 17.0.0 / ld64, Xcode 16.4 |
-| Renderer run | [41531609826](https://github.com/Justintunsday/opencode-ios/actions/runs/41531609826), commit `cbba01240a3306ef475213dedbaad9e410056358` |
-| `libopentui.dylib` | **4,181,456 bytes**, SHA-256 **`5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242`** |
+| Renderer run | [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), commit `59c2ed01ac06e1d00e48e171756b096a0fa96ecc` |
+| `libopentui.dylib` | **4,181,472 bytes**, SHA-256 **`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868`** |
 | Signing | `xcrun codesign --force --sign - --timestamp=none`; `Signature=adhoc`, no Team ID or dylib entitlements; `codesign --verify` passes |
 | Dynamic ABI | 1,847 exported symbols, including `imageRetainIccCache` |
 | Asset key | `@opentui/core-ios-arm64/libopentui.dylib` |
@@ -61,6 +63,12 @@ Commands/logs: `clang-link.txt`, `dist/opentui-build/zig-build.log`.
 Environment overrides: `OPENTUI_REPO`, `OPENTUI_REF`, `OPENTUI_COMMIT`, `OPENTUI_IOS_TARGET`,
 `OPENTUI_BUILD_DIR`, `OPENTUI_DIST`, `OPENTUI_IOS_MAX_MINOS`, `IOS_SDK_PATH`.
 
+The manual compiler-rt build requires `-fno-builtin -fno-stack-check -fno-stack-protector`
+and a separate `-nobuiltin.a` cache key. Otherwise LLVM can
+replace memory loops with recursive calls to the same builtin. The post-link
+`scripts/check-macho-builtins.py` audit checks five memory routines and rejects
+direct self branches/calls; it fails on the old renderer and passes on this artifact.
+
 ## Artifact contract (`opentui-ios-renderer`)
 
 ```text
@@ -68,6 +76,7 @@ libopentui.dylib                    # shipping clang/ld64 + codesign ad-hoc dyli
 libopentui-ziglinked.dylib          # diagnostic control; known non-executable on device
 opentui-ios-manifest.txt           # source/toolchain/linker/SHA/size provenance
 clang-link.txt / exported-symbols.txt
+compiler-rt-builtins-audit.txt      # no recursive memory builtins
 nm-exported.txt / nm-exported-ziglinked.txt
 codesign.txt / codesign-verify.txt
 codesign-ziglinked.txt / codesign-verify-ziglinked.txt
@@ -88,7 +97,8 @@ requires `Signature=adhoc`. Host build success alone does not prove device execu
 | ldid-signed renderer, run `41313921358`, SHA `954289152c…` | Renderer call SIGBUSes; `__TEXT` mapped non-executable |
 | Zig-linked + codesign, run `41487998437`, SHA `c2123919…` | Still SIGBUSes; codesign alone does not fix the Zig-linked image |
 | Header flags A/B, run `41491573878` (`5301c35f…` normalized / `761dd065…` original) | Both failed; rewriting flags to `0x100085` did not fix execution |
-| **clang/ld64 + codesign, run `41531609826`, SHA `5a2f016b…`** | **node:ffi load + `imageRetainIccCache()` → `RENDERER_CALL_OK`; real TUI rendered** |
+| clang/ld64 + codesign, run `41531609826`, SHA `5a2f016b…` | Loading / basic drawing worked, but submission hung: `_memset` / `_memcpy` recursively called themselves. Superseded. |
+| **No-builtin compiler-rt, run `41582979506`, SHA `4792df5d…`** | **Packaged normal and long TUI input, local-mock shell tool / reply and `/exit` rc=0; no new crash reports** |
 
 The effective fix is the clang/ld64 final link plus ad-hoc signing under `/var/jb`.
 The earlier `/var/mobile/Library/OpenCode/assets` mirror workaround was incorrect and has
@@ -101,14 +111,40 @@ codesign ad-hoc. These are separate signing requirements.
 
 ## Runtime and remaining limits
 
-The acceptance runtime is `ios-node26-runtime-ffi` from
-[nodejs26-ios run 41450472333](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41450472333):
-Node 26.13.0, 134,677,104 bytes, SHA-256
-`73144efa5002e17b09340e0681274f38a7ed2a2fb5f7dc91572fc637570c74af`.
-It includes the V8 14.6 iOS W^X fixes (0007/0009), wasm allocator fix (0011) and wasm trap-handler
-fix (0013). `node:ffi` is default-on; `--experimental-ffi` is redundant. Always pass
-`--single-threaded`, including to spawned server children (CLI patch 0010).
-The older `--without-ffi` runtime cannot run the real TUI.
+The accepted runtime is `ios-node26-runtime-ffi` from
+[41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128): Node 26.13.0, **134,710,336 bytes**,
+SHA-256 `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`, source `7cd359f377d9d37dfe13d929927cf67274451ec2`.
+It retains V8 14.6 W^X fixes 0007/0009, wasm allocator 0011, platform 0012 and wasm
+trap-handler fix 0013. `node:ffi` is default-on; `--experimental-ffi` is redundant.
+Always pass `--single-threaded`, including to server children (CLI patch 0010).
+
+Actual input acceptance found a separate callback problem in the old runtime run
+`41450472333`: libffi's generated config omitted iOS from the Apple ARM trampoline policy,
+so it returned a callback in malloc `rw-` memory and native edit events SIGBUSed.
+Patch 0014 enables the ARM trampoline table. Run `41541888412` then failed callback
+allocation because iOS code-page remaps lost execute permission (device probe R/R).
+Patch 0015 copies the fixed PC-relative trampoline instructions to anonymous RW memory,
+flushes I-cache and seals code RX, retaining the adjacent metadata page as RW.
+It does not request RWX or MAP_JIT. The accepted packaged runtime passed the qsort/reentrant
+callback probe and renderer text insertion with a JS callback, plus actual TUI input.
+CLI patch 0017 also checks TTY before FFI routing and prints guidance/1 for pipes.
+
+Runtime patch 0016 is also required. The second package candidate reproduced a JIT
+SIGBUS with inherited `--single-threaded`: a wasm background worker was publishing code
+and toggling all JIT pages RW while the main thread executed one. iPhoneOS JobHandles now
+receive zero background workers; `Join()` adds the foreground participant. This retains
+synchronous wasm compilation and prevents that publication race. The accepted installed
+runtime passed 192 HTTP/fetch requests and 24 varied wasm modules amid JIT loops, plus
+normal and long real-TUI sessions without new crash reports.
+
+Node user `worker_threads` are a separate constraint: `--single-threaded` does not
+disable them. The first assistant reply reproduced a `WorkerThread` bootstrap
+SIGBUS in tree-sitter. CLI dependency patch 0002 prevents the iOS tree-sitter
+worker from starting and rejects its initialization. OpenTUI's existing plain-text
+code fallback preserves fenced code content and Markdown layout; native TUI and
+terminal program-status fields remain active. Final packaged acceptance includes
+a local mock reply with a fenced shell code block. Tree-sitter syntax highlighting
+is unavailable; arbitrary user worker isolates remain outside this runtime policy.
 
 - Clipboard remains unsupported; no UIPasteboard backend is implemented.
 - Ghostty VT / embedded interactive terminal panes are unavailable on iOS; shell tools use pipes.

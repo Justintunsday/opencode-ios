@@ -28,7 +28,7 @@ execution: hosted runners cannot execute iOS binaries.
 | Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device. **Interactive REPL: DEVICE-VERIFIED in `v2.2.5-ios.5`** (patch `0013` turn lifecycle + patch `0014` retry budget; the superseded `v2.2.5-ios.4` failed agent turns, fixed in those patches). Full-screen TUI requires the experimental node26/OpenTUI line. |
 | Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the repo-built runtime) | **CLI commands device-verified (preliminary)** for the Node 18 bundle; the repo-built runtime/package remains the documented **alternative** and is **UNVERIFIED ON DEVICE** (no full-TUI expectation: node18 also gets the line REPL when packaged with patch 0012+) |
 | Interactive line-based REPL (patches `0012`–`0014`) | Real target iPhone, maintainer packaged PTY acceptance of `v2.2.5-ios.5` | **DEVICE-VERIFIED:** REPL intro/prompt; turn 1 succeeded on the first attempt (300 ms warm-up); a following turn recovered through the documented 3-attempt retry (`Retrying turn with a fresh server connection…`) and returned `E2E_OK`; `/new` + another turn succeeded first attempt; `/exit` rc=0. Shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt`; non-TTY `opencode < /dev/null` and `opencode mini < /dev/null` give clean guidance + rc=1 (no stack trace). |
-| Experimental node26 Phase D package (real OpenTUI TUI via node:ffi) | CI + real iPhone SE 2 | **INPUT ACCEPTANCE PENDING.** First test.4 candidate rendered but failed callbacks/non-TTY acceptance; runtime 0014/0015 and CLI 0017 fixes are being verified. See the node26 section below. |
+| Experimental node26 Phase D package (real OpenTUI TUI via node:ffi) | Real iPhone SE 2 / iOS 16.1.1, packaged node26test.4 | **DEVICE-VERIFIED:** real PTY rendering, input and `/exit` rc=0; headless matrix/E2E; child `--single-threaded`; no new crash reports. See the node26 section below. |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `b23ed1fc…` (v2.2.5-ios.5), `8a625f75…` (`.3`), `2f96fc18…` (`.2`) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on all three releases (2026-11-01)**; `.5` additionally passed the packaged REPL PTY acceptance and non-TTY guidance; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
 > **Device status:** the current release **`v2.2.5-ios.5`** (`.deb` SHA-256
@@ -48,14 +48,14 @@ execution: hosted runners cannot execute iOS binaries.
 
 Two runtime variants are packaged from the same launcher/layout; the `.deb` ships
 exactly one and `package-report.json` records which (`variant` / `runtime_kind`).
-A third, **experimental node26** artifact is prepared by the Phase D workflow —
-static CI only, clearly labelled, and it never replaces the stable node22 release.
+A third, **experimental node26** artifact is built by the Phase D workflow. Its
+`node26test.4` package is DEVICE-VERIFIED for the real TUI; the stable node22 release is unchanged.
 
 | Variant | Runtime | Status |
 | --- | --- | --- |
 | **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **DEVICE-VERIFIED for the released `.deb`s** (`v2.2.5-ios.5` current, `.3`/`.2` previous; packaged acceptance PASS=14/0 on all + packaged REPL PTY acceptance and non-TTY guidance on `.5`) with the mandatory `--single-threaded` launcher flag. Runtime run `41273024931` (node sha256 `cf707ebe…`, 2-key signed): JIT loop, WebAssembly, HTTPS `fetch` 200, ICU 75/`\p{L}`, `Intl.Segmenter` PASS; CLI matrix and mock-provider agent turn PASS through the packaged launcher. |
 | **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64 (V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim) | **Documented alternative, CI-validated only (UNVERIFIED ON DEVICE).** Final corrected-manifest build: package run `41291038144`, `.deb` 49,498,348 B sha256 `0be49c37…`, node sha256 `74e1c5c3…` (runtime run `41285669688`, minOS 13.0 derived from vtool, clean dylib list), CLI `41288234583` node18 bundle; CI 47/0/1 PASS. The Node 18 CLI bundle earlier ran on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created). |
-| **`node26`** (experimental Phase D) | Node.js 26.13.0 iPhoneOS arm64, node:ffi + clang/ld64 OpenTUI renderer | **EXPERIMENTAL — input acceptance pending.** Mandatory `--single-threaded`; `/var/jb` assets; callback 0014/0015 and non-TTY 0017 fixes. First test.4 candidate rejected. |
+| **`node26`** (experimental Phase D) | Node.js **26.13.0** iPhoneOS arm64, node:ffi + clang/ld64 OpenTUI renderer | **DEVICE-VERIFIED for real TUI in `v2.2.5-ios.5-node26test.4`**; mandatory `--single-threaded`, packaged `/var/jb` assets. Separate experimental Actions artifact; stable node22 release unchanged. |
 
 Node 22 v6 device evidence (maintainer, real iPhone SE 2 / iOS 16.1.1 /
 Dopamine rootless; raw outputs will be recorded below once the packaged
@@ -177,33 +177,150 @@ alternative fallback with sql.js sqlite persistence.
 | Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41291595265> (test-port `variant=node18`; artifact `port-verification` id `13077258415`): 48 PASS / 0 FAIL / 1 SKIP, `ci_status=PASS` |
 | Device status | not device-accepted; no primary acceptance requirement (documented alternative). Earlier interim node18 package run `41285467457` (`.deb` `ed745667…`) is superseded by this corrected-manifest build. |
 
-### Experimental node26 + OpenTUI TUI variant (Phase D — input acceptance pending)
+### Experimental node26 + OpenTUI TUI variant (Phase D — DEVICE-VERIFIED)
 
-The first `v2.2.5-ios.5-node26test.4` candidate **failed device input acceptance**.
-CI 50/0/2 and a rendered screen were insufficient: the first key invoked a native
-editor callback whose trampoline was in malloc `rw-` memory. The isolated renderer
-probe passed without a JS callback (rc=0), but with a callback SIGBUSed (rc=138,
-`node-2026-11-03-065307.ips`). Do not mark that candidate DEVICE-VERIFIED.
+**`v2.2.5-ios.5-node26test.4` is DEVICE-VERIFIED for the real full-screen OpenTUI TUI**
+on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless (2026-11-03 Asia/Hong_Kong).
+It remains a separate experimental Actions artifact. The stable `v2.2.5-ios.5` release
+is unchanged. CI reports retain runner-scoped `UNVERIFIED ON DEVICE` wording; the device
+results below come from SSH command results and actual allocated PTYs.
 
-| Item | Current evidence |
+| Item | Verified value |
 | --- | --- |
-| Rejected package | run `41537717568`; 56,842,448 B; SHA-256 `fda720ef5f6dd394553ebb8ea16a60f3bf114f9db556060fc0180c04bb95513f` |
-| Renderer | run `41531609826`; 4,181,456 B; SHA-256 `5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242`; Xcode clang/ld64 final link from Zig archive, Apple codesign ad-hoc |
-| Correct asset root | `/var/jb/usr/lib/opencode/cli/assets`; the earlier `/var/mobile/Library/OpenCode/assets` mirror was incorrect and is removed |
-| CLI fix | run `41543612532`, all jobs green; `opencode.mjs` 21,398,600 B; SHA-256 `2975b284165aa5804981ebeac0d9670e52c2b0f56dbb334c69d64b5a301e78dd`; patch 0017 checks TTY before FFI routing, host non-TTY default/mini checks pass |
-| Runtime fix | current run `41544904398`, commit `b4a9a474432903826856033e88ef8fb5395f38af`, FFI artifact `ios-node26-runtime-ffi`; callback acceptance pending |
-| Memory policy | V8 W^X 0007/0009 and wasm 0011/0013 retained; libffi patch 0014 enables Apple ARM trampoline tables; 0015 copies fixed instructions to anonymous RW pages, flushes I-cache and seals code RX, with adjacent metadata kept RW; no MAP_JIT or RWX |
-| Intermediate runtime | run `41541888412` passed compile/static checks, but callback allocation failed on device; code-page remaps returned R/R and adding execute failed (rc=2), whereas anonymous copy→RX succeeded (rc=0) |
-| Child flags | actual `serve --service` argv included `--single-threaded --max-old-space-size=1536`; lack of forwarding was not the first-key failure |
-| Remaining acceptance | new callback + editor regression; rebuild with exact new runtime/CLI SHA pins; install; real PTY input and `/exit`; long session; non-TTY guidance/1; headless/E2E; crash comparison; process cleanup |
+| Label / package | `v2.2.5-ios.5-node26test.4`; `opencode` `2.2.5-1`, `iphoneos-arm64` |
+| Package run | [41584835462](https://github.com/Justintunsday/opencode-ios/actions/runs/41584835462); artifact `opencode-ios-rootless-node26` |
+| `.deb` | `OpenCode-iOS-rootless-node26.deb`, **56,849,780 bytes**, SHA-256 **`c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`** |
+| CLI run | [41584007287](https://github.com/Justintunsday/opencode-ios/actions/runs/41584007287); artifact `opencode-cli-node26-ios` |
+| `opencode.mjs` | **21,398,737 bytes**, SHA-256 **`1aab71859d5992e49b54f91fbe574578679dee3970693dc0176f9257869a3283`** |
+| Renderer run | [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506); `libopentui.dylib` **4,181,472 bytes**, SHA-256 **`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868`** |
+| Runtime run | [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128); `ios-node26-runtime-ffi`, Node 26.13.0, **134,710,336 bytes**, SHA-256 **`84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`** |
+| Runtime source | `wasm-trap-handler-fix` commit `7cd359f377d9d37dfe13d929927cf67274451ec2`; W^X 0007/0009, wasm allocator 0011, platform 0012, trap-handler 0013, **libffi callback table 0014 + anonymous RW→RX code 0015**, and **foreground-only V8 JobHandles 0016** |
+| Static package validation | **50 PASS / 0 FAIL / 2 SKIP**; `experimental=true`, `bootstrap_prep=false`, `require_ffi_runtime=true` |
 
-The stable `v2.2.5-ios.5` Node 22 release is unchanged. These are separate experimental
-Actions artifacts with the same dpkg package name/version, so installing one replaces
-the installed variant. Reinstall the stable `.deb` to roll back. CI manifests remain
-runner-scoped `UNVERIFIED ON DEVICE`; only real device commands establish acceptance.
-See [`OPENTUI_IOS.md`](OPENTUI_IOS.md) for the linker/signature history. No real provider
-API key was used; native clipboard, interactive tool PTYs, audio and other devices remain
-unsupported or unverified.
+The CLI embeds the pinned renderer and packaging verifies the same bytes. The renderer is
+linked by Xcode clang/ld64 from the Zig static archive, then Apple codesign ad-hoc signed.
+Its manually built compiler-rt uses `-fno-builtin -fno-stack-check -fno-stack-protector`;
+the final Mach-O audit rejects self-calling `memset` / `memcpy` implementations.
+The Node executable retains its two-key ldid signature. Runtime assets resolve from
+`/var/jb/usr/lib/opencode/cli/assets` through `OPENCODE_NODE_ASSETS_DIR` / `OTUI_ASSET_ROOT`.
+The old `/var/mobile/Library/OpenCode/assets` mirror workaround was incorrect and is removed;
+real `/var/mobile` dylib executable mmap is sandbox-denied.
+
+| Device check | Actual result |
+| --- | --- |
+| Install downloaded `.deb` | `sudo dpkg -i` rc=0; `install ok installed`; installed node / CLI / renderer hashes match the pinned artifacts |
+| Runtime identity | `v26.13.0 ios`, rc=0 |
+| FFI / wasm memory | `node:ffi dlopen=function`; `wasm_memory_bytes=65536`, rc=0 with `--single-threaded` |
+| FFI callbacks | `FFI_CALLBACK_OK` (qsort callback + reentrant getpid), rc=0; renderer editor insert with a registered JS callback rc=0 |
+| WASM / HTTP regression | `WASM_HTTP_STRESS_OK requests=192 modules=24`, rc=0; varied modules plus concurrent localhost fetches and main-thread JIT loops |
+| Normal PTY | `cd /var/mobile/Documents && timeout -s KILL 60 /var/jb/usr/bin/opencode`; xterm-256color 80×24, real full-screen drawing, notification channel, alternate screen and OpenCode title; typed `/exit` → **rc=0**, no forced stream close |
+| Long PTY + mock provider | 132.3 seconds; accepted a prompt, local mock shell-tool turn PASS (marker + mock tool result + E2E_OK rendered); typed `/exit` → **rc=0** |
+| Non-TTY | `opencode < /dev/null` → clean guidance, **rc=1** |
+| Headless commands | `--version`, `models`, `debug paths` → **rc=0** |
+| Headless E2E | `run --standalone --model lmstudio/mock-opencode-1 ...` → **rc=0**, shell-tool marker written; mock observed tool result and returned `E2E_OK` |
+| Child process | Actual `serve --service` argv includes **`--single-threaded --max-old-space-size=1536`** (patch 0010 forwarding) |
+| Crash comparison / cleanup | **No new `.ips` files** relative to the pre-install baseline; all leftover `opencode.mjs` / `runtime/node` processes killed after testing |
+
+PTY text and Enter were sent as separate input events, matching keyboard input. Sending
+`/exit` and CR in one bulk write was interpreted as pasted text by the UI and did not submit.
+
+Selected raw PTY sequences (noncontiguous; ESC/control bytes escaped):
+
+```text
+\x1b]99;i=opentui-notifications:p=?;\x1b\\
+\x1b[?1049h
+\x1b]7501;state=idle:app=opencode\x1b\\
+\x1b]0;OpenCode\x07
+[pty exit=0]
+```
+
+Captured server argv:
+
+```text
+22739 22679 /private/preboot/CB30563943D06BAB7C7DC1B1D006DF52A0066158D29F822D2CD6596B5C2CB27D1DB5486619F43C8021E060A997E5660A/dopamine-ROEKTm/procursus/usr/lib/opencode/runtime/node --single-threaded --no-warnings --max-old-space-size=1536 /var/jb/usr/lib/opencode/cli/opencode.mjs serve --service
+```
+
+Raw evidence is retained in the maintainer workspace at
+`C:\opencode\device\artifacts\node26test4-evidence\` (`install.json`, `preflight.json`,
+`matrix.json`, `wasm-http-stress.json`, `headless-e2e.json`, `pty-basic.raw.bin`, `pty-long.raw.bin`, corresponding
+JSON input/exit/process snapshots and `device-summary.json`). Basic PTY SHA-256
+`b2af499e70d27c536a349044cbb45ad204fc04abbf9982cce51db47179e6f250`; long PTY SHA-256 `e606da05b394afcd2bf0b7e2631d0c26e4c6441c539f500c957a8e0bf76a058a`.
+
+The pre-existing `node-2026-11-03-055430.ips` reports an instruction permission fault in a
+JIT region and four `node-V8Worker` threads. It predates this install and has no recorded argv.
+The later `074108` crash below reproduced a wasm publication race despite inherited flags;
+the old crash is consistent with that mechanism. It did **not** recur in the final packaged
+tests with runtime patch 0016. This is bounded session acceptance, not an indefinite soak test.
+
+The **first test.4 candidate was rejected**, despite CI 50/0/2: package run `41537717568`,
+deb SHA `fda720ef5f6dd394553ebb8ea16a60f3bf114f9db556060fc0180c04bb95513f`, used the old
+runtime run `41450472333`. It rendered but hung on the first input; a minimal renderer edit
+probe isolated the missing callback policy (plain insert rc=0, insert with JS callback
+SIGBUS/rc=138; `node-2026-11-03-065307.ips`, callback PC in `MALLOC_TINY rw-`). Runtime patch
+0014 enables libffi's Apple ARM executable trampoline table for iOS instead of executing
+malloc memory. The intermediate runtime run `41541888412` then reported
+`ffi_closure_alloc failed`: iOS stripped execute permission from shared code remaps.
+Runtime patch 0015 copies the fixed, PC-relative instruction table into anonymous RW pages,
+flushes I-cache and seals the code page RX; closure metadata stays in its separate RW page.
+No MAP_JIT or RWX is requested. The first package also failed non-TTY acceptance;
+CLI patch 0017 now checks TTY before the
+FFI branch and returns guidance/1. These failures and their raw logs are archived under
+`candidate1/`.
+
+The **second candidate was also rejected**: package run `41546616774`, SHA
+`2fb58f05db9596e8fba03a9302d5185911b72d628793fc98cdbea52b4e5a9776`, runtime
+`41544904398` / `52085f12…`. Callback and headless probes passed, but actual `serve --service`
+PID 93785, whose observed argv included `--single-threaded`, crashed in
+`node-2026-11-03-074108.ips`. Main-thread PC was in a JIT page mapped `rw-`; another
+`node-V8Worker` was inside wasm `NativeModule::PublishCode` / `SetJitWriteProtected`.
+V8 clamps wasm job concurrency to at least one, and Node supplied four platform workers
+despite `--single-threaded`. Runtime patch **0016** gives iPhoneOS V8 JobHandles zero
+background workers; `Join()` adds the foreground participant. Synchronous wasm still
+compiles, without racing main-thread execution during process-wide W^X toggles. Other
+targets keep their original worker count. Evidence is archived under `candidate2/`.
+Runtime run `41547842175` was rejected before packaging because its binary was still
+`52085f12…`: an omitted `diff --git` header prevented incremental source tracking. Commit
+`7cd359f` corrected the patch header; the accepted build uses a different checked binary.
+The same second candidate's headless E2E also exited 138 (`node-2026-11-03-075024.ips`);
+its wasm compilation worker was relocating code while the main thread faulted on a RW JIT page.
+The crash-free statement above compares the **final installation** against its own saved
+pre-install baseline, which includes these earlier diagnostic crashes.
+The comparison window is `2026-11-03T05:38:51.140Z` through `2026-11-03T05:44:11.791Z` (UTC):
+**103 baseline / 103 final `.ips` files, zero new names**.
+
+A further candidate, package `41551508863` / `691c24e4…`, passed the installed runtime
+probes, basic PTY exit and headless E2E, but failed full TUI submission. Device
+`spindump` (`submit-spin.txt`) sampled 100% main-thread CPU in renderer `_memset`.
+Disassembly of the old `41531609826` / `5a2f016b…` renderer showed an unconditional
+branch from `0x242994` to its own `_memset` entry `0x242984`; `_memcpy` also called
+itself. Manual compiler-rt compilation lacked Zig's required no-builtin policy.
+Renderer commits `a83f4d4` / `59c2ed0` add the correct flags and a static regression
+audit. This fixes both program-status text and styled-text hangs without filtering
+terminal status fields or disabling JIT optimization.
+
+Rendering the first reply then exposed a separate user-worker race
+(`node-2026-11-03-131931.ips`, faulting `WorkerThread` in `node::worker::Worker::Run`).
+`--single-threaded` does not disable Node `worker_threads`. Dependency patch 0002
+keeps the tree-sitter client from creating an iOS worker and reports unsupported
+initialization; OpenTUI's existing plain-text code fallback renders the content.
+The real native renderer, Markdown layout, tool calls and terminal program-status
+reports remain active. Tree-sitter syntax highlighting is unavailable on this variant.
+
+The local fixture explicitly defines its OpenAI-compatible model. A discovery-only first
+attempt returned `Model unavailable` / rc=1 before asynchronous LM Studio discovery completed;
+it did not crash. That fixture failure is retained under `fixture-model-discovery/`.
+The final headless and TUI turns use the explicit mock model and a dummy local-only key.
+
+Limits: real external provider API keys/auth were not exercised; the provider turn used a
+local mock. Tree-sitter syntax highlighting, clipboard, native interactive tool PTYs /
+Ghostty panes and audio acceptance
+remain unavailable or unverified; other devices/iOS versions are untested. See
+[`KNOWN_LIMITATIONS.md`](KNOWN_LIMITATIONS.md) and [`OPENTUI_IOS.md`](OPENTUI_IOS.md).
+
+Previous `node26test.3` (run `41483801031`, SHA `7bbfbfbd…`) bundled the old ldid renderer and
+the incorrect mobile asset mirror; reinstalling it overwrites the working renderer. It is
+superseded. `node26test.2` additionally lacked the wasm trap-handler fix. Non-FFI
+`node26prep.*` artifacts are pipeline preparation only and cannot run the real TUI.
 
 ### Node 22 pipeline history (superseded, not shippable)
 
@@ -314,7 +431,7 @@ shell or SSH. Full install instructions: [`INSTALL.md`](INSTALL.md).
 | 10 | Liveness/signature | `sudo ldid -S/var/jb/usr/lib/opencode/runtime/entitlements.xml /var/jb/usr/lib/opencode/runtime/node` then `opencode --version` | re-signed runtime still starts (repair path works; shipped entitlements are the verified minimal pair) |
 | 11 | Shell-tool fallback | `sh /var/jb/bin/sh -c 'echo shell-ok'` and (after auth) a CLI shell-tool call | rootless dash runs; CLI-spawned shells resolve through the launcher's `PATH` prepend |
 | 12 | git tooling (optional) | `sudo apt-get install -y git`; `git --version`; a git tool call through the CLI | git installed/works; without it the CLI error is actionable |
-| 13 | Interactive REPL / TUI-unsupported behaviour | under a real TTY: `opencode` (no args) then `/help`, a prompt, `/exit`; `opencode mini`; non-TTY: `opencode </dev/null` | **TTY: line-based REPL starts** (streamed assistant text + tool activity, `/new`, `/exit`, `/help`, Ctrl-C cancels turn, session continuity) — the full-screen TUI is unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`). `opencode mini` aliases the REPL. **Non-TTY: clean guidance, exit 1.** |
+| 13 | Interactive REPL / TUI-unsupported behaviour | under a real TTY: `opencode` (no args) then `/help`, a prompt, `/exit`; `opencode mini`; non-TTY: `opencode </dev/null` | **TTY: line-based REPL starts** (streamed assistant text + tool activity, `/new`, `/exit`, `/help`, Ctrl-C cancels turn, session continuity) — the stable Node 22 full-screen TUI is unavailable (OpenTUI needs Node >= 26.4 + `node:ffi`); experimental Node 26 test.4 runs the verified real TUI. `opencode mini` aliases the REPL. **Non-TTY: clean guidance, exit 1.** |
 | 14 | Agent turn + standalone fix (needs network+auth) | `opencode run "summarise this repository"`; `opencode run --standalone ...` | request completes; the patch-0009 standalone child-server start works |
 | 15 | Inspector/CPU profiling | `opencode --inspect ...` (documented stub) | fails gracefully with the documented stub message, not a crash (node18 inspector is stubbed by patch 0008) |
 | 16 | Uninstall | `sudo dpkg -r opencode` (then `-P`) | package files gone; `~/.config/opencode` and sessions preserved |
@@ -511,7 +628,7 @@ Native runtime binary probes on the real iPhone (same date, ldid re-signed with 
 | **Node 18 `run --standalone` child server** | **FAIL (preliminary):** the standalone command could not start its child server; CLI patch `0009` addresses it; device retest with the final package pending. |
 | **CLI bundle, no-ICU runtime** | **FAIL:** `Intl` was undefined and V8 rejected `/[\p{Mark}\p{Control}...]/gu` with `SyntaxError: Invalid regular expression`. The packaging CI gate rejects `--with-intl=none` artifacts. |
 | **Interactive line REPL on device (patch `0013` CLI, v6 runtime + mock provider; and packaged `v2.2.5-ios.5` with patch `0014`)** | **DEVICE-VERIFIED (packaged `.5`):** REPL intro/prompt; turn 1 first attempt (300 ms warm-up); a following turn recovered via the 3-attempt retry (`Retrying turn with a fresh server connection…`) then `E2E_OK`; `/new` + another turn first attempt; `/exit` rc=0; shell tool wrote `/var/mobile/ocdev-e2e.txt`; non-TTY `opencode`/`opencode mini` give clean guidance + rc=1. An earlier patch-`0013` dev-CLI PTY run (4 prompts, 13 mock chat requests, 4 with `toolResult=true`, `repl5-work` marker) is kept in the record. |
-| **Interactive TUI on device** | **Full-screen TUI is unavailable** — `@opentui/core` 0.8.0's Node binding requires Node >= 26.4 with `--experimental-ffi` (`node:ffi`); the device-verified iPhoneOS runtime is Node 22.9.0 (`bad option: --experimental-ffi` on device). **Line-based REPL (patch `0012`)**: first packaged attempt `v2.2.5-ios.4` FAILED device agent turns (connection-reuse bug; `/help`/`/exit` OK) and is superseded; patch `0013` fixed the turn lifecycle (device-functional evidence above) and patch `0014` hardens retries; `v2.2.5-ios.5` packaged acceptance pending. Non-TTY invocations print guidance + exit 1. Headless CLI remains supported. |
+| **Interactive TUI on device** | **Experimental Node 26 test.4: DEVICE-VERIFIED real OpenTUI TUI**, packaged input, tool/reply turn and `/exit` rc=0; see the node26 section above. **Stable Node 22:** DEVICE-VERIFIED line REPL in `v2.2.5-ios.5`; it lacks `node:ffi` and cannot load the native full-screen renderer. Both variants return non-TTY guidance/1. |
 | **CLI bundle, full-ICU but WASM-disabled runtime** | **FAIL:** parse succeeds, but `ReferenceError: WebAssembly is not defined` from Node's fetch/undici setup. The packaging CI gate now requires WebAssembly and JIT enabled (and rejects `--v8-options=--jitless`). |
 | **v3 JIT runtime (no W^X patch)** | **FAIL on device:** SIGBUS when executing V8-generated code with every entitlement set; packaging gate now requires patch `0004-ios-jit-write-protect.patch` for JIT-enabled runtimes. |
 
