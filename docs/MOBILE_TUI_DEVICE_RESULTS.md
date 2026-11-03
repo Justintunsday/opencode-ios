@@ -2,9 +2,9 @@
 
 2026-11-03，iPhone SE 2 / iOS 16.1.1 / Dopamine rootless，终端为 **EverTerm 1.5-2**
 （`com.torrekie.everterm`，VT100 + OpenGL ES 渲染内核）。
-**DEVICE-VERIFIED：闪烁根因已定位并由用户 A/B 确认修复；新包在真机完成功能复验。**
-稳定 `v2.2.5-ios.5` release 未修改。用户已肉眼确认官方包 `node26test.7` 的闪烁消失；
-本文件区分"用户已确认的 A/B 结论"与"官方包字节级验证"。
+**DEVICE-VERIFIED：闪烁根因已定位，修复先经用户 A/B 确认，后由用户对官方包肉眼确认消失；新包在真机完成功能复验。**
+稳定 `v2.2.5-ios.5` release 未修改。用户已肉眼确认官方包 `node26test.7` 的闪烁消失（2026-11-03）；
+本文件同时记录用户 A/B 结论与官方包的字节级验证。
 
 ## 闪烁根因与修复
 
