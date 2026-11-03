@@ -1,6 +1,7 @@
 # OpenCode with the independent Node.js package
 
-The experimental `v2.2.5-ios.5-node26test.5` packaging line uses two packages:
+The experimental `v2.2.5-ios.5-node26test.5` packaging line is **DEVICE-VERIFIED**
+for CLI and real OpenTUI execution on iPhone SE 2 / iOS 16.1.1. It uses two packages:
 
 | Package | Version | Command / executable |
 | --- | --- | --- |
@@ -34,6 +35,7 @@ worker with a plain-text code fallback. Root/mobile managed services use separat
 ports on the tested device (49374 / 49375); `--standalone` starts a private child.
 
 CI validates both archives, exact runtime/CLI/renderer hashes, package dependencies,
-ownership paths, file modes and links. It does not execute iPhoneOS code. Device
-installation, CLI and real PTY results are recorded in `VERIFICATION.md` after
-the new package pair passes acceptance. Stable `v2.2.5-ios.5` release assets are unchanged.
+ownership paths, file modes and links. It does not execute iPhoneOS code. Exact
+package runs, full checksums, device exits, PTY output and system Jetsam observations
+are in the [accepted device results](NODE26_EXTERNAL_DEVICE_RESULTS.md).
+Stable `v2.2.5-ios.5` release assets are unchanged.

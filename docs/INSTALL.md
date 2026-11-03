@@ -94,7 +94,7 @@ experimental node26 line:
 | --- | --- | --- | --- |
 | `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite, **v6 mprotect-W^X runtime** | **Primary — DEVICE-VERIFIED (packaged, PASS=14/0)** with the mandatory `--single-threaded` launcher flag; CLI matrix + mock-provider agent turn PASS through the packaged launcher. | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
 | `node18` | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 device-proven memory model, bundled sql.js sqlite shim | **Fallback**, CI-validated only (UNVERIFIED ON DEVICE); CLI bundle runs on a community Node 18 runtime | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
-| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 W^X + foreground wasm jobs, **node:ffi + OpenTUI renderer** | **DEVICE-VERIFIED real TUI in experimental node26test.4**; normal/long PTY input and `/exit` rc=0, headless and local-mock E2E accepted. Stable node22 release unchanged. | `OpenCode-iOS-rootless-node26.deb`; exact pins and installation in §2b |
+| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 W^X + foreground wasm jobs, **node:ffi + OpenTUI renderer** | **DEVICE-VERIFIED real TUI in experimental node26test.5**, depending on independent `node26` `26.13.0-1` (command `node`, author `nodejs`); normal/3-turn PTY and headless/tool E2E accepted. Stable node22 release unchanged. | `OpenCode-iOS-rootless-node26.deb`; exact pins and installation in §2b |
 
 Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node`
 prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manifest.json`
@@ -138,49 +138,61 @@ declares the capability profile.
 
 ## 2b. Experimental node26 + OpenTUI variant (DEVICE-VERIFIED real TUI)
 
-`v2.2.5-ios.5-node26test.4` passed packaged real-TUI acceptance on iPhone SE 2 / iOS 16.1.1 /
-Dopamine rootless. It is distributed as a separate Actions artifact; the stable
-`v2.2.5-ios.5` release is unchanged. Installing it replaces the installed `opencode` package
-because both variants use the same package name/version.
-An additional 612.4-second private-server PTY session passed 12 shell/reply
-turns and `/exit` rc=0 with a 512 MiB heap cap; see [`VERIFICATION.md`](VERIFICATION.md).
+`v2.2.5-ios.5-node26test.5` uses independent **`node26` `26.13.0-1`** (command
+**`node`**, author **`nodejs`**) and OpenCode **`2.2.5-2`** with exact dependency
+`node26 (= 26.13.0-1)`. The pair passed device CLI and real-TUI acceptance on iPhone
+SE 2 / iOS 16.1.1 / Dopamine rootless. The OpenCode deb contains no Node executable.
+It replaces the installed `opencode` variant; stable release assets are unchanged.
 
-| Item | Verified value |
+| Item | Accepted value |
 | --- | --- |
-| Label / package | `v2.2.5-ios.5-node26test.4`; `opencode` `2.2.5-1`, `iphoneos-arm64` |
-| Package run | [41584835462](https://github.com/Justintunsday/opencode-ios/actions/runs/41584835462); artifact `opencode-ios-rootless-node26` |
-| `.deb` | `OpenCode-iOS-rootless-node26.deb`, **56,849,780 bytes**, SHA-256 **`c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`** |
-| CLI run | [41584007287](https://github.com/Justintunsday/opencode-ios/actions/runs/41584007287); artifact `opencode-cli-node26-ios` |
-| `opencode.mjs` | **21,398,737 bytes**, SHA-256 **`1aab71859d5992e49b54f91fbe574578679dee3970693dc0176f9257869a3283`** |
-| Renderer run | [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506); `libopentui.dylib` **4,181,472 bytes**, SHA-256 **`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868`** |
-| Runtime run | [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128); `ios-node26-runtime-ffi`, Node 26.13.0, **134,710,336 bytes**, SHA-256 **`84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`** |
-| Runtime source | `wasm-trap-handler-fix` commit `7cd359f377d9d37dfe13d929927cf67274451ec2`; W^X 0007/0009, wasm allocator 0011, platform 0012, trap-handler 0013, **libffi callback table 0014 + anonymous RW→RX code 0015**, and **foreground-only V8 JobHandles 0016** |
-| Static package validation | **50 PASS / 0 FAIL / 2 SKIP**; `experimental=true`, `bootstrap_prep=false`, `require_ffi_runtime=true` |
+| OpenCode label / package | `v2.2.5-ios.5-node26test.5`; `opencode` `2.2.5-2`, `iphoneos-arm64` |
+| OpenCode package run | [41621747546](https://github.com/Justintunsday/opencode-ios/actions/runs/41621747546); artifact `opencode-ios-rootless-node26` contains both debs |
+| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,782,884 bytes**, SHA-256 `7f01f19162e63ab4c9d18e444ac7028ebb601db3bf7ed648e0cfaaada9fb0895` |
+| Independent Node package | `node26` `26.13.0-1`; author `nodejs`; command `node` |
+| Node package run | [41620234785](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41620234785); artifact `node26-rootless` |
+| Node deb | `node26_26.13.0-1_iphoneos-arm64.deb`, **25,893,168 bytes**, SHA-256 `c6cda114912707b5c229178449e0cc0a641fa7165c270a8dd81456196fed9e51` |
+| Dependency / ownership | `opencode` depends on `node26 (= 26.13.0-1)`; no embedded Node executable; legacy runtime paths are relative links |
+| Compiled inputs | Runtime [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128), node SHA `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`; CLI [41584007287](https://github.com/Justintunsday/opencode-ios/actions/runs/41584007287), mjs SHA `1aab71859d5992e49b54f91fbe574578679dee3970693dc0176f9257869a3283`; renderer [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), dylib SHA `4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
+| Static validation | Node deb **23 PASS**; app builder **68 PASS**, native `dpkg-deb` metadata/combined extraction checks and 5 renderer builtin checks; CI does not execute iPhoneOS binaries |
 
-Download the pinned experimental artifact with authenticated GitHub CLI:
+Download the accepted artifact with authenticated GitHub CLI:
 
 ```sh
-gh run download 41584835462 -R Justintunsday/opencode-ios -n opencode-ios-rootless-node26 -D node26test4
+gh run download 41621747546 -R Justintunsday/opencode-ios -n opencode-ios-rootless-node26 -D node26test5
 ```
 
-Transfer the `.deb` to the device, then run in the device shell:
+Transfer both `.deb` files, `SHA256SUMS` and `package-report.json` to the device,
+then run in that directory:
 
 ```sh
-echo 'c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f  OpenCode-iOS-rootless-node26.deb' | sha256sum -c -
-sudo dpkg -i OpenCode-iOS-rootless-node26.deb
-/var/jb/usr/lib/opencode/runtime/node --single-threaded -p "process.version+' '+process.platform"
-# v26.13.0 ios
-/var/jb/usr/lib/opencode/runtime/node --single-threaded --no-warnings -e "console.log(typeof require('node:ffi').dlopen); console.log(new WebAssembly.Memory({initial:1}).buffer.byteLength)"
+sha256sum -c SHA256SUMS
+sudo dpkg -i node26_26.13.0-1_iphoneos-arm64.deb OpenCode-iOS-rootless-node26.deb
+node --version                     # v26.13.0
+node -p 'process.platform'          # ios
+node --no-warnings -e "console.log(typeof require('node:ffi').dlopen); console.log(new WebAssembly.Memory({initial:1}).buffer.byteLength)"
 # function / 65536
-sha256sum /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib
-# 4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868
+dpkg-query -W -f='${Package} ${Version} ${Depends}\n' node26 opencode
 opencode --version
-opencode models
+opencode models --standalone
 opencode debug paths
 cd /var/mobile/Documents
-opencode  # real OpenTUI in NewTerm / SSH PTY; /exit quits
+opencode                           # real OpenTUI; /exit quits
 opencode < /dev/null; echo "rc=$?"  # guidance, rc=1
 ```
+
+Remove the earlier `nodejs26-ios` prototype first if it is installed; it supplied
+the old `node26` command. The new default command is `node`. The standalone runtime
+is installed under `/var/jb/usr/lib/node26/`; OpenCode's old `runtime/node` path is
+a relative compatibility link. npm/npx are not included. Remove dependent OpenCode
+before removing `node26`, or install another OpenCode variant whose dependency permits it.
+
+Acceptance: normal TUI **32.314 seconds / rc=0**, private TUI **3 shell/reply turns
+in 122.328 seconds / rc=0**, CLI **8/0**, strict JSON/tool E2E and standalone Node
+checks passed. CrashReporter had **3 new system Jetsam reports**, with no Node
+termination entries or Node crash reports. Details and memory-pressure limits:
+[`NODE26_EXTERNAL_DEVICE_RESULTS.md`](NODE26_EXTERNAL_DEVICE_RESULTS.md).
+The earlier 612.4-second / 12-turn soak was the embedded test.4 package.
 
 The launcher always passes `--single-threaded` and the CLI forwards it to server children.
 Runtime patch 0016 also keeps wasm publication jobs on the foreground joining thread;
@@ -412,7 +424,7 @@ when checking older packages, including node26test.4 from run 41584835462. Copy 
 runtime `--single-threaded` flags and has an incorrect `/tmp` cleanup fallback on HOME
 creation failure. The revised helper passed on-device Node 26 smoke plus the safe
 missing-HOME failure check; exact script SHA/results are in [`VERIFICATION.md`](VERIFICATION.md).
-It will enter packages built from the updated source; the existing deb/release assets are unchanged.
+It is included and device-tested in test.5 run `41621747546`; earlier deb/release assets are unchanged. In test.5, run `sh /var/jb/usr/share/doc/opencode/device-smoke.sh` directly.
 
 After transferring the revised helper, run:
 

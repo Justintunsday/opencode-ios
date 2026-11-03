@@ -3,10 +3,15 @@
 The renderer from [run 41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506)
 is **DEVICE-VERIFIED for node:ffi loading and execution** on iPhone SE 2 / iOS 16.1.1 /
 Dopamine rootless: installed `node:ffi` editor creation, insertion and JS callbacks returned 0, and
-real OpenTUI rendering was observed. **Packaged node26test.4 is DEVICE-VERIFIED**
-(package run [41584835462](https://github.com/Justintunsday/opencode-ios/actions/runs/41584835462), deb SHA `c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`): normal and long PTYs
-rendered, accepted input and `/exit` returned 0; no new crash reports. Full acceptance is in
-[`VERIFICATION.md`](VERIFICATION.md).
+real OpenTUI rendering was observed. **Packaged node26test.5 is DEVICE-VERIFIED**
+(package run [41621747546](https://github.com/Justintunsday/opencode-ios/actions/runs/41621747546),
+deb SHA `7f01f19162e63ab4c9d18e444ac7028ebb601db3bf7ed648e0cfaaada9fb0895`), depending on independent `node26` `26.13.0-1` (command `node`,
+author `nodejs`). The renderer bytes and `/var/jb/usr/lib/opencode/cli/assets` path
+are unchanged. Normal and 3-turn/122.328-second PTYs rendered, accepted input and
+returned `/exit` rc=0. No Node crash or Node Jetsam victim was observed; three
+system Jetsam reports are documented in
+[`NODE26_EXTERNAL_DEVICE_RESULTS.md`](NODE26_EXTERNAL_DEVICE_RESULTS.md).
+Earlier embedded test.4 acceptance remains in [`VERIFICATION.md`](VERIFICATION.md).
 
 The final dylib must be linked with **Xcode clang/ld64 from the Zig static archive**, then
 signed with **Apple codesign ad-hoc**. The stable `v2.2.5-ios.5` release uses Node 22 and its

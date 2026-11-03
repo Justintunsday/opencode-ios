@@ -76,7 +76,7 @@ def main():
     require(b'OTUI_ASSET_ROOT' in launcher and b'OPENCODE_IOS_RUNTIME_ASSETS' in launcher, 'Rootless renderer asset contract')
     files['var/jb/usr/bin/opencode'] = (launcher,0o755)
     files[APP+'/runtime/dependency.json'] = ((json.dumps(pin,indent=2)+'\n').encode(),0o644)
-    for name in ('INSTALL.md','VERIFICATION.md','KNOWN_LIMITATIONS.md','OPENTUI_IOS.md','OPENCODE_BUILD.md','NODE26_EXTERNAL_RUNTIME.md'):
+    for name in ('INSTALL.md','VERIFICATION.md','KNOWN_LIMITATIONS.md','OPENTUI_IOS.md','OPENCODE_BUILD.md','NODE26_EXTERNAL_RUNTIME.md','NODE26_EXTERNAL_DEVICE_RESULTS.md'):
         files[DOC+'/'+name] = ((ROOT/'docs'/name).read_bytes(),0o644)
     for name in ('LICENSE','NOTICE'):
         files[DOC+'/'+name] = ((ROOT/name).read_bytes(),0o644)

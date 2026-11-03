@@ -5,6 +5,13 @@ jailbroken **iOS 16 / arm64** (iPhone SE 2, Dopamine rootless, ElleKit, NewTerm/
 Everything is built and validated in GitHub Actions; the delivered package is an
 `iphoneos-arm64` Debian package installing `/var/jb/usr/bin/opencode`.
 
+The experimental full-screen TUI package `node26test.5` now depends on independent
+**`node26` `26.13.0-1`**, exposing **`node`**, author **`nodejs`**. OpenCode contains
+no embedded Node executable. Both packages passed device CLI and real-TUI
+acceptance; [install the package pair](docs/NODE26_EXTERNAL_RUNTIME.md) and see the
+[exact device results and memory-pressure observations](docs/NODE26_EXTERNAL_DEVICE_RESULTS.md).
+The stable `v2.2.5-ios.5` release remains unchanged.
+
 > This is an independent port. Upstream OpenCode is MIT-licensed; this repository keeps the
 > original attribution and applies upstream changes as patches ?upstream repositories are never
 > modified.
