@@ -7,8 +7,9 @@
 # Checks (offline): package files, rootless shell/PATH/HOME/TMPDIR/git, runtime
 # capabilities (WebAssembly+JIT+ICU+Intl.Segmenter), CLI --version, informational
 # commands (models/debug paths/session list/sqlite persistence), argument
-# forwarding. Works for BOTH shipped runtime variants (Node 18 primary and
-# Node 22 experimental); the variant is detected from the shipped runtime.
+# forwarding. Supports Node 18 fallback, Node 22 stable and Node 26 experimental;
+# the variant is detected from the shipped runtime. Server commands use a private
+# standalone child so another terminal's background service is left untouched.
 #
 # Model-provider connectivity and real agent turns are not part of this offline
 # test; see docs/INSTALL.md.
@@ -34,25 +35,24 @@ printf 'OpenCode iOS device smoke test\n'
 printf 'kernel: %s\n' "$(uname -a 2>/dev/null || echo unknown)"
 printf 'date:   %s\n\n' "$(date 2>/dev/null || echo unknown)"
 
-# 0. Runtime variant detection (Node 18 = primary fallback runtime, Node 22 =
-#    experimental W^X path). Both variants use the same package layout.
+# 0. Runtime variant detection. Every direct runtime probe keeps the mandatory
+#    single-threaded W^X policy used by the Node 22 and Node 26 launchers.
 RUNTIME_NODE=/var/jb/usr/lib/opencode/runtime/node
+runtime_node() { "$RUNTIME_NODE" --single-threaded --no-warnings "$@"; }
 RUNTIME_MAJOR="unknown"
 if [ -x "$RUNTIME_NODE" ]; then
-    RUNTIME_MAJOR="$("$RUNTIME_NODE" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo unknown)"
-    RUNTIME_FULL="$("$RUNTIME_NODE" -p 'process.versions.node' 2>/dev/null || echo unknown)"
+    RUNTIME_MAJOR="$(runtime_node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo unknown)"
+    RUNTIME_FULL="$(runtime_node -p 'process.versions.node' 2>/dev/null || echo unknown)"
     printf 'runtime variant: Node %s (node_version=%s)\n\n' "$RUNTIME_MAJOR" "$RUNTIME_FULL"
 fi
 
 # Temporary directory for this smoke test: HOME is known-writable on the
 # target device; /tmp is not guaranteed under the rootless jailbreak.
-SMOKE_DIR="${HOME:-/var/jb/var/mobile}/.opencode-ios-smoke.$$"
-if mkdir -p "$SMOKE_DIR" 2>/dev/null; then
-    :
-else
-    SMOKE_DIR="/tmp"
-fi
-cleanup() { rm -rf "$SMOKE_DIR" 2>/dev/null || true; }
+SMOKE_DIR="$(mktemp -d "${HOME:-/var/jb/var/mobile}/.opencode-ios-smoke.XXXXXX" 2>/dev/null)" || {
+    printf 'FAIL cannot create a private smoke-test directory under HOME\n'
+    exit 1
+}
+cleanup() { rm -rf -- "$SMOKE_DIR" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 
 # 1. Package files are where the .deb installs them (rootless layout).
@@ -125,7 +125,7 @@ fi
 #     Intl.Segmenter) plus V8 JIT. The shipped runtime must be full-icu with
 #     WebAssembly+JIT enabled and signed with the device-verified 2-key set.
 if [ -x "$RUNTIME_NODE" ]; then
-    CAPS="$("$RUNTIME_NODE" -e 'process.stdout.write([typeof WebAssembly, process.config.variables.v8_enable_webassembly, typeof fetch, typeof Intl, typeof Intl.Segmenter].join(","))' 2>&1)"
+    CAPS="$(runtime_node -e 'process.stdout.write([typeof WebAssembly, process.config.variables.v8_enable_webassembly, typeof fetch, typeof Intl, typeof Intl.Segmenter].join(","))' 2>&1)"
     case "$CAPS" in
         object,1,function,object,function)
             ok "runtime capabilities: WebAssembly=object, v8_enable_webassembly=1, fetch=function, Intl=object, Intl.Segmenter=function"
@@ -134,7 +134,7 @@ if [ -x "$RUNTIME_NODE" ]; then
             bad "runtime capabilities incomplete (got: $CAPS); WebAssembly+JIT+ICU (incl. Intl.Segmenter) are required by the CLI"
             ;;
     esac
-    if "$RUNTIME_NODE" -e "new WebAssembly.Module(Buffer.from('0061736d01000000','hex'))" >/dev/null 2>&1; then
+    if runtime_node -e "new WebAssembly.Module(Buffer.from('0061736d01000000','hex'))" >/dev/null 2>&1; then
         ok "WebAssembly module compilation works (JIT/executable memory available)"
     else
         bad "WebAssembly module compilation failed (JIT/executable memory unavailable)"
@@ -178,14 +178,14 @@ info_cmd() {
     warn "opencode $label not available in this CLI build/runtime (non-fatal): $(tr '\n' ' ' < "$SMOKE_DIR/$label.out" | cut -c1-200)"
     return 1
 }
-info_cmd "models" opencode models
+info_cmd "models" opencode models --standalone
 info_cmd "debug paths" opencode debug paths
-info_cmd "auth list" opencode auth list
+info_cmd "auth list" opencode auth list --standalone
 
 # 3b. sqlite persistence. Node 18 uses the bundled sql.js WebAssembly shim
 #     (whole-file persistence, no WAL); Node 22 uses node:sqlite. `session list`
 #     must exit 0 and create/persist the database file.
-if opencode session list >"$SMOKE_DIR/session-list.out" 2>&1; then
+if opencode session list --standalone >"$SMOKE_DIR/session-list.out" 2>&1; then
     ok "opencode session list (exit 0; sqlite path works): $(tr '\n' ' ' < "$SMOKE_DIR/session-list.out" | cut -c1-200)"
     DB_DIR="${HOME:-/var/jb/var/mobile}/.local/share/opencode"
     DB_FOUND="$(find "$DB_DIR" -maxdepth 3 -type f -name '*.db' 2>/dev/null | head -n 3 | tr '\n' ' ')"

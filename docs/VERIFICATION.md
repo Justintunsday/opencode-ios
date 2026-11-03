@@ -353,6 +353,69 @@ Evidence: maintainer workspace `node26test4-evidence/soak-summary.json`,
 SHA-256 `ba685cd086ce8b75b3ee2289d64e72143338e7d5e0f1d94a47f4142c5ff7d67e`. This is a bounded multi-turn local-mock test;
 real external providers, other devices and indefinite soak testing remain unaccepted.
 
+#### Additional installed CLI acceptance — 2026-11-03
+
+The unchanged installed node26test.4 CLI passed **15 command checks / 0 failures**
+in an isolated HOME/project with a local dummy-key provider (port 8790), a 512 MiB
+heap cap and private `--standalone` server children. Existing user service PID 71572
+was preserved. Version output was `opencode2-node v2.2.5`.
+
+| CLI case | Actual rc | Result |
+| --- | --- | --- |
+| `version` | `0` | Expected |
+| `help` | `0` | Expected |
+| `models` | `0` | Expected |
+| `paths` | `0` | Expected |
+| `config` | `0` | Expected |
+| `auth` | `0` | Expected |
+| `sessions-empty` | `0` | Expected |
+| `stats` | `0` | Expected |
+| `run-help` | `0` | Expected |
+| `non-tty` | `1` | Expected |
+| `mini-non-tty` | `1` | Expected |
+| `unknown-option` | `1` | Expected |
+| `missing-model` | `1` | Expected |
+| `agent-json` | `0` | Expected |
+| `sessions-persisted` | `0` | Expected |
+
+`models`, `debug config`, `auth list`, `stats --json` and both `session list --format json`
+checks used `--standalone`; `debug paths` resolved the isolated home. Non-TTY bare/mini,
+unknown option and missing model correctly returned 1. The matrix's complete argv/output
+is retained in `cli-matrix.json` and `cli-matrix-results.tsv` in the maintainer evidence.
+
+The `run --standalone --format json --model lmstudio/mock-cli-1 ...` turn emitted
+**6 valid NDJSON events**, including a completed shell tool and final text. The shell
+actually wrote `sum.cjs`, then ran the iPhoneOS Node runtime with `--single-threaded`:
+`CLI_SUM_TEST_OK passed=2 result=5`. A receipt recorded two passed assertions, zero
+failures and result 5. The agent's session ID was present in a later private-server
+session listing (empty before the checks; two sessions afterward, including the
+missing-model attempt). Stats output also parsed as JSON. No real provider key/API
+was exercised.
+
+Crash comparison: **105 → 105 `.ips` files, zero new names**, from
+`2026-11-03T08:31:26.703Z` through `2026-11-03T08:39:16.382Z` UTC. Installed runtime/CLI/renderer
+hashes were unchanged; no test runtime processes remained.
+
+This review also found two defects in the legacy packaged `device-smoke.sh`:
+direct runtime probes omitted `--single-threaded`, and failed HOME directory creation
+fell back to `/tmp`, which its exit cleanup would recursively remove. The revised
+[repository helper](../packaging/rootless/usr/share/doc/opencode/device-smoke.sh)
+now preserves the runtime flags, uses a unique `mktemp` directory, fails safely when
+HOME is unavailable, and uses private server children. The revised script was staged
+separately on the iPhone: normal smoke **PASS / rc=0**; missing-HOME path **rc=1 as
+expected**, with an unrelated sentinel intact. Script SHA-256:
+`77084380d529fa1757d708704b634dd337605991d832cf1284066be2eb718651`.
+
+**The deb from run 41584835462 still contains the old helper.** This source fix has not
+been repackaged into that immutable artifact; use the revised repository copy for
+smoke testing. The tests above executed the installed CLI and the separately staged
+helper, with their scopes recorded independently.
+
+Evidence: `cli-summary.json`, `cli-agent-json.ndjson`, `cli-sessions-before.json`,
+`cli-sessions-after.json`, `cli-test-receipt.json`, `cli-generated-sum.cjs`,
+`cli-smoke-revised.json`, `cli-smoke-no-home.json`, `cli-tests-baseline.json` and
+`cli-final.json`. Agent NDJSON SHA-256 `10ad8006cb772f35c6654349b21a72cb2125574195033726c84e626121327524`.
+
 ### Node 22 pipeline history (superseded, not shippable)
 
 | Build | Outcome |

@@ -406,10 +406,18 @@ rm -rf ~/.config/opencode ~/.local/share/opencode ~/.cache/opencode
 
 ## 10. On-device smoke test (required for device verification)
 
-The package installs a smoke-test script:
+Use the [revised repository smoke helper](../packaging/rootless/usr/share/doc/opencode/device-smoke.sh)
+when checking older packages, including node26test.4 from run 41584835462. Copy it to
+`$HOME/opencode-device-smoke.sh` on the device. The embedded legacy copy omits the required
+runtime `--single-threaded` flags and has an incorrect `/tmp` cleanup fallback on HOME
+creation failure. The revised helper passed on-device Node 26 smoke plus the safe
+missing-HOME failure check; exact script SHA/results are in [`VERIFICATION.md`](VERIFICATION.md).
+It will enter packages built from the updated source; the existing deb/release assets are unchanged.
+
+After transferring the revised helper, run:
 
 ```sh
-sh /var/jb/usr/share/doc/opencode/device-smoke.sh
+sh "$HOME/opencode-device-smoke.sh"
 ```
 
 Success criteria:
@@ -417,7 +425,7 @@ Success criteria:
 | Check | Expected output |
 | --- | --- |
 | runtime present | `OK   native iPhoneOS Node runtime present` |
-| runtime variant | `runtime variant: Node 18 …` (or `Node 22 …`; both layouts identical) |
+| runtime variant | `runtime variant: Node 18 …`, `Node 22 …` or `Node 26 …`; all use the same package layout |
 | CLI bundle present | `OK   CLI bundle present` |
 | launcher executable | `OK   launcher present and executable` |
 | rootless shell | `OK   rootless shell executable: /var/jb/bin/sh` (rootless iOS has no `/bin/sh`) |
