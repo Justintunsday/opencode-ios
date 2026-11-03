@@ -21,6 +21,7 @@ on:
   push:
     paths:
       - 'scripts/build-opentui-ios.sh'
+      - 'scripts/check-macho-builtins.py'
       - 'patches/opentui-ios/**'
       - '.github/workflows/build-opentui-ios.yml'
 

@@ -144,6 +144,12 @@ cmd_fetch() {
   actual="$(git -C "$SRC" rev-parse HEAD)"
   [ "$actual" = "$OPENTUI_COMMIT" ] || die "pinned commit mismatch: expected $OPENTUI_COMMIT, got $actual"
 
+  # checkout -f resets tracked edits but leaves these additions from a cached
+  # application of the port patch. Remove only the two patch-owned files;
+  # vendored dependencies, compiled libraries and Zig caches remain reusable.
+  git -C "$SRC" clean -f -- packages/native/src/miniaudio_shim_ios.m \
+    packages/native/src/opentui_ios_stubs.c
+
   local patch
   for patch in "$PATCHES_DIR"/*.patch; do
     [ -f "$patch" ] || continue
