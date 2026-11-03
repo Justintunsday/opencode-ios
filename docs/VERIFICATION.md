@@ -416,6 +416,26 @@ Evidence: `cli-summary.json`, `cli-agent-json.ndjson`, `cli-sessions-before.json
 `cli-smoke-revised.json`, `cli-smoke-no-home.json`, `cli-tests-baseline.json` and
 `cli-final.json`. Agent NDJSON SHA-256 `10ad8006cb772f35c6654349b21a72cb2125574195033726c84e626121327524`.
 
+#### Normal TUI startup: root/mobile service-port collision — 2026-11-03
+
+A later bare `opencode` launch was reproduced failing **rc=1 before renderer init**:
+`listen EADDRINUSE: address already in use 127.0.0.1:49374`. The pre-existing root
+service owned that port; mobile had a separate service registration under its HOME.
+The same installed binaries worked with a private `--standalone` server.
+
+After verifying port 49375 was free, the mobile service configuration was backed up
+(mode 0600) and its port changed **49374 → 49375**, preserving all other settings and
+the root service. Normal `opencode` then rendered the real 80×24 OpenTUI notification,
+alternate screen and title; `/exit` returned **0 in 42.232 seconds**. The user also
+confirmed the TUI was visible in the phone terminal. Crash files stayed **106/106**.
+The test UI exited; a subsequent user TUI and its mobile service were left running.
+
+This is a per-account configuration fix. Root uses 49374; mobile uses 49375 on the
+tested device. Different HOME/UID services need distinct ports. `opencode --standalone`
+uses a private server when shared managed-service startup is unsuitable. No binary
+or package was replaced. Evidence: `tui-repro-mobile.json/.raw.bin`,
+`tui-user-port-fix.json`, `tui-user-fixed.json/.raw.bin`, `tui-port-fix-summary.json`.
+
 ### Node 22 pipeline history (superseded, not shippable)
 
 | Build | Outcome |
