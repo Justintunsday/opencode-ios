@@ -777,6 +777,9 @@ The renderer stays under `/var/jb`; the earlier mobile asset mirror was incorrec
 The downloaded test.4 deb was installed and its node / CLI / renderer hashes matched.
 An actual 80×24 SSH PTY rendered the OpenTUI notification channel, alternate screen and
 OpenCode title; `/exit` returned 0. A 132.3-second PTY accepted input and exited 0.
+An additional 612.4-second `--standalone` PTY passed 12 shell/reply/code-block turns,
+then `/exit` rc=0, with a 512 MiB heap cap. Its separate crash baseline stayed
+105/105; cleanup targeted only its three recorded UID-501 processes.
 `--version`, `models`, `debug paths` returned 0; non-TTY guidance returned 1. The local-mock
 headless agent used the shell tool, wrote its marker and returned `E2E_OK` / rc=0.
 No new crash report appeared relative to the pre-install baseline; leftover runtimes were killed.

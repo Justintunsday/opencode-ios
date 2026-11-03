@@ -322,6 +322,37 @@ the incorrect mobile asset mirror; reinstalling it overwrites the working render
 superseded. `node26test.2` additionally lacked the wasm trap-handler fix. Non-FFI
 `node26prep.*` artifacts are pipeline preparation only and cannot run the real TUI.
 
+#### Extended 10-minute installed-package session — 2026-11-03
+
+The **same installed package** from run `41584835462` / SHA `c64d99246ab1d1e9245a991217cb60c05f4c0c161ab56a599b182e7a4fbf934f`
+passed an additional **612.4-second** real SSH PTY session (80×24).
+The CLI, runtime and renderer hashes were unchanged. This test used an isolated HOME,
+the local dummy-key provider on port 8789, `opencode --standalone`, and a 512 MiB
+heap cap. The private child was `serve --stdio --port 0`, with inherited
+`--single-threaded --max-old-space-size=512`; the user's pre-existing root service
+was preserved.
+
+| Extended device check | Actual result |
+| --- | --- |
+| Prompt / shell / reply turns | **12/12**: separate keyboard input and Enter; 12 on-device shell markers, 12 provider tool results and 12 rendered `SOAK_OK_01`–`SOAK_OK_12` replies |
+| Fenced code fallback | **12/12** distinct `const check01 = 1;`–`const check12 = 1;` code lines captured from the native TUI stream |
+| Normal exit | Typed `/exit` at 610 seconds, Enter at 612; **rc=0**, no forced channel close |
+| Crash comparison | **105 → 105 `.ips` files; zero new names**, `2026-11-03T08:10:14.164Z`–`2026-11-03T08:20:56.584Z` UTC |
+| Cleanup | Only the three recorded test processes (UID 501, checked start time and argv) were targeted; none remained. The pre-existing root service was still present afterward. |
+
+This later baseline includes two system reports produced after the original acceptance:
+`icloudsubscriptionoptimizerd.cpu_resource-2026-11-03-143553.ips` and
+`JetsamEvent-2026-11-03-143814.ips`. The Jetsam victim was
+`icloudsubscriptionoptimizerd` (`per-process-limit`); it had no Node entries.
+They predate this extended test. The earlier **103/103** result above retains its own
+original time window.
+
+Evidence: maintainer workspace `node26test4-evidence/soak-summary.json`,
+`soak-pty.json`, `soak-pty.raw.bin`, `soak-check.json`, `soak-cleanup.json`,
+`soak-baseline.json` and `soak-after.json`. Raw stream: **181,385 bytes**,
+SHA-256 `ba685cd086ce8b75b3ee2289d64e72143338e7d5e0f1d94a47f4142c5ff7d67e`. This is a bounded multi-turn local-mock test;
+real external providers, other devices and indefinite soak testing remain unaccepted.
+
 ### Node 22 pipeline history (superseded, not shippable)
 
 | Build | Outcome |

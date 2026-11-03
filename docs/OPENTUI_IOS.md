@@ -109,6 +109,12 @@ The Node executable keeps its device-proven **ldid two-key** signature
 (`platform-application`, `com.apple.private.security.no-sandbox`); the renderer uses Apple
 codesign ad-hoc. These are separate signing requirements.
 
+An additional **612.4-second** packaged PTY test passed 12 shell/tool-result
+turns and 12 fenced code blocks using the plain-text fallback. `/exit` returned 0;
+the later crash baseline stayed 105/105. The private-server test used a 512 MiB heap
+cap and preserved the user's existing root service. Exact scope and transcript hash:
+[`VERIFICATION.md`](VERIFICATION.md).
+
 ## Runtime and remaining limits
 
 The accepted runtime is `ios-node26-runtime-ffi` from

@@ -142,6 +142,8 @@ declares the capability profile.
 Dopamine rootless. It is distributed as a separate Actions artifact; the stable
 `v2.2.5-ios.5` release is unchanged. Installing it replaces the installed `opencode` package
 because both variants use the same package name/version.
+An additional 612.4-second private-server PTY session passed 12 shell/reply
+turns and `/exit` rc=0 with a 512 MiB heap cap; see [`VERIFICATION.md`](VERIFICATION.md).
 
 | Item | Verified value |
 | --- | --- |
