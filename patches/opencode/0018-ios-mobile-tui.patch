@@ -4,7 +4,8 @@
 # Design reference: pageton/tui-design-skill ec54092ea3a47fb3aafe3abc3363bc5e911d1a14.
 # Phone viewports keep the same focused composer across resizes, compact the home
 # screen and preserve error/status plugins. iOS defaults to reduced motion,
-# a steady cursor, 20fps/coalesced frames, synchronized output and legacy keys.
+# a steady cursor, 20fps/coalesced frames, no synchronized output (EverTerm 1.5-2
+# flashes the whole screen on every 2026 frame) and legacy keys.
 # Explicit user cursor/animation settings win. Other runtime defaults are preserved.
 # String(platform) comparisons accommodate this port's extra iOS Node platform
 # without weakening upstream TypeScript's Platform union.
@@ -707,10 +708,10 @@ index fe5da51..d2b8c39 100644
      </box>
 diff --git a/packages/tui/src/util/mobile.ts b/packages/tui/src/util/mobile.ts
 new file mode 100644
-index 0000000..780752f
+index 0000000..4e92041
 --- /dev/null
 +++ b/packages/tui/src/util/mobile.ts
-@@ -0,0 +1,27 @@
+@@ -0,0 +1,31 @@
 +import type { CliRendererConfig } from "@opentui/core"
 +
 +export function mobileViewport(width: number, height: number) {
@@ -728,13 +729,17 @@ index 0000000..780752f
 +
 +export function terminalRendererOptions(platform: string = process.platform): CliRendererConfig {
 +  if (platform !== "ios") return { targetFps: 60, useKittyKeyboard: {} }
-+  // NewTerm may not advertise synchronized output. Always envelope complete
-+  // frames, and avoid animation/resize bursts on a phone's terminal compositor.
++  // EverTerm 1.5-2 treats each synchronized-output block as a full-screen
++  // present: wrapping changed frames in ESC[?2026h ... ESC[?2026l makes the
++  // whole screen flash while typing or streaming. Device A/B on the target
++  // iPhone (2026-11-03) showed that dropping the envelope removes the flash
++  // while keeping diffed frame output. Still cap animations and resize bursts
++  // on a phone compositor.
 +  return {
 +    targetFps: 20,
 +    maxFps: 20,
 +    debounceDelay: 80,
-+    synchronizedOutput: "always",
++    synchronizedOutput: "never",
 +    useKittyKeyboard: null,
 +  }
 +}
@@ -822,10 +827,10 @@ index 959bdfa..dc313f1 100644
 -
 diff --git a/packages/tui/test/mobile-terminal.test.ts b/packages/tui/test/mobile-terminal.test.ts
 new file mode 100644
-index 0000000..35947be
+index 0000000..e8d02d6
 --- /dev/null
 +++ b/packages/tui/test/mobile-terminal.test.ts
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,101 @@
 +import { expect, test } from "bun:test"
 +import { CliRenderer, TextRenderable } from "@opentui/core"
 +import { ManualClock } from "@opentui/core/testing"
@@ -857,7 +862,7 @@ index 0000000..35947be
 +  expect(mobileViewport(100, 12).compact).toBe(true)
 +})
 +
-+test("iOS renderer envelopes changed frames, suppresses idle output and restores the terminal", async () => {
++test("iOS renderer updates frames without synchronized output and restores the terminal", async () => {
 +  const writes: Buffer[] = []
 +  const stdout = Object.assign(
 +    new Writable({
@@ -879,16 +884,18 @@ index 0000000..35947be
 +  })
 +  try {
 +    await renderer.setupTerminal()
-+    // A legacy terminal reports no synchronized-update capability.
-+    stdin.emit("data", Buffer.from("\x1b[?2026;0$y"))
 +    const text = new TextRenderable(renderer, { content: "Ready", height: 1 })
 +    renderer.root.add(text)
 +    writes.length = 0
 +    await renderer["loop"]()
 +    await renderer["nativeSession"].idle()
 +    const frame = Buffer.concat(writes).toString()
-+    expect(frame.indexOf("\x1b[?2026h")).toBeLessThan(frame.indexOf("Ready"))
-+    expect(frame).toContain("\x1b[?2026l")
++    // EverTerm 1.5-2 flashes the whole screen for every synchronized-output
++    // block, so the iOS profile must not emit the DECSET 2026 envelope.
++    expect(renderer["synchronizedOutput"]).toBe("never")
++    expect(frame).not.toContain("\x1b[?2026h")
++    expect(frame).not.toContain("\x1b[?2026l")
++    expect(frame).toContain("Ready")
 +    expect(renderer.targetFps).toBe(20)
 +    expect(renderer.maxFps).toBe(20)
 +    // Startup capability replies can invalidate the first paint on macOS.
@@ -913,7 +920,8 @@ index 0000000..35947be
 +    const changed = Buffer.concat(writes).toString()
 +    // A diff emits changed cells, rather than repeating the unchanged "Re".
 +    expect(changed).toContain("29")
-+    expect(changed.match(/\x1b\[\?2026h/g)?.length).toBe(1)
++    expect(changed).not.toContain("\x1b[?2026h")
++    expect(changed).not.toContain("\x1b[?2026l")
 +    expect(changed).not.toContain("\x1b[2J")
 +    expect(changed).not.toContain("\x1b[?1049h")
 +  } finally {
