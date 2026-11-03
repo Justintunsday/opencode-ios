@@ -822,10 +822,10 @@ index 959bdfa..dc313f1 100644
 -
 diff --git a/packages/tui/test/mobile-terminal.test.ts b/packages/tui/test/mobile-terminal.test.ts
 new file mode 100644
-index 0000000..06662f5
+index 0000000..35947be
 --- /dev/null
 +++ b/packages/tui/test/mobile-terminal.test.ts
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,98 @@
 +import { expect, test } from "bun:test"
 +import { CliRenderer, TextRenderable } from "@opentui/core"
 +import { ManualClock } from "@opentui/core/testing"
@@ -891,9 +891,21 @@ index 0000000..06662f5
 +    expect(frame).toContain("\x1b[?2026l")
 +    expect(renderer.targetFps).toBe(20)
 +    expect(renderer.maxFps).toBe(20)
++    // Startup capability replies can invalidate the first paint on macOS.
++    // Observe two genuinely quiet frames before measuring steady-state output.
++    let quiet = 0
++    for (let pass = 0; pass < 10 && quiet < 2; pass++) {
++      writes.length = 0
++      await renderer["loop"]()
++      await renderer["nativeSession"].idle()
++      quiet = Buffer.concat(writes).length === 0 ? quiet + 1 : 0
++    }
++    expect({ quiet, lastOutput: Buffer.concat(writes).toString() }).toMatchObject({ quiet: 2 })
 +    writes.length = 0
-+    await renderer["loop"]()
-+    await renderer["nativeSession"].idle()
++    for (let frame = 0; frame < 3; frame++) {
++      await renderer["loop"]()
++      await renderer["nativeSession"].idle()
++    }
 +    expect(Buffer.concat(writes).length).toBe(0)
 +    for (let index = 0; index < 30; index++) text.content = `Reply ${index}`
 +    await renderer["loop"]()
