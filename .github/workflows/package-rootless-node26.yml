@@ -28,7 +28,7 @@ jobs:
           import json, os
           p = json.load(open('packaging/node26-dependent/pins.json'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              for k in ('node_package_repository', 'node_package_run', 'node_package_artifact', 'cli_run', 'cli_artifact', 'opencode_version', 'experimental_label'):
+              for k in ('node_package_repository', 'node_package_run', 'node_package_artifact', 'node_package_version', 'cli_run', 'cli_artifact', 'opencode_version', 'experimental_label'):
                   print(f'{k}={p[k]}', file=output)
           PY
       - name: Download the independent runtime package
@@ -37,33 +37,39 @@ jobs:
         run: gh run download '${{ steps.pin.outputs.cli_run }}' -R "$GITHUB_REPOSITORY" -n '${{ steps.pin.outputs.cli_artifact }}' -D .artifacts/cli
       - name: Assemble OpenCode with exact node26 dependency
         run: |
+          node_deb=$(find .artifacts/node26 -maxdepth 1 -name 'node26_*_iphoneos-arm64.deb' -print -quit)
+          test -n "$node_deb"
           python3 scripts/package-dependent-node26.py \
-            --node-package .artifacts/node26/node26_26.13.0-1_iphoneos-arm64.deb \
+            --node-package "$node_deb" \
             --cli .artifacts/cli
           python3 scripts/check-macho-builtins.py .artifacts/cli/assets/@opentui/core-ios-arm64/libopentui.dylib
           bash -n packaging/node26-dependent/opencode
           bash -n packaging/rootless/usr/share/doc/opencode/device-smoke.sh
       - name: Validate Debian metadata and combined installed payload
+        env:
+          NODE_PACKAGE_VERSION: ${{ steps.pin.outputs.node_package_version }}
         run: |
           set -euo pipefail
           cd dist/opencode-node26-dependent
           sha256sum -c SHA256SUMS
-          test "$(dpkg-deb -f node26_26.13.0-1_iphoneos-arm64.deb Package)" = node26
-          test "$(dpkg-deb -f node26_26.13.0-1_iphoneos-arm64.deb Author)" = nodejs
+          node_deb=$(find . -maxdepth 1 -name 'node26_*_iphoneos-arm64.deb' -print -quit)
+          test "$(dpkg-deb -f "$node_deb" Package)" = node26
+          test "$(dpkg-deb -f "$node_deb" Author)" = nodejs
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Package)" = opencode
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Version)" = '${{ steps.pin.outputs.opencode_version }}'
-          test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Depends)" = 'firmware (>= 15.0), node26 (= 26.13.0-1)'
+          test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Depends)" = 'firmware (>= 15.0), node26 (= ${{ steps.pin.outputs.node_package_version }})'
           dpkg-deb --info OpenCode-iOS-rootless-node26.deb
           dpkg-deb --contents OpenCode-iOS-rootless-node26.deb
           mkdir extracted
-          dpkg-deb --extract node26_26.13.0-1_iphoneos-arm64.deb extracted
+          dpkg-deb --extract "$node_deb" extracted
           dpkg-deb --extract OpenCode-iOS-rootless-node26.deb extracted
           python3 - <<'PY'
           import hashlib, json, pathlib
           root = pathlib.Path('extracted')
           report = json.load(open('package-report.json'))
           assert report['runtime_embedded'] is False
-          assert report['depends'] == 'node26 (= 26.13.0-1)'
+          import os
+          assert report['depends'] == f"node26 (= {os.environ['NODE_PACKAGE_VERSION']})"
           assert all(c['status'] == 'PASS' for c in report['static_checks'])
           for item in report['files']:
               p = root / item['path']
@@ -88,7 +94,7 @@ jobs:
       - name: Record artifact checksums
         run: |
           {
-            echo 'OpenCode ${{ steps.pin.outputs.experimental_label }}: external node26 (= 26.13.0-1), command node, author nodejs.'
+            echo 'OpenCode ${{ steps.pin.outputs.experimental_label }}: external node26 (= ${{ steps.pin.outputs.node_package_version }}), command node, author nodejs.'
             echo 'CI assembly only. Real iPhone installation, CLI and PTY acceptance run separately.'
             echo 'Stable release v2.2.5-ios.5 is unchanged.'
             echo '```'
