@@ -74,6 +74,7 @@ def main():
     launcher = (ROOT/'packaging/node26-dependent/opencode').read_bytes()
     require(b'$PREFIX/usr/lib/node26/node' in launcher and b'--single-threaded --no-warnings' in launcher, 'External runtime launcher and required flags')
     require(b'OTUI_ASSET_ROOT' in launcher and b'OPENCODE_IOS_RUNTIME_ASSETS' in launcher, 'Rootless renderer asset contract')
+require(b'libios-posix-compat.dylib' in launcher and b'DYLD_INSERT_LIBRARIES' in launcher, 'POSIX compatibility shim injection')
     files['var/jb/usr/bin/opencode'] = (launcher,0o755)
     files[APP+'/runtime/dependency.json'] = ((json.dumps(pin,indent=2)+'\n').encode(),0o644)
     for name in ('INSTALL.md','VERIFICATION.md','KNOWN_LIMITATIONS.md','OPENTUI_IOS.md','OPENCODE_BUILD.md','NODE26_EXTERNAL_RUNTIME.md','NODE26_EXTERNAL_DEVICE_RESULTS.md'):

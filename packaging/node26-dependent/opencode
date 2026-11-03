@@ -6,8 +6,16 @@ NODE="${OPENCODE_IOS_NODE:-$PREFIX/usr/lib/node26/node}"
 CLI="$LIB/cli/opencode.mjs"
 ASSETS="$LIB/cli/assets"
 if [ ! -x "$NODE" ]; then
-    echo 'opencode: install the node26 (26.13.0-1) runtime package first.' >&2
+    echo 'opencode: install the node26 (26.13.0-2) runtime package first.' >&2
     exit 127
+fi
+# Load the runtime's iOS POSIX compatibility shim (unnamed semaphores and the
+# POSIX-shm-backed System V shared-memory emulation). node26 >= 26.13.0-2
+# ships it; older runtimes simply do not have the file and are unaffected.
+COMPAT="$PREFIX/usr/lib/node26/libios-posix-compat.dylib"
+if [ -f "$COMPAT" ]; then
+    DYLD_INSERT_LIBRARIES="$COMPAT${DYLD_INSERT_LIBRARIES:+:$DYLD_INSERT_LIBRARIES}"
+    export DYLD_INSERT_LIBRARIES
 fi
 if [ ! -f "$CLI" ]; then
     echo "opencode: CLI bundle missing: $CLI" >&2

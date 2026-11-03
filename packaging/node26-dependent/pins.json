@@ -1,16 +1,16 @@
 {
   "node_package_repository": "Justintunsday/nodejs26-ios",
-  "node_package_run": "41620234785",
+  "node_package_run": "41648623126",
   "node_package_artifact": "node26-rootless",
-  "node_package_sha256": "c6cda114912707b5c229178449e0cc0a641fa7165c270a8dd81456196fed9e51",
-  "node_package_version": "26.13.0-1",
+  "node_package_sha256": "8e9979639645fb57262653c84dd705a0fab12acf3e8e4e8b9cb5f7ef793f63b9",
+  "node_package_version": "26.13.0-2",
   "node_sha256": "84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9",
   "cli_run": "41641758047",
   "cli_artifact": "opencode-cli-node26-ios",
   "cli_sha256": "8067e4262d3d87f3cc09f55045641995867247fa3e837ed8711e3b77a7ad8305",
   "renderer_run": "41582979506",
   "renderer_sha256": "4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868",
-  "opencode_version": "2.2.5-4",
-  "experimental_label": "v2.2.5-ios.5-node26test.7",
-  "source_date_epoch": 1793711562
+  "opencode_version": "2.2.5-5",
+  "experimental_label": "v2.2.5-ios.5-node26test.8",
+  "source_date_epoch": 1793717000
 }
