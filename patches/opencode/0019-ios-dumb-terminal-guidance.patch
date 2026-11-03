@@ -1,0 +1,51 @@
+# OpenCode iOS: fail gracefully before entering OpenTUI on TERM=dumb.
+# Applies after 0018 to pinned upstream e8238bae9b807b72ecfc75afd3a9fe2e6b07b944.
+# Both interactive frontends print headless commands and rc=1 without opening
+# the renderer or starting a server. Normal NewTerm/xterm TTY paths are unchanged.
+# Device acceptance includes a real TERM=dumb PTY and terminal restoration.
+
+diff --git a/packages/cli/src/commands/handlers/default.ts b/packages/cli/src/commands/handlers/default.ts
+index c6dd239..6257b56 100644
+--- a/packages/cli/src/commands/handlers/default.ts
++++ b/packages/cli/src/commands/handlers/default.ts
+@@ -37,6 +37,10 @@ export default Runtime.handler(Commands, (input) =>
+       yield* Effect.sync(reportInteractiveTTYRequired)
+       return
+     }
++    if (isIOS() && process.env.TERM === "dumb") {
++      yield* Effect.sync(() => reportInteractiveTTYRequired("TERM=dumb does not support the full-screen interface."))
++      return
++    }
+     const iosTuiFFIAvailable = yield* Effect.promise(() => hasNodeFFI())
+     if (isIOS() && !iosTuiFFIAvailable) {
+       // Resolve a fresh connection per turn (a dead/poisoned client from a failed turn must not
+diff --git a/packages/cli/src/commands/handlers/mini.ts b/packages/cli/src/commands/handlers/mini.ts
+index 1385b3d..8ed16b9 100644
+--- a/packages/cli/src/commands/handlers/mini.ts
++++ b/packages/cli/src/commands/handlers/mini.ts
+@@ -24,6 +24,10 @@ export default Runtime.handler(Commands.commands.mini, (input) =>
+       yield* Effect.sync(reportInteractiveTTYRequired)
+       return
+     }
++    if (isIOS() && process.env.TERM === "dumb") {
++      yield* Effect.sync(() => reportInteractiveTTYRequired("TERM=dumb does not support the full-screen interface."))
++      return
++    }
+     const iosTuiFFIAvailable = yield* Effect.promise(() => hasNodeFFI())
+     if (isIOS() && !iosTuiFFIAvailable) {
+       // Fresh connection per turn (see handlers/default.ts).
+diff --git a/packages/cli/src/util/ios.ts b/packages/cli/src/util/ios.ts
+index bc403e5..3de1522 100644
+--- a/packages/cli/src/util/ios.ts
++++ b/packages/cli/src/util/ios.ts
+@@ -49,8 +49,8 @@ export function isInteractiveTTY() {
+ }
+ 
+ // A working renderer still requires interactive stdin and stdout.
+-export function reportInteractiveTTYRequired() {
+-  process.stderr.write(`Interactive mode requires a TTY (stdin and stdout).
++export function reportInteractiveTTYRequired(reason = "Interactive mode requires a TTY (stdin and stdout).") {
++  process.stderr.write(`${reason}
+ For scripts and pipes use the headless CLI:
+   opencode run "your prompt"
+   opencode run --standalone "your prompt"

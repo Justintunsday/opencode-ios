@@ -340,15 +340,13 @@ jobs:
         with:
           bun-version: '1.4.4'
 
-      - name: Cache bun downloads, stock Node runtimes and upstream node_modules
+      - name: Cache bun downloads and stock Node runtimes
         uses: actions/cache@v4
         with:
           path: |
             ~/.bun/install/cache
             dist/node-runtimes
-            upstream-src/opencode/node_modules
-            upstream-src/opencode/packages/cli/node_modules
-          key: opencode-bundle-node26-${{ runner.os }}-${{ hashFiles('UPSTREAM.lock') }}-${{ hashFiles('upstream-src/opencode/bun.lock') }}-${{ env.OPENCODE_OPENTUI_IOS_DYLIB_SHA256 }}
+          key: opencode-bundle-node26-mobile-${{ runner.os }}-${{ hashFiles('UPSTREAM.lock') }}-${{ hashFiles('upstream-src/opencode/bun.lock') }}-${{ env.OPENCODE_OPENTUI_IOS_DYLIB_SHA256 }}
 
       - name: Install upstream dependencies
         run: bash scripts/build-opencode-bundle.sh install
