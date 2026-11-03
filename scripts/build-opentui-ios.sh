@@ -184,7 +184,11 @@ ensure_compiler_rt() {
   local zig_lib compiler_rt_src archive
   zig_lib="$(dirname "$(zig_bin)")/lib"
   compiler_rt_src="$zig_lib/compiler_rt.zig"
-  archive="$BUILD_DIR/compiler_rt/libcompiler_rt-$TARGET.a"
+  # Manual compiler-rt builds need the same no-builtin policy as Zig's own
+  # compiler-rt sub-compilation. Otherwise LLVM turns memset's byte loop into
+  # a tail call to memset itself (device spindump + disassembly: infinite loop).
+  # Keep a new cache name so an older recursive archive can never be reused.
+  archive="$BUILD_DIR/compiler_rt/libcompiler_rt-$TARGET-nobuiltin.a"
   if [ -f "$archive" ]; then
     echo "$archive"
     return 0
@@ -196,6 +200,7 @@ ensure_compiler_rt() {
   # archive path (a log line on stdout made clang++ treat it as an input file).
   log "building Zig compiler-rt static archive for $TARGET" >&2
   "$(zig_bin)" build-lib "$compiler_rt_src" -target "$TARGET" -OReleaseFast -fPIC \
+    -fno-builtin -fno-stack-check -fno-stack-protector \
     -femit-bin="$archive" >"$BUILD_DIR/compiler_rt/build.log" 2>&1 ||
     { sed -n '1,80p' "$BUILD_DIR/compiler_rt/build.log" >&2; die "failed to build Zig compiler-rt archive"; }
   [ -f "$archive" ] || die "compiler-rt archive was not produced: $archive"
@@ -419,6 +424,12 @@ cmd_package() {
   chmod 0644 "$DIST/$DYLIB_NAME"
   echo "linked ok" >>"$DIST/clang-link.txt"
 
+  python3 "$ROOT/scripts/check-macho-builtins.py" "$DIST/$DYLIB_NAME" \
+    >"$DIST/compiler-rt-builtins-audit.txt" || {
+      cat "$DIST/compiler-rt-builtins-audit.txt" >&2
+      die "compiler-rt libc builtin recursion audit failed"
+    }
+
   # Export audit: node:ffi resolves renderer entry points with dlsym on the dlopen'ed dylib, so
   # the symbols must be in the dynamic symbol table (the static archive objects must not hide
   # them). imageRetainIccCache is the symbol from the device crash stack / probe.
@@ -473,6 +484,7 @@ cmd_package() {
     echo "zig_static_lib_size=$size_static"
     echo "zig_static_lib_sha256=$sha_static"
     echo "zig_compiler_rt_sha256=$sha_rt"
+    echo "zig_compiler_rt_flags=-fno-builtin -fno-stack-check -fno-stack-protector"
     echo "zig_linked_dylib=libopentui-ziglinked.dylib"
     echo "zig_linked_dylib_size=$size_ziglinked"
     echo "zig_linked_dylib_sha256=$sha_ziglinked"

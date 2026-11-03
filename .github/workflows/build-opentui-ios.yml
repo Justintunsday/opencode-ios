@@ -61,6 +61,8 @@ jobs:
             dist/opentui-build/opentui
             dist/opentui-build/zig-cache
           key: opentui-ios-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('patches/opentui-ios/**', 'scripts/build-opentui-ios.sh', '.github/workflows/build-opentui-ios.yml') }}
+          restore-keys: |
+            opentui-ios-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build, sign and statically validate iPhoneOS renderer
         run: bash scripts/build-opentui-ios.sh all
