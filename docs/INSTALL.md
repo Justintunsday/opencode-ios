@@ -1,5 +1,14 @@
 # Install OpenCode iOS (rootless) on iPhone SE 2 / iOS 16.1.1
 
+> Mobile TUI candidate **node26test.6 / 2.2.5-3**: CLI [run 41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
+> `opencode.mjs` 21,403,769 bytes, SHA-256 `e4ea6bb07f3890c282b63b6ffd556a8ababf3abaaafe9835b1382c947fce519f`.
+> Patches 0018/0019 add narrow layouts, draft-preserving resize, reduced motion,
+> a 20 FPS iOS renderer profile, synchronized frame output and `TERM=dumb` guidance.
+> Native Node/renderer inputs are unchanged. Host mobile regressions and scoped
+> TypeScript checks pass; installation and phone/NewTerm visual acceptance are pending.
+> The previously verified test.5 evidence below remains historical and does not prove
+> this candidate fixes NewTerm flicker. Stable `v2.2.5-ios.5` is unchanged.
+
 This is the device installation procedure for `OpenCode-iOS-rootless.deb`, an
 `iphoneos-arm64` Debian package that installs upstream **OpenCode v2 CLI** running
 on a native iPhoneOS arm64 **Node.js 22.9.0** runtime, entirely beneath

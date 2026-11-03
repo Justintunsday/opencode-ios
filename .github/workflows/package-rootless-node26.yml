@@ -28,7 +28,7 @@ jobs:
           import json, os
           p = json.load(open('packaging/node26-dependent/pins.json'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              for k in ('node_package_repository', 'node_package_run', 'node_package_artifact', 'cli_run', 'cli_artifact'):
+              for k in ('node_package_repository', 'node_package_run', 'node_package_artifact', 'cli_run', 'cli_artifact', 'opencode_version', 'experimental_label'):
                   print(f'{k}={p[k]}', file=output)
           PY
       - name: Download the independent runtime package
@@ -51,7 +51,7 @@ jobs:
           test "$(dpkg-deb -f node26_26.13.0-1_iphoneos-arm64.deb Package)" = node26
           test "$(dpkg-deb -f node26_26.13.0-1_iphoneos-arm64.deb Author)" = nodejs
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Package)" = opencode
-          test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Version)" = 2.2.5-2
+          test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Version)" = '${{ steps.pin.outputs.opencode_version }}'
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Depends)" = 'firmware (>= 15.0), node26 (= 26.13.0-1)'
           dpkg-deb --info OpenCode-iOS-rootless-node26.deb
           dpkg-deb --contents OpenCode-iOS-rootless-node26.deb
@@ -88,7 +88,7 @@ jobs:
       - name: Record artifact checksums
         run: |
           {
-            echo 'OpenCode experimental test.5: external node26 (= 26.13.0-1), command node, author nodejs.'
+            echo 'OpenCode ${{ steps.pin.outputs.experimental_label }}: external node26 (= 26.13.0-1), command node, author nodejs.'
             echo 'CI assembly only. Real iPhone installation, CLI and PTY acceptance run separately.'
             echo 'Stable release v2.2.5-ios.5 is unchanged.'
             echo '```'

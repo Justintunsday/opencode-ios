@@ -1,5 +1,14 @@
 # Known limitations — OpenCode iOS (rootless, v1)
 
+> Mobile TUI candidate **node26test.6 / 2.2.5-3**: CLI [run 41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
+> `opencode.mjs` 21,403,769 bytes, SHA-256 `e4ea6bb07f3890c282b63b6ffd556a8ababf3abaaafe9835b1382c947fce519f`.
+> Patches 0018/0019 add narrow layouts, draft-preserving resize, reduced motion,
+> a 20 FPS iOS renderer profile, synchronized frame output and `TERM=dumb` guidance.
+> Native Node/renderer inputs are unchanged. Host mobile regressions and scoped
+> TypeScript checks pass; installation and phone/NewTerm visual acceptance are pending.
+> The previously verified test.5 evidence below remains historical and does not prove
+> this candidate fixes NewTerm flicker. Stable `v2.2.5-ios.5` is unchanged.
+
 This list is deliberately honest. Every item is either a **documented fallback**
 implemented in the port or a **known limitation observed on real hardware**.
 "CI-green" does not override any of it. Target device: iPhone SE 2, iOS 16.1.1,
