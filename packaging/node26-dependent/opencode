@@ -1,0 +1,37 @@
+#!/var/jb/bin/sh
+set -e
+PREFIX="${OPENCODE_IOS_PREFIX:-/var/jb}"
+LIB="$PREFIX/usr/lib/opencode"
+NODE="${OPENCODE_IOS_NODE:-$PREFIX/usr/lib/node26/node}"
+CLI="$LIB/cli/opencode.mjs"
+ASSETS="$LIB/cli/assets"
+if [ ! -x "$NODE" ]; then
+    echo 'opencode: install the node26 (26.13.0-1) runtime package first.' >&2
+    exit 127
+fi
+if [ ! -f "$CLI" ]; then
+    echo "opencode: CLI bundle missing: $CLI" >&2
+    exit 127
+fi
+OPENCODE_IOS=1
+OPENCODE_NODE_ASSETS_DIR="${OPENCODE_IOS_RUNTIME_ASSETS:-$ASSETS}"
+OTUI_ASSET_ROOT="$OPENCODE_NODE_ASSETS_DIR"
+PATH="$PREFIX/bin:$PREFIX/usr/bin:$PREFIX/usr/sbin:$PREFIX/sbin:$PATH"
+export OPENCODE_IOS OPENCODE_NODE_ASSETS_DIR OTUI_ASSET_ROOT PATH
+if [ -z "${TMPDIR:-}" ]; then
+    for candidate in "$PREFIX/tmp" "$PREFIX/var/tmp" /tmp; do
+        if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+            TMPDIR="$candidate"
+            export TMPDIR
+            break
+        fi
+    done
+fi
+MAX_OLD_SPACE="${OPENCODE_IOS_MAX_OLD_SPACE_MB:-1536}"
+set -- --single-threaded --no-warnings "--max-old-space-size=$MAX_OLD_SPACE" "$CLI" "$@"
+if [ "${OPENCODE_IOS_JITLESS:-0}" = 1 ]; then set -- --jitless "$@"; fi
+if [ -n "${OPENCODE_IOS_NODE_FLAGS:-}" ]; then
+    # Intentional word splitting for an explicit list of Node/V8 flags.
+    set -- $OPENCODE_IOS_NODE_FLAGS "$@"
+fi
+exec "$NODE" "$@"
