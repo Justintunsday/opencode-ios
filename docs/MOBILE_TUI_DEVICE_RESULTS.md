@@ -3,7 +3,7 @@
 2026-11-03，iPhone SE 2 / iOS 16.1.1 / Dopamine rootless，终端为 **EverTerm 1.5-2**
 （`com.torrekie.everterm`，VT100 + OpenGL ES 渲染内核）。
 **DEVICE-VERIFIED：闪烁根因已定位并由用户 A/B 确认修复；新包在真机完成功能复验。**
-稳定 `v2.2.5-ios.5` release 未修改。官方包 `node26test.7` 安装后用户再次肉眼确认仍在请求中；
+稳定 `v2.2.5-ios.5` release 未修改。用户已肉眼确认官方包 `node26test.7` 的闪烁消失；
 本文件区分"用户已确认的 A/B 结论"与"官方包字节级验证"。
 
 ## 闪烁根因与修复
@@ -83,8 +83,7 @@ macOS CI 的移动布局/输入/配置/原生输出门禁与官方 TUI `typechec
 （6 个失败在旧基线一致），未写成全绿。
 
 真实 provider 的认证、计费/网络行为未使用真实 key 验收；tree-sitter worker、用户 worker_threads、
-剪贴板、交互式工具 PTY 和无限时长稳定性限制继续适用。**官方 `node26test.7` 安装后的用户肉眼复核
-仍在请求中**；修复的 A/B 结论已由用户确认，字节级帧证据已获取。
+剪贴板、交互式工具 PTY 和无限时长稳定性限制继续适用。**用户已肉眼确认官方 `node26test.7` 闪烁消失**（2026-11-03）；修复的 A/B 结论已由用户确认，字节级帧证据已获取。
 
 本轮结果同时写入 [结构化证据](evidence/mobile-tui-20261103-test7.json)；完整 raw PTY、分析 JSON 与
 log 保存在本地 `device/artifacts/mobile-tui-evidence/`（`test7-*`）。

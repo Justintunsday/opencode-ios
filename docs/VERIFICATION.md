@@ -4,7 +4,7 @@
 > Root cause: the TUI wrapped every changed frame in DECSET 2026 synchronized output and the device terminal
 > (**EverTerm 1.5-2**, not NewTerm) presents each synchronized block as a full-screen present. iOS now emits
 > no 2026 envelope (patch 0018); the user A/B confirmed the flash disappears and the new CLI frame stream has
-> 0 sync frames. Official-package visual recheck is requested; see `MOBILE_TUI_DEVICE_RESULTS.md`.
+> 0 sync frames. The user visually confirmed the official node26test.7 package no longer flashes (2026-11-03); see `MOBILE_TUI_DEVICE_RESULTS.md`.
 > CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047),
 > package [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035):
 > installation rc=0, narrow/resize TUI rc=0, 3-turn/121.600-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
@@ -39,7 +39,7 @@ execution: hosted runners cannot execute iOS binaries.
 | Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device. **Interactive REPL: DEVICE-VERIFIED in `v2.2.5-ios.5`** (patch `0013` turn lifecycle + patch `0014` retry budget; the superseded `v2.2.5-ios.4` failed agent turns, fixed in those patches). Full-screen TUI requires the experimental node26/OpenTUI line. |
 | Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the repo-built runtime) | **CLI commands device-verified (preliminary)** for the Node 18 bundle; the repo-built runtime/package remains the documented **alternative** and is **UNVERIFIED ON DEVICE** (no full-TUI expectation: node18 also gets the line REPL when packaged with patch 0012+) |
 | Interactive line-based REPL (patches `0012`–`0014`) | Real target iPhone, maintainer packaged PTY acceptance of `v2.2.5-ios.5` | **DEVICE-VERIFIED:** REPL intro/prompt; turn 1 succeeded on the first attempt (300 ms warm-up); a following turn recovered through the documented 3-attempt retry (`Retrying turn with a fresh server connection…`) and returned `E2E_OK`; `/new` + another turn succeeded first attempt; `/exit` rc=0. Shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt`; non-TTY `opencode < /dev/null` and `opencode mini < /dev/null` give clean guidance + rc=1 (no stack trace). |
-| Experimental node26 with independent runtime (real OpenTUI via node:ffi) | Real iPhone SE 2 / iOS 16.1.1, node26test.7 + `node26` `26.13.0-1` | **DEVICE-VERIFIED mobile functional scope:** narrow/resize TUI and 3-turn/121.600-second TUI exit 0; CLI 8/0, strict JSON/tool E2E, terminal restoration and zero-byte idle windows. Full-screen flash **FIXED and user-A/B-confirmed**: DECSET 2026 was removed from the iOS profile (patch 0018), test.7 frames have 0/0 sync sequences and zero-byte idle windows; official-package visual recheck requested; [exact identities and crash attribution](MOBILE_TUI_DEVICE_RESULTS.md). |
+| Experimental node26 with independent runtime (real OpenTUI via node:ffi) | Real iPhone SE 2 / iOS 16.1.1, node26test.7 + `node26` `26.13.0-1` | **DEVICE-VERIFIED mobile functional scope:** narrow/resize TUI and 3-turn/121.600-second TUI exit 0; CLI 8/0, strict JSON/tool E2E, terminal restoration and zero-byte idle windows. Full-screen flash **FIXED and user-A/B-confirmed**: DECSET 2026 was removed from the iOS profile (patch 0018), test.7 frames have 0/0 sync sequences and zero-byte idle windows; user visually confirmed the official package no longer flashes; [exact identities and crash attribution](MOBILE_TUI_DEVICE_RESULTS.md). |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `b23ed1fc…` (v2.2.5-ios.5), `8a625f75…` (`.3`), `2f96fc18…` (`.2`) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on all three releases (2026-11-01)**; `.5` additionally passed the packaged REPL PTY acceptance and non-TTY guidance; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
 > **Device status:** the current release **`v2.2.5-ios.5`** (`.deb` SHA-256
@@ -197,7 +197,7 @@ Node and renderer as test.5. Installation rc=0; 40×12/resize/Unicode draft and 
 3-turn/121.600-second TUI exit 0 with terminal restoration; CLI 8/0, headless tool JSON E2E.
 The previous test.6 stream carried 12/12 (resize) and 164/164 (three-turn) DECSET 2026 pairs;
 test.7 emits 0/0 and three zero-byte idle windows. The user A/B confirmed the 2026 envelope caused
-the EverTerm 1.5-2 whole-screen flash (the official-package visual recheck is requested).
+the EverTerm 1.5-2 whole-screen flash (the user visually confirmed the official package (2026-11-03)).
 See [current identities and evidence](MOBILE_TUI_DEVICE_RESULTS.md); later System V probes
 produced SIGSYS records and are separately attributed there.
 

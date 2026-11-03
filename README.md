@@ -15,7 +15,7 @@ OpenCode 精确依赖它，不再内嵌另一份 Node。稳定版 `v2.2.5-ios.5`
 | OpenCode | `2.2.5-4` / `node26test.7`，[run 41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035) |
 | 设备 | iPhone SE 2、iOS 16.1.1、Dopamine rootless |
 | 实测 | CLI 8/0；窄屏缩放与 Unicode 草稿；121.600 秒真实 PTY 三轮工具会话、终端恢复与 `/exit` 返回 0；帧流 DECSET 2026 计数 0/0，空闲窗口 0 B |
-| 整屏闪烁修复 | 设备终端为 **EverTerm 1.5-2**；用户 A/B 确认旧版每个 2026 同步帧都会整屏闪。iOS 现不发送 2026 包络，功能 DEVICE-VERIFIED；官方包肉眼复核已请求 |
+| 整屏闪烁修复 | 设备终端为 **EverTerm 1.5-2**；用户 A/B 确认旧版每个 2026 同步帧都会整屏闪。iOS 现不发送 2026 包络，功能 DEVICE-VERIFIED；官方包已由用户肉眼确认闪烁消失 |
 
 完整 SHA-256、退出码、原始 PTY 摘录和系统 Jetsam 记录见
 [移动 TUI 验收](docs/MOBILE_TUI_DEVICE_RESULTS.md) 与 [独立运行时验收](docs/NODE26_EXTERNAL_DEVICE_RESULTS.md)。CI 负责构建与静态检查，
@@ -84,7 +84,7 @@ iOS 渲染策略限制为 20 帧/秒并合并更新，且**不再发送 DECSET 2
 设备实际终端是 **EverTerm 1.5-2**（不是 NewTerm）：它把每个同步输出块当作一次全屏 present，
 所以旧版每个变化帧都会整屏闪一下。用户 A/B 已确认去掉 2026 包络后闪烁消失；
 新版帧流中 2026 begin/end 为 **0/0**，空闲窗口仍为零输出，
-官方 `node26test.7` 安装后的最终肉眼复核已请求。
+官方 `node26test.7` 已由用户肉眼确认闪烁消失（2026-11-03）。
 默认关闭界面动画，使用不闪烁的线形光标；显式设置的动画与光标偏好仍会保留。
 扩展键盘协议为可选能力，iOS 使用基础按键路径。
 

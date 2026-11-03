@@ -42,38 +42,145 @@
     },
     "fix": "packages/tui/src/util/mobile.ts terminalRendererOptions() now sets synchronizedOutput: \"never\" for iOS (patch 0018). Native renderer and Node runtime unchanged.",
     "byte_level_verification": {
-      "resize_test": {"label": "test7-resize", "rc": 0, "elapsed_ms": 36555, "sync_begin": 0, "sync_end": 0, "clear_screen": 0, "alternate_begin": 1, "alternate_end": 1, "tty_restored": true},
-      "three_turn_test": {"label": "test7-long", "rc": 0, "elapsed_ms": 121600, "sync_begin": 0, "sync_end": 0, "clear_screen": 0, "alternate_begin": 1, "alternate_end": 1, "tty_restored": true},
-      "idle_test": {"label": "test7-idle-graceful", "rc": 0, "elapsed_ms": 42309, "quiet_windows": [[15000, 25000, 0], [25000, 35000, 0], [35000, 40000, 0]], "sync_begin": 0, "sync_end": 0, "tty_restored": true}
+      "resize_test": {
+        "label": "test7-resize",
+        "rc": 0,
+        "elapsed_ms": 36555,
+        "sync_begin": 0,
+        "sync_end": 0,
+        "clear_screen": 0,
+        "alternate_begin": 1,
+        "alternate_end": 1,
+        "tty_restored": true
+      },
+      "three_turn_test": {
+        "label": "test7-long",
+        "rc": 0,
+        "elapsed_ms": 121600,
+        "sync_begin": 0,
+        "sync_end": 0,
+        "clear_screen": 0,
+        "alternate_begin": 1,
+        "alternate_end": 1,
+        "tty_restored": true
+      },
+      "idle_test": {
+        "label": "test7-idle-graceful",
+        "rc": 0,
+        "elapsed_ms": 42309,
+        "quiet_windows": [
+          [
+            15000,
+            25000,
+            0
+          ],
+          [
+            25000,
+            35000,
+            0
+          ],
+          [
+            35000,
+            40000,
+            0
+          ]
+        ],
+        "sync_begin": 0,
+        "sync_end": 0,
+        "tty_restored": true
+      }
     },
     "previous_build_reference": {
       "label": "v2.2.5-ios.5-node26test.6",
-      "sync_begin_end_resize": [12, 12],
-      "sync_begin_end_three_turn": [164, 164]
+      "sync_begin_end_resize": [
+        12,
+        12
+      ],
+      "sync_begin_end_three_turn": [
+        164,
+        164
+      ]
+    },
+    "official_package_visual_confirmation": {
+      "confirmed": true,
+      "at": "2026-11-03T21:40:00+08:00",
+      "scope": "official node26test.7 package installed on the device (opencode 2.2.5-4), EverTerm 1.5-2, single-word user reply \"确认\"",
+      "result": "Full-screen flash no longer observed on typing or model output updates."
     }
   },
   "functional_acceptance": {
-    "cli_matrix": {"pass": 8, "fail": 0, "commands": ["--version", "--help", "debug paths", "debug config", "models", "auth list", "session list", "non-TTY"]},
-    "non_tty": {"rc": 1, "guidance": true, "stack_trace": false},
-    "term_dumb_pty": {"rc": 1, "alternate_screen": false, "tui_initialization": false},
-    "headless_e2e": {"rc": 0, "json_events": 6, "tool_markers": 5, "event_types": ["step_start", "tool_use", "step_finish", "step_start", "text", "step_finish"]},
-    "tui_flags": {"notifications": true, "app_opencode": true, "alternate_screen": true, "title": true, "tui_unavailable": false, "line_repl": false}
+    "cli_matrix": {
+      "pass": 8,
+      "fail": 0,
+      "commands": [
+        "--version",
+        "--help",
+        "debug paths",
+        "debug config",
+        "models",
+        "auth list",
+        "session list",
+        "non-TTY"
+      ]
+    },
+    "non_tty": {
+      "rc": 1,
+      "guidance": true,
+      "stack_trace": false
+    },
+    "term_dumb_pty": {
+      "rc": 1,
+      "alternate_screen": false,
+      "tui_initialization": false
+    },
+    "headless_e2e": {
+      "rc": 0,
+      "json_events": 6,
+      "tool_markers": 5,
+      "event_types": [
+        "step_start",
+        "tool_use",
+        "step_finish",
+        "step_start",
+        "text",
+        "step_finish"
+      ]
+    },
+    "tui_flags": {
+      "notifications": true,
+      "app_opencode": true,
+      "alternate_screen": true,
+      "title": true,
+      "tui_unavailable": false,
+      "line_repl": false
+    }
   },
   "crash_reports": {
     "node_reports_total": 2,
     "new_during_test7": 0,
     "existing": [
-      {"file": "node-2026-11-03-202540.ips", "cause": "System V shmget SIGSYS probe from earlier POSIX capability test"},
-      {"file": "node-2026-11-03-202743.ips", "cause": "System V shmget SIGSYS probe from earlier POSIX capability test"}
+      {
+        "file": "node-2026-11-03-202540.ips",
+        "cause": "System V shmget SIGSYS probe from earlier POSIX capability test"
+      },
+      {
+        "file": "node-2026-11-03-202743.ips",
+        "cause": "System V shmget SIGSYS probe from earlier POSIX capability test"
+      }
     ]
   },
   "cleanup": {
     "owned_mock_processes": 0,
-    "user_processes_preserved": ["EverTerm 75988", "TUI 83186/ttys000", "TUI 57044/ttys002", "service 7533", "service 71572"],
+    "user_processes_preserved": [
+      "EverTerm 75988",
+      "TUI 83186/ttys000",
+      "TUI 57044/ttys002",
+      "service 7533",
+      "service 71572"
+    ],
     "dpkg_verify": "not re-run for opencode after install; dpkg install rc=0"
   },
   "limits": [
-    "User visual confirmation of the official node26test.7 package is requested; the A/B was run with a byte-identical CLI bundle except the one config value.",
     "EverTerm 1.5-2 is closed-source; the DECSET 2026 handling is inferred from the user A/B and the device byte stream, not from terminal source.",
     "Real provider credentials, clipboard, interactive tool PTYs, worker_threads and indefinite-soak testing remain out of scope.",
     "The stable v2.2.5-ios.5 release is unchanged; this is the experimental node26 line."

@@ -4,7 +4,7 @@
 > Root cause: the TUI wrapped every changed frame in DECSET 2026 synchronized output and the device terminal
 > (**EverTerm 1.5-2**, not NewTerm) presents each synchronized block as a full-screen present. iOS now emits
 > no 2026 envelope (patch 0018); the user A/B confirmed the flash disappears and the new CLI frame stream has
-> 0 sync frames. Official-package visual recheck is requested; see `MOBILE_TUI_DEVICE_RESULTS.md`.
+> 0 sync frames. The user visually confirmed the official node26test.7 package no longer flashes (2026-11-03); see `MOBILE_TUI_DEVICE_RESULTS.md`.
 > CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047),
 > package [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035):
 > installation rc=0, narrow/resize TUI rc=0, 3-turn/121.600-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
