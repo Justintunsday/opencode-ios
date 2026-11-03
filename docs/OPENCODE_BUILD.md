@@ -1,10 +1,14 @@
 # OpenCode CLI bundle for the iPhoneOS Node.js runtime
 
-> **node26test.6 / 2.2.5-3 — DEVICE-VERIFIED for mobile SSH PTY functionality.**
-> CLI [41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
-> package [41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889):
-> installation rc=0, narrow/resize TUI rc=0, 3-turn/121.533-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
-> NewTerm visual flicker confirmation is **PENDING**; SSH idle output was zero.
+> **node26test.7 / 2.2.5-4 — DEVICE-VERIFIED for mobile SSH PTY functionality; the full-screen flash was fixed.**
+> Root cause: the TUI wrapped every changed frame in DECSET 2026 synchronized output and the device terminal
+> (**EverTerm 1.5-2**, not NewTerm) presents each synchronized block as a full-screen present. iOS now emits
+> no 2026 envelope (patch 0018); the user A/B confirmed the flash disappears and the new CLI frame stream has
+> 0 sync frames. Official-package visual recheck is requested; see `MOBILE_TUI_DEVICE_RESULTS.md`.
+> CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047),
+> package [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035):
+> installation rc=0, narrow/resize TUI rc=0, 3-turn/121.600-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
+
 > [Exact identities, raw output and limits](MOBILE_TUI_DEVICE_RESULTS.md). Stable `v2.2.5-ios.5` is unchanged.
 
 Status: **CI build and host smoke verified; stable Node 22 release and experimental
@@ -730,14 +734,14 @@ and CLI patch 0016 runs the real TUI when
 
 | Item | Accepted value |
 | --- | --- |
-| OpenCode label / package | `v2.2.5-ios.5-node26test.6`; `opencode` `2.2.5-3`, `iphoneos-arm64` |
-| OpenCode package run | [41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889); artifact `opencode-ios-rootless-node26` contains both debs |
-| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,787,620 bytes**, SHA-256 `7c2ca0c2c40d278969887356928ff374c36ef101deabe4dd3e59fd710f5e68b7` |
+| OpenCode label / package | `v2.2.5-ios.5-node26test.7`; `opencode` `2.2.5-4`, `iphoneos-arm64` |
+| OpenCode package run | [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035); artifact `opencode-ios-rootless-node26` contains both debs |
+| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,788,196 bytes**, SHA-256 `16f6e6dd71e7de236eb6e5bca8a4bc534c914e0f0933f8be64746970dc5019d9` |
 | Independent Node package | `node26` `26.13.0-1`; author `nodejs`; command `node` |
 | Node package run | [41620234785](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41620234785); artifact `node26-rootless` |
 | Node deb | `node26_26.13.0-1_iphoneos-arm64.deb`, **25,893,168 bytes**, SHA-256 `c6cda114912707b5c229178449e0cc0a641fa7165c270a8dd81456196fed9e51` |
 | Dependency / ownership | `opencode` depends on `node26 (= 26.13.0-1)`; no embedded Node executable; legacy runtime paths are relative links |
-| Compiled inputs | Runtime [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128), node SHA `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`; CLI [41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793), mjs SHA `e4ea6bb07f3890c282b63b6ffd556a8ababf3abaaafe9835b1382c947fce519f`; renderer [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), dylib SHA `4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
+| Compiled inputs | Runtime [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128), node SHA `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`; CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047), mjs SHA `8067e4262d3d87f3cc09f55045641995867247fa3e837ed8711e3b77a7ad8305`; renderer [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), dylib SHA `4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
 | Static validation | Node deb **23 PASS**; app builder **68 PASS**, native `dpkg-deb` metadata/combined extraction checks and 5 renderer builtin checks; CI does not execute iPhoneOS binaries |
 
 ### Build and artifact policy
@@ -763,7 +767,7 @@ The explicit `package-rootless-node26.yml` dispatch reads reviewed
 [`pins.json`](../packaging/node26-dependent/pins.json): independent runtime deb
 run `41620234785` / SHA above and the accepted CLI/renderer identities. It runs on
 Ubuntu 24.04 and uses `scripts/package-dependent-node26.py` to build OpenCode
-`2.2.5-3` with `Depends: node26 (= 26.13.0-1)`. It copies the accepted Node deb
+`2.2.5-4` with `Depends: node26 (= 26.13.0-1)`. It copies the accepted Node deb
 alongside the app artifact, validates both with native `dpkg-deb`, resolves all
 compatibility links after combined extraction and audits the signed renderer bytes.
 No native runtime rebuild or stable release publication occurs. CI remains
@@ -830,8 +834,10 @@ audio and other devices/iOS versions remain outside this acceptance. See
 
 ### Mobile CLI gate and dispatch
 
-Patch 0018 adds adaptive layouts, draft-preserving resize, reduced-motion defaults,
-steady cursor and the iOS 20 FPS / synchronized-frame profile. Patch 0019 rejects
+Patch 0018 adds adaptive layouts, draft-preserving resize, reduced-motion defaults, steady cursor
+and the iOS 20 FPS profile. It deliberately disables the DECSET 2026 synchronized-output envelope:
+the device terminal EverTerm 1.5-2 presents every synchronized block as a full-screen present, so
+the old envelope made each changed frame flash the whole screen (user A/B confirmed). Patch 0019 rejects
 `TERM=dumb` before renderer/server setup. Dispatch `build-opencode.yml` with
 `variant=node26` to skip Node 22/18 jobs; default `all` keeps the full build matrix.
 The Node 26 job runs official TUI TypeScript checks and targeted native UI/input/config

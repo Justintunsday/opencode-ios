@@ -1,10 +1,14 @@
 # Verification matrix — OpenCode iOS (rootless)
 
-> **node26test.6 / 2.2.5-3 — DEVICE-VERIFIED for mobile SSH PTY functionality.**
-> CLI [41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
-> package [41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889):
-> installation rc=0, narrow/resize TUI rc=0, 3-turn/121.533-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
-> NewTerm visual flicker confirmation is **PENDING**; SSH idle output was zero.
+> **node26test.7 / 2.2.5-4 — DEVICE-VERIFIED for mobile SSH PTY functionality; the full-screen flash was fixed.**
+> Root cause: the TUI wrapped every changed frame in DECSET 2026 synchronized output and the device terminal
+> (**EverTerm 1.5-2**, not NewTerm) presents each synchronized block as a full-screen present. iOS now emits
+> no 2026 envelope (patch 0018); the user A/B confirmed the flash disappears and the new CLI frame stream has
+> 0 sync frames. Official-package visual recheck is requested; see `MOBILE_TUI_DEVICE_RESULTS.md`.
+> CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047),
+> package [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035):
+> installation rc=0, narrow/resize TUI rc=0, 3-turn/121.600-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
+
 > [Exact identities, raw output and limits](MOBILE_TUI_DEVICE_RESULTS.md). Stable `v2.2.5-ios.5` is unchanged.
 
 This document distinguishes **what CI actually proves** from what is **device
@@ -35,7 +39,7 @@ execution: hosted runners cannot execute iOS binaries.
 | Node 22 v6 CLI commands (incl. server-spawning commands after patch `0010`; interactive line-based REPL after patch `0012`) | Real target iPhone, maintainer-executed through the packaged launcher | **DEVICE-VERIFIED:** `--version`, `--help`, `debug paths`, `debug config`, `models`, `auth list`, `session list` all rc=0; mock-provider agent turn rc=0 with the shell tool executing on device. **Interactive REPL: DEVICE-VERIFIED in `v2.2.5-ios.5`** (patch `0013` turn lifecycle + patch `0014` retry budget; the superseded `v2.2.5-ios.4` failed agent turns, fixed in those patches). Full-screen TUI requires the experimental node26/OpenTUI line. |
 | Native Node 18 runtime execution with the packaged CLI bundle | Real target iPhone, maintainer-executed probe on a **device-proven community Node 18.20.4 runtime** (not the repo-built runtime) | **CLI commands device-verified (preliminary)** for the Node 18 bundle; the repo-built runtime/package remains the documented **alternative** and is **UNVERIFIED ON DEVICE** (no full-TUI expectation: node18 also gets the line REPL when packaged with patch 0012+) |
 | Interactive line-based REPL (patches `0012`–`0014`) | Real target iPhone, maintainer packaged PTY acceptance of `v2.2.5-ios.5` | **DEVICE-VERIFIED:** REPL intro/prompt; turn 1 succeeded on the first attempt (300 ms warm-up); a following turn recovered through the documented 3-attempt retry (`Retrying turn with a fresh server connection…`) and returned `E2E_OK`; `/new` + another turn succeeded first attempt; `/exit` rc=0. Shell tool executed on-device and wrote `/var/mobile/ocdev-e2e.txt`; non-TTY `opencode < /dev/null` and `opencode mini < /dev/null` give clean guidance + rc=1 (no stack trace). |
-| Experimental node26 with independent runtime (real OpenTUI via node:ffi) | Real iPhone SE 2 / iOS 16.1.1, node26test.6 + `node26` `26.13.0-1` | **DEVICE-VERIFIED mobile functional scope:** narrow/resize TUI and 3-turn/121.533-second TUI exit 0; CLI 8/0, strict JSON/tool E2E, terminal restoration and zero-byte idle windows. NewTerm visual flicker confirmation PENDING; [exact identities and crash attribution](MOBILE_TUI_DEVICE_RESULTS.md). |
+| Experimental node26 with independent runtime (real OpenTUI via node:ffi) | Real iPhone SE 2 / iOS 16.1.1, node26test.7 + `node26` `26.13.0-1` | **DEVICE-VERIFIED mobile functional scope:** narrow/resize TUI and 3-turn/121.600-second TUI exit 0; CLI 8/0, strict JSON/tool E2E, terminal restoration and zero-byte idle windows. Full-screen flash **FIXED and user-A/B-confirmed**: DECSET 2026 was removed from the iOS profile (patch 0018), test.7 frames have 0/0 sync sequences and zero-byte idle windows; official-package visual recheck requested; [exact identities and crash attribution](MOBILE_TUI_DEVICE_RESULTS.md). |
 | Actual packaged CLI execution on iPhone SE 2 / iOS 16.1.1 / Dopamine rootless | Real device, released `.deb` sha256 `b23ed1fc…` (v2.2.5-ios.5), `8a625f75…` (`.3`), `2f96fc18…` (`.2`) | **DEVICE-VERIFIED — packaged acceptance PASS=14 FAIL=0 on all three releases (2026-11-01)**; `.5` additionally passed the packaged REPL PTY acceptance and non-TTY guidance; see [`DEVICE_TEST_RESULTS.md`](DEVICE_TEST_RESULTS.md) for raw logs |
 
 > **Device status:** the current release **`v2.2.5-ios.5`** (`.deb` SHA-256
@@ -55,7 +59,7 @@ execution: hosted runners cannot execute iOS binaries.
 
 Two runtime variants are packaged from the same launcher/layout; the `.deb` ships
 exactly one and `package-report.json` records which (`variant` / `runtime_kind`).
-The **experimental node26** workflow now builds `node26test.6` with an exact
+The **experimental node26** workflow now builds `node26test.7` with an exact
 dependency on independent `node26` `26.13.0-1`, instead of embedding Node. It is
 DEVICE-VERIFIED for the real TUI; the stable node22 release is unchanged. The
 embedded test.4 acceptance remains a historical record below.
@@ -64,7 +68,7 @@ embedded test.4 acceptance remains a historical record below.
 | --- | --- | --- |
 | **`node22`** (primary) | Node.js **22.9.0** iPhoneOS arm64, v6 **mprotect RW⇄RX W^X** model, full-ICU, built-in sqlite | **DEVICE-VERIFIED for the released `.deb`s** (`v2.2.5-ios.5` current, `.3`/`.2` previous; packaged acceptance PASS=14/0 on all + packaged REPL PTY acceptance and non-TTY guidance on `.5`) with the mandatory `--single-threaded` launcher flag. Runtime run `41273024931` (node sha256 `cf707ebe…`, 2-key signed): JIT loop, WebAssembly, HTTPS `fetch` 200, ICU 75/`\p{L}`, `Intl.Segmenter` PASS; CLI matrix and mock-provider agent turn PASS through the packaged launcher. |
 | **`node18`** (fallback) | Node.js **18.20.4** iPhoneOS arm64 (V8 10.2 memory model, full-ICU, bundled sql.js sqlite shim) | **Documented alternative, CI-validated only (UNVERIFIED ON DEVICE).** Final corrected-manifest build: package run `41291038144`, `.deb` 49,498,348 B sha256 `0be49c37…`, node sha256 `74e1c5c3…` (runtime run `41285669688`, minOS 13.0 derived from vtool, clean dylib list), CLI `41288234583` node18 bundle; CI 47/0/1 PASS. The Node 18 CLI bundle earlier ran on the target iPhone with a community Node 18.20.4 runtime (`--version`, `debug paths`, `debug config`, `models`, `session list` rc=0; sql.js sqlite database created). |
-| **`node26`** (experimental Phase D) | Node.js **26.13.0** iPhoneOS arm64, node:ffi + clang/ld64 OpenTUI renderer | **DEVICE-VERIFIED in `v2.2.5-ios.5-node26test.6`** with external `node26 (= 26.13.0-1)`; command `node`, author `nodejs`, mandatory `--single-threaded` and `/var/jb` renderer assets. Separate experimental Actions artifact; stable node22 release unchanged. |
+| **`node26`** (experimental Phase D) | Node.js **26.13.0** iPhoneOS arm64, node:ffi + clang/ld64 OpenTUI renderer | **DEVICE-VERIFIED in `v2.2.5-ios.5-node26test.7`** with external `node26 (= 26.13.0-1)`; command `node`, author `nodejs`, mandatory `--single-threaded` and `/var/jb` renderer assets. Separate experimental Actions artifact; stable node22 release unchanged. |
 
 Node 22 v6 device evidence (maintainer, real iPhone SE 2 / iOS 16.1.1 /
 Dopamine rootless; raw outputs will be recorded below once the packaged
@@ -186,12 +190,14 @@ alternative fallback with sql.js sqlite persistence.
 | Verification workflow | <https://github.com/Justintunsday/opencode-ios/actions/runs/41291595265> (test-port `variant=node18`; artifact `port-verification` id `13077258415`): 48 PASS / 0 FAIL / 1 SKIP, `ci_status=PASS` |
 | Device status | not device-accepted; no primary acceptance requirement (documented alternative). Earlier interim node18 package run `41285467457` (`.deb` `ed745667…`) is superseded by this corrected-manifest build. |
 
-### Mobile node26test.6 (DEVICE-VERIFIED functional scope)
+### Mobile node26test.7 (DEVICE-VERIFIED functional scope)
 
-OpenCode `2.2.5-3`, package run `41632847889`, CLI run `41631591793`, same independent
+OpenCode `2.2.5-4`, package run `41642851035`, CLI run `41641758047`, same independent
 Node and renderer as test.5. Installation rc=0; 40×12/resize/Unicode draft and 40×18
-3-turn/121.533-second TUI exit 0 with terminal restoration; CLI 8/0, headless tool JSON E2E.
-NewTerm flicker observation remains pending; four idle windows emitted zero bytes.
+3-turn/121.600-second TUI exit 0 with terminal restoration; CLI 8/0, headless tool JSON E2E.
+The previous test.6 stream carried 12/12 (resize) and 164/164 (three-turn) DECSET 2026 pairs;
+test.7 emits 0/0 and three zero-byte idle windows. The user A/B confirmed the 2026 envelope caused
+the EverTerm 1.5-2 whole-screen flash (the official-package visual recheck is requested).
 See [current identities and evidence](MOBILE_TUI_DEVICE_RESULTS.md); later System V probes
 produced SIGSYS records and are separately attributed there.
 
