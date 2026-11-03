@@ -1,12 +1,12 @@
 # OpenCode CLI bundle for the iPhoneOS Node.js runtime
 
-> **node26test.7 / 2.2.5-4 — DEVICE-VERIFIED for mobile SSH PTY functionality; the full-screen flash was fixed.**
+> **node26test.8 / 2.2.5-5 — DEVICE-VERIFIED for mobile SSH PTY functionality; the full-screen flash was fixed.**
 > Root cause: the TUI wrapped every changed frame in DECSET 2026 synchronized output and the device terminal
 > (**EverTerm 1.5-2**, not NewTerm) presents each synchronized block as a full-screen present. iOS now emits
 > no 2026 envelope (patch 0018); the user A/B confirmed the flash disappears and the new CLI frame stream has
-> 0 sync frames. The user visually confirmed the official node26test.7 package no longer flashes (2026-11-03); see `MOBILE_TUI_DEVICE_RESULTS.md`.
+> 0 sync frames. The user visually confirmed the official node26test.8 package no longer flashes (2026-11-03); see `MOBILE_TUI_DEVICE_RESULTS.md`.
 > CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047),
-> package [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035):
+> package [41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712):
 > installation rc=0, narrow/resize TUI rc=0, 3-turn/121.600-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
 
 > [Exact identities, raw output and limits](MOBILE_TUI_DEVICE_RESULTS.md). Stable `v2.2.5-ios.5` is unchanged.
@@ -23,7 +23,7 @@ Since Phase D the workflow also builds a **Node 26.13.0 real-TUI variant**
 (`opencode-cli-node26-ios`) that ships the prebuilt OpenTUI iPhoneOS renderer
 (`libopentui.dylib`) so `opencode` can start the real TUI through `node:ffi` instead of the
 iOS line REPL. It is conditional and does not change the default Node 22 artifact; see §14.
-Its packaged real TUI is **DEVICE-VERIFIED in node26test.5**, using external `node26 (= 26.13.0-1)`; it remains experimental and
+Its packaged real TUI is **DEVICE-VERIFIED in node26test.5**, using external `node26 (= 26.13.0-2)`; it remains experimental and
 does not modify the stable release. See §14 for the pinned build chain.
 
 ## 1. What the workload produces
@@ -734,13 +734,13 @@ and CLI patch 0016 runs the real TUI when
 
 | Item | Accepted value |
 | --- | --- |
-| OpenCode label / package | `v2.2.5-ios.5-node26test.7`; `opencode` `2.2.5-4`, `iphoneos-arm64` |
-| OpenCode package run | [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035); artifact `opencode-ios-rootless-node26` contains both debs |
-| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,788,196 bytes**, SHA-256 `16f6e6dd71e7de236eb6e5bca8a4bc534c914e0f0933f8be64746970dc5019d9` |
-| Independent Node package | `node26` `26.13.0-1`; author `nodejs`; command `node` |
-| Node package run | [41620234785](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41620234785); artifact `node26-rootless` |
-| Node deb | `node26_26.13.0-1_iphoneos-arm64.deb`, **25,893,168 bytes**, SHA-256 `c6cda114912707b5c229178449e0cc0a641fa7165c270a8dd81456196fed9e51` |
-| Dependency / ownership | `opencode` depends on `node26 (= 26.13.0-1)`; no embedded Node executable; legacy runtime paths are relative links |
+| OpenCode label / package | `v2.2.5-ios.5-node26test.8`; `opencode` `2.2.5-5`, `iphoneos-arm64` |
+| OpenCode package run | [41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712); artifact `opencode-ios-rootless-node26` contains both debs |
+| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,789,984 bytes**, SHA-256 `42b0d6b28b9a201897db7fae6cd5317bd180acd556f1e9afe7c1590483de948c` |
+| Independent Node package | `node26` `26.13.0-2`; author `nodejs`; command `node` |
+| Node package run | [41648623126](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41648623126); artifact `node26-rootless` |
+| Node deb | `node26_26.13.0-2_iphoneos-arm64.deb`, **25,899,420 bytes**, SHA-256 `8e9979639645fb57262653c84dd705a0fab12acf3e8e4e8b9cb5f7ef793f63b9` |
+| Dependency / ownership | `opencode` depends on `node26 (= 26.13.0-2)`; no embedded Node executable; legacy runtime paths are relative links |
 | Compiled inputs | Runtime [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128), node SHA `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`; CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047), mjs SHA `8067e4262d3d87f3cc09f55045641995867247fa3e837ed8711e3b77a7ad8305`; renderer [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), dylib SHA `4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
 | Static validation | Node deb **23 PASS**; app builder **68 PASS**, native `dpkg-deb` metadata/combined extraction checks and 5 renderer builtin checks; CI does not execute iPhoneOS binaries |
 
@@ -765,9 +765,9 @@ Node smoke **26.13.0** and informational smoke **24.22.2**. Stages are `fetch`, 
 
 The explicit `package-rootless-node26.yml` dispatch reads reviewed
 [`pins.json`](../packaging/node26-dependent/pins.json): independent runtime deb
-run `41620234785` / SHA above and the accepted CLI/renderer identities. It runs on
+run `41648623126` / SHA above and the accepted CLI/renderer identities. It runs on
 Ubuntu 24.04 and uses `scripts/package-dependent-node26.py` to build OpenCode
-`2.2.5-4` with `Depends: node26 (= 26.13.0-1)`. It copies the accepted Node deb
+`2.2.5-5` with `Depends: node26 (= 26.13.0-2)`. It copies the accepted Node deb
 alongside the app artifact, validates both with native `dpkg-deb`, resolves all
 compatibility links after combined extraction and audits the signed renderer bytes.
 No native runtime rebuild or stable release publication occurs. CI remains

@@ -1,25 +1,25 @@
 # OpenTUI iPhoneOS renderer
 
-> **node26test.7 / 2.2.5-4 — DEVICE-VERIFIED for mobile SSH PTY functionality; the full-screen flash was fixed.**
+> **node26test.8 / 2.2.5-5 — DEVICE-VERIFIED for mobile SSH PTY functionality; the full-screen flash was fixed.**
 > Root cause: the TUI wrapped every changed frame in DECSET 2026 synchronized output and the device terminal
 > (**EverTerm 1.5-2**, not NewTerm) presents each synchronized block as a full-screen present. iOS now emits
 > no 2026 envelope (patch 0018); the user A/B confirmed the flash disappears and the new CLI frame stream has
-> 0 sync frames. The user visually confirmed the official node26test.7 package no longer flashes (2026-11-03); see `MOBILE_TUI_DEVICE_RESULTS.md`.
+> 0 sync frames. The user visually confirmed the official node26test.8 package no longer flashes (2026-11-03); see `MOBILE_TUI_DEVICE_RESULTS.md`.
 > CLI [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047),
-> package [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035):
+> package [41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712):
 > installation rc=0, narrow/resize TUI rc=0, 3-turn/121.600-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
 
 > [Exact identities, raw output and limits](MOBILE_TUI_DEVICE_RESULTS.md). Stable `v2.2.5-ios.5` is unchanged.
 
 The renderer from [run 41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506)
 is DEVICE-VERIFIED for native loading/execution. Its exact signed bytes are retained in
-mobile node26test.7, package run 41642851035. Narrow/resize and 3-turn TUI acceptance
+mobile node26test.8, package run 41649519712. Narrow/resize and 3-turn TUI acceptance
 both exit 0 using the independent node26 runtime and the `/var/jb` asset root.
 The mobile profile uses 20 FPS, **no DECSET 2026 synchronized-output envelope**, reduced motion and
 a steady cursor. The old build had balanced 2026 envelopes (12/12 resize, 164/164 three-turn), but
 the device terminal is EverTerm 1.5-2, which turns each synchronized block into a full-screen
 present and flashed the whole screen on every update. The user A/B confirmed the trigger, and
-test.7 emits 0/0 sync sequences, no repeated full-screen clear and zero output in measured idle
+test.7/test.8 (same CLI) emit 0/0 sync sequences, no repeated full-screen clear and zero output in measured idle
 windows. The user visually confirmed the official package no longer flashes (2026-11-03).
 See [mobile results](MOBILE_TUI_DEVICE_RESULTS.md) and the historical
 [test.5 acceptance](NODE26_EXTERNAL_DEVICE_RESULTS.md).

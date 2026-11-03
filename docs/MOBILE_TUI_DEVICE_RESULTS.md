@@ -1,10 +1,15 @@
-# 移动 TUI 真机复验：node26test.7（整屏闪烁修复）
+# 移动 TUI 真机复验：node26test.7 / node26test.8（整屏闪烁修复）
 
 2026-11-03，iPhone SE 2 / iOS 16.1.1 / Dopamine rootless，终端为 **EverTerm 1.5-2**
 （`com.torrekie.everterm`，VT100 + OpenGL ES 渲染内核）。
 **DEVICE-VERIFIED：闪烁根因已定位，修复先经用户 A/B 确认，后由用户对官方包肉眼确认消失；新包在真机完成功能复验。**
 稳定 `v2.2.5-ios.5` release 未修改。用户已肉眼确认官方包 `node26test.7` 的闪烁消失（2026-11-03）；
 本文件同时记录用户 A/B 结论与官方包的字节级验证。
+
+当前实验包升级为 **`node26test.8` / OpenCode `2.2.5-5`**：CLI 与 renderer 字节不变（仍是本文件验证的
+`8067e426…` / `4792df5d…`），运行时升级为 **`node26` `26.13.0-2`** 并新增 POSIX 兼容 dylib。
+整屏闪烁修复随同一 CLI 保留；test.8 已安装并完成 TUI 渲染冒烟（OpenTUI alternate screen、
+`opentui-notifications`、`app=opencode`），POSIX 设备矩阵 21 PASS / 0 UNSUPPORTED。
 
 ## 闪烁根因与修复
 
@@ -28,14 +33,15 @@ A/B 方法：在设备上保留同一份 CLI bundle，只把 `synchronizedOutput
 | 工件 | run / 大小 / SHA-256 |
 | --- | --- |
 | CLI | [41641758047](https://github.com/Justintunsday/opencode-ios/actions/runs/41641758047)，21,403,768 B；`8067e4262d3d87f3cc09f55045641995867247fa3e837ed8711e3b77a7ad8305` |
-| OpenCode deb | [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035)，`opencode` `2.2.5-4` / `node26test.7`，30,788,196 B；`16f6e6dd71e7de236eb6e5bca8a4bc534c914e0f0933f8be64746970dc5019d9` |
+| OpenCode deb（test.7 闪烁验收） | [41642851035](https://github.com/Justintunsday/opencode-ios/actions/runs/41642851035)，`opencode` `2.2.5-4` / `node26test.7`，30,788,196 B；`16f6e6dd71e7de236eb6e5bca8a4bc534c914e0f0933f8be64746970dc5019d9` |
+| OpenCode deb（当前 test.8） | [41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712)，`opencode` `2.2.5-5` / `node26test.8`，30,789,984 B；`42b0d6b28b9a201897db7fae6cd5317bd180acd556f1e9afe7c1590483de948c` |
 | 签名 renderer | [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506)，4,181,472 B；`4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
 | 独立 Node deb | [41620234785](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41620234785)，25,893,168 B；`c6cda114912707b5c229178449e0cc0a641fa7165c270a8dd81456196fed9e51` |
 | Node 可执行文件 | [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128)，134,710,336 B；`84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9` |
 
 CLI 源提交 `a5c9bf0`（补丁 0018 更新），打包源提交 `f8911d9`；19 个 CLI 补丁、2 个依赖补丁。
 deb 静态门禁 **68 PASS**；安装后逐字节验证 `opencode.mjs` 与 renderer 的 SHA 与 pin 一致，
-安装包内配置为 `synchronizedOutput:"never"`。OpenCode 精确依赖 `node26 (= 26.13.0-1)`，不内嵌 Node。
+安装包内配置为 `synchronizedOutput:"never"`。OpenCode 精确依赖 `node26 (= 26.13.0-2)`（test.8），不内嵌 Node；test.8 的运行时还注入 POSIX 兼容 dylib。
 
 ## 真机执行（node26test.7）
 
