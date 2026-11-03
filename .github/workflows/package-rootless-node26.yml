@@ -11,7 +11,7 @@ name: Package experimental node26 rootless .deb (Phase D)
 #     variant with the iOS OpenTUI resolver; artifact name is an input so the
 #     workflow can stay ready until opencode-engineer publishes it),
 #   * `opentui-ios-renderer` (opencode-ios build-opentui-ios.yml; libopentui.dylib
-#     Mach-O iPhoneOS arm64, 2-key ldid-signed, installed under
+#     Mach-O iPhoneOS arm64, clang/ld64-linked + Apple codesign ad-hoc, installed under
 #     /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/).
 #
 # It is static-only CI: the real TUI/FFI path is NOT device-verified here. The
@@ -23,9 +23,10 @@ on:
   workflow_dispatch:
     inputs:
       node26_runtime_run_id:
-        description: "Pin the nodejs26-ios build-runtime.yml run id (default: latest successful run with ios-node26-runtime)"
+        description: "Pin the nodejs26-ios build-runtime.yml run id (default: 41549633128, callbacks + foreground wasm jobs)"
         required: false
         type: string
+        default: "41549633128"
       node26_runtime_workflow:
         description: "nodejs26-ios workflow file that produces the runtime artifact"
         required: false
@@ -35,46 +36,47 @@ on:
         description: "nodejs26-ios runtime artifact name: ios-node26-runtime (Phase A+B, non-FFI) or ios-node26-runtime-ffi (Phase C FFI-enabled; required for the real TUI)"
         required: false
         type: string
-        default: ios-node26-runtime
+        default: ios-node26-runtime-ffi
       node26_cli_run_id:
-        description: "Pin the opencode-ios build-opencode.yml run id that has the node26 CLI artifact (default: latest successful run with it)"
+        description: "Pin the opencode-ios build-opencode.yml run id that has the node26 CLI artifact (default: pinned 41543612532)"
         required: false
         type: string
+        default: "41543612532"
       node26_cli_artifact:
         description: "node26 CLI bundle artifact name (task-4)"
         required: false
         type: string
         default: opencode-cli-node26-ios
       opentui_run_id:
-        description: "Pin the opentui-ios-renderer run id (default: the device-verified renderer run 41313921358)"
+        description: "Pin the opentui-ios-renderer run id (default: clang/ld64 + codesign run 41531609826)"
         required: false
         type: string
-        default: "41313921358"
+        default: "41531609826"
       expected_node_sha256:
         description: "Required ios-node26-runtime node sha256 (from that run's SHA256SUMS); empty = record whatever the pinned artifact contains"
         required: false
         type: string
-        default: ""
+        default: "84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9"
       expected_cli_sha256:
         description: "Required opencode.mjs sha256 of the pinned node26 CLI bundle (from that run's SHA256SUMS); empty = record whatever the artifact contains"
         required: false
         type: string
-        default: ""
+        default: "2975b284165aa5804981ebeac0d9670e52c2b0f56dbb334c69d64b5a301e78dd"
       expected_opentui_sha256:
         description: "Required libopentui.dylib sha256"
         required: false
         type: string
-        default: "954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638"
+        default: "5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242"
       require_ffi_runtime:
         description: "true = strict: fail unless the runtime is the FFI-enabled Phase C build; false = pipeline-prep: allow the Phase A/B non-FFI runtime, clearly labelled (the real TUI will NOT load)"
         required: false
         type: boolean
-        default: false
+        default: true
       experimental_label:
         description: "Experimental build label recorded in the report/control"
         required: false
         type: string
-        default: "v2.2.5-ios.5-node26test.1"
+        default: "v2.2.5-ios.5-node26test.4"
   # Intentionally no push trigger: the experimental artifact is produced only by
   # explicit dispatch, so ordinary commits can never publish a node26 package.
 
@@ -112,7 +114,7 @@ jobs:
         env:
           NODE26_RUNTIME_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_run_id || '' }}
           NODE26_RUNTIME_WORKFLOW: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_workflow || 'build-runtime.yml' }}
-          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime' }}
+          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime-ffi' }}
           ARTIFACT_REPO: Justintunsday/nodejs26-ios
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
@@ -139,14 +141,14 @@ jobs:
       - name: Resolve opentui-ios-renderer run
         id: resolve-opentui
         env:
-          OPENTUI_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.opentui_run_id || '41313921358' }}
+          OPENTUI_RUN_ID_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.opentui_run_id || '41531609826' }}
         run: |
           bash packaging/verify/resolve-artifact-run.sh \
             build-opentui-ios.yml opentui-ios-renderer opentui "$OPENTUI_RUN_ID_INPUT"
 
       - name: Download node26 runtime artifact (external repo)
         env:
-          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime' }}
+          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime-ffi' }}
         run: |
           set -euo pipefail
           mkdir -p .artifacts/runtime
@@ -195,10 +197,10 @@ jobs:
           OPENTUI_RUN_ID: ${{ steps.resolve-opentui.outputs.opentui_run_id }}
           OPENTUI_RUN_URL: ${{ steps.resolve-opentui.outputs.opentui_run_url }}
           EXPECTED_NODE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_node_sha256 || '' }}
-          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime' }}
-          EXPECTED_OPENTUI_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_opentui_sha256 || '954289152cc182780a81ca7199ceeec04ee8c55c334f85710e0ff192f4817638' }}
-          EXPERIMENTAL_LABEL: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.1' }}
-          REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
+          NODE26_RUNTIME_ARTIFACT: ${{ github.event_name == 'workflow_dispatch' && inputs.node26_runtime_artifact || 'ios-node26-runtime-ffi' }}
+          EXPECTED_OPENTUI_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_opentui_sha256 || '5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242' }}
+          EXPERIMENTAL_LABEL: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.4' }}
+          REQUIRE_FFI_RUNTIME: ${{ inputs.require_ffi_runtime && 'true' || 'false' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -257,7 +259,7 @@ jobs:
 
       - name: Write node26 install/device-test instructions
         env:
-          REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
+          REQUIRE_FFI_RUNTIME: ${{ inputs.require_ffi_runtime && 'true' || 'false' }}
         run: |
           set -euo pipefail
           {
@@ -268,7 +270,7 @@ jobs:
             echo "release remains OpenCode-iOS-rootless.deb v2.2.5-ios.5 (node22 v6)."
             echo ""
             echo "Artifact: OpenCode-iOS-rootless-node26.deb (variant=node26,"
-            echo "release label: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.1' }})."
+            echo "release label: ${{ github.event_name == 'workflow_dispatch' && inputs.experimental_label || 'v2.2.5-ios.5-node26test.4' }})."
             echo "Runtime: Node 26.13 iPhoneOS arm64 (nodejs26-ios run"
             echo "  ${{ steps.resolve-runtime.outputs.node26_runtime_run_id }},"
             echo "  ${{ steps.resolve-runtime.outputs.node26_runtime_run_url }})."
@@ -284,9 +286,9 @@ jobs:
             echo "     codesign -dv /var/jb/usr/lib/opencode/cli/assets/@opentui/core-ios-arm64/libopentui.dylib"
             echo "       # expect 'Signature=adhoc' (Apple codesign, NOT ldid: ldid-signed"
             echo "       # dylibs are mapped non-executable by dyld on iOS 16.1.1)"
-            echo "     /var/jb/usr/lib/opencode/runtime/node -p process.versions.node   # 26.13.0"
-            echo "     /var/jb/usr/lib/opencode/runtime/node -p process.platform        # ios"
-            echo "     /var/jb/usr/lib/opencode/runtime/node -e \"console.log(typeof require('node:ffi').dlopen)\"  # function"
+            echo "     /var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node   # 26.13.0"
+            echo "     /var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.platform        # ios"
+            echo "     /var/jb/usr/lib/opencode/runtime/node --single-threaded -e \"console.log(typeof require('node:ffi').dlopen)\"  # function"
             echo "  3. 'opencode --version' (expect opencode2-node v2.2.5) and"
             echo "     'opencode --help', 'opencode models', 'opencode debug paths'."
             echo "  4. run 'opencode' in a real PTY (NewTerm 3 / SSH): expect the real"
@@ -303,6 +305,9 @@ jobs:
             echo "The CLI forwards --single-threaded/--max-old-space-size to spawned"
             echo "server/standalone children (CLI patch 0010), so child node processes"
             echo "also run single-threaded (a child without it can SIGBUS in the JIT)."
+            echo "Runtime patch 0016 additionally keeps V8 wasm JobHandles on the joining"
+            echo "foreground thread: --single-threaded alone did not prevent the observed"
+            echo "background wasm publication / process-wide W^X race on Node 26."
             if [ "${REQUIRE_FFI_RUNTIME}" != "true" ]; then
               echo "PIPELINE-PREP BUILD: the runtime is NOT guaranteed to be the FFI-enabled"
               echo "Phase C build. The real OpenTUI TUI will NOT load in this package; it is"
@@ -322,7 +327,7 @@ jobs:
       - name: Run summary
         if: always()
         env:
-          REQUIRE_FFI_RUNTIME: ${{ github.event_name == 'workflow_dispatch' && inputs.require_ffi_runtime || 'false' }}
+          REQUIRE_FFI_RUNTIME: ${{ inputs.require_ffi_runtime && 'true' || 'false' }}
         run: |
           {
             echo "## EXPERIMENTAL node26 rootless .deb (Phase D)"
