@@ -1,0 +1,33 @@
+#!/var/jb/bin/sh
+# Root-owned OpenCode server for the optional "root execution" mode.
+# Launched by /var/jb/Library/LaunchDaemons/com.opencode.root-server.plist.
+# launchd starts daemons with a minimal PATH, so this script only uses shell
+# builtins plus absolute binary paths.
+#
+# It listens only on loopback and requires HTTP Basic auth (username "opencode",
+# random password in /var/jb/var/root/.config/opencode-root/server-password).
+PATH=/var/jb/bin:/var/jb/usr/bin:/var/jb/usr/sbin:/var/jb/sbin:/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+PREFIX=/var/jb
+PASSWORD_FILE="$PREFIX/var/root/.config/opencode-root/server-password"
+if [ ! -r "$PASSWORD_FILE" ]; then
+    echo "opencode-root-server: missing $PASSWORD_FILE" >&2
+    exit 1
+fi
+PASSWORD=
+IFS= read -r PASSWORD < "$PASSWORD_FILE" || true
+if [ -z "$PASSWORD" ]; then
+    echo "opencode-root-server: empty $PASSWORD_FILE" >&2
+    exit 1
+fi
+HOME="$PREFIX/var/root"
+XDG_CONFIG_HOME="$PREFIX/var/root/.config"
+XDG_DATA_HOME="$PREFIX/var/root/.local/share"
+XDG_STATE_HOME="$PREFIX/var/root/.local/state"
+XDG_CACHE_HOME="$PREFIX/var/root/.cache"
+TMPDIR="$PREFIX/var/root/tmp"
+OPENCODE_IOS_MAX_OLD_SPACE_MB=1536
+OPENCODE_SERVER_PASSWORD="$PASSWORD"
+export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
+export OPENCODE_IOS_MAX_OLD_SPACE_MB OPENCODE_SERVER_PASSWORD
+exec "$PREFIX/usr/bin/opencode" serve --hostname 127.0.0.1 --port 4097

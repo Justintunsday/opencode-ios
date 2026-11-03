@@ -1,0 +1,25 @@
+#!/var/jb/bin/sh
+# Start/stop/status for the optional root-owned OpenCode server.
+# Must be run with sudo (root), e.g. `sudo opencode-root-service start`.
+PLIST=/var/jb/Library/LaunchDaemons/com.opencode.root-server.plist
+LABEL=com.opencode.root-server
+case "${1:-}" in
+    start)
+        launchctl load -w "$PLIST"
+        ;;
+    stop)
+        launchctl unload -w "$PLIST"
+        ;;
+    restart)
+        launchctl unload -w "$PLIST" 2>/dev/null || true
+        launchctl load -w "$PLIST"
+        ;;
+    status)
+        launchctl list | grep "$LABEL" || true
+        ps aux | grep '[o]pencode.mjs serve --hostname 127.0.0.1 --port 4097' || true
+        ;;
+    *)
+        echo "usage: sudo $0 start|stop|restart|status" >&2
+        exit 2
+        ;;
+esac

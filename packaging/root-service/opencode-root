@@ -1,0 +1,13 @@
+#!/var/jb/bin/sh
+# TUI client for the optional root-owned OpenCode server.
+# Runs as the calling user (mobile); only the server runs as root.
+set -e
+PREFIX=/var/jb
+PASSWORD_FILE="$PREFIX/var/lib/opencode-root/server-password"
+[ -r "$PASSWORD_FILE" ] || {
+    echo "opencode-root: root service is not installed (missing $PASSWORD_FILE)" >&2
+    exit 1
+}
+OPENCODE_PASSWORD="$(cat "$PASSWORD_FILE")"
+export OPENCODE_PASSWORD
+exec "$PREFIX/usr/bin/opencode" --server http://127.0.0.1:4097 "$@"
