@@ -315,6 +315,8 @@ cmd_deps_patches() {
     die "dependency patch marker missing from node-assets.js"
   grep -q 'OPENCODE_IOS === "1"' "$core/chunk-node-y0w0hq5m.js" ||
     die "dependency patch marker missing from the runtime FFI chunk"
+  grep -qF 'Tree-sitter workers are disabled on iPhoneOS (process-wide W^X)' "$core/chunk-node-q5ccgbk5.js" ||
+    die "dependency patch marker missing: iOS tree-sitter worker fallback"
   log "applied ${#patches[@]} dependency patch(es) to @opentui/core ($core)"
 }
 
@@ -463,6 +465,8 @@ cmd_assetcheck() {
   for marker in IOS_TUI_FFI_GATE hasNodeFFI runIOSRepl "node:ffi"; do
     grep -qF "$marker" "$bundle" || die "bundle is missing the iOS TUI FFI gate symbol: $marker"
   done
+  grep -qF 'Tree-sitter workers are disabled on iPhoneOS (process-wide W^X)' "$bundle" ||
+    die "bundle lost the iOS worker fallback (worker isolates race process-wide W^X)"
   log "bundle TUI gate OK: IOS_TUI_FFI_GATE + hasNodeFFI + runIOSRepl + node:ffi present"
 }
 

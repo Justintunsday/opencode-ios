@@ -1,0 +1,51 @@
+# OpenCode iOS: avoid tree-sitter worker isolates with process-wide W^X.
+# --single-threaded disables V8 jobs, not Node worker_threads. The device
+# crashed in Worker::Run while rendering the first assistant response.
+# Keep the real renderer, markdown layout and CodeRenderable plain-text
+# fallback; only background tree-sitter syntax highlighting is unavailable.
+# Applied to the published @opentui/core 0.8.0 dependency (node26 variant).
+
+diff --git a/node_modules/@opentui/core/chunk-node-q5ccgbk5.js b/node_modules/@opentui/core/chunk-node-q5ccgbk5.js
+--- a/node_modules/@opentui/core/chunk-node-q5ccgbk5.js
++++ b/node_modules/@opentui/core/chunk-node-q5ccgbk5.js
+@@ -6521,6 +6521,8 @@
+     }
+   }
+   startWorker() {
++    // iOS uses process-wide mprotect W^X; a second JS isolate is unsafe.
++    if (process.platform === "ios") return;
+     if (this.worker) {
+       return;
+     }
+@@ -6634,6 +6636,9 @@
+     return this.initialize();
+   }
+   async initialize() {
++    if (process.platform === "ios") {
++      throw new Error("Tree-sitter workers are disabled on iPhoneOS (process-wide W^X)");
++    }
+     if (this.destroyPromise) {
+       throw new Error("Cannot initialize while client is being destroyed");
+     }
+diff --git a/node_modules/@opentui/core/chunk-bun-6kxdhkdc.js b/node_modules/@opentui/core/chunk-bun-6kxdhkdc.js
+--- a/node_modules/@opentui/core/chunk-bun-6kxdhkdc.js
++++ b/node_modules/@opentui/core/chunk-bun-6kxdhkdc.js
+@@ -6522,6 +6522,8 @@
+     }
+   }
+   startWorker() {
++    // iOS uses process-wide mprotect W^X; a second JS isolate is unsafe.
++    if (process.platform === "ios") return;
+     if (this.worker) {
+       return;
+     }
+@@ -6635,6 +6637,9 @@
+     return this.initialize();
+   }
+   async initialize() {
++    if (process.platform === "ios") {
++      throw new Error("Tree-sitter workers are disabled on iPhoneOS (process-wide W^X)");
++    }
+     if (this.destroyPromise) {
+       throw new Error("Cannot initialize while client is being destroyed");
+     }

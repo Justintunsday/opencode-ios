@@ -262,7 +262,7 @@ jobs:
           retention-days: 14
 
   # Phase D: Node 26.13.0 + node:ffi real-TUI bundle. It ships the prebuilt OpenTUI iPhoneOS
-  # renderer (`opentui-ios-renderer` artifact from run 41531609826, clang/ld64-linked
+  # renderer (`opentui-ios-renderer` artifact from run 41582979506, clang/ld64-linked
   # and codesign-adhoc signed) as a CLI asset under the key
   # the patched OpenTUI FFI loader resolves: @opentui/core-ios-arm64/libopentui.dylib.
   # This job is static/host verification only: the end-to-end TUI is device-verified separately
@@ -283,12 +283,12 @@ jobs:
       OPENCODE_NODE_MATRIX: '26.13.0 24.22.2'
       OPENCODE_SMOKE_REQUIRED: '26.13.0'
       # Phase C renderer artifact, linked with Xcode clang/ld64 and signed with Apple
-      # codesign ad-hoc (opencode-ios run 41531609826; Zig-linked/ldid-signed
+      # codesign ad-hoc + non-recursive compiler-rt (run 41582979506; Zig-linked/ldid-signed
       # dylibs map non-executable on the device). The sha256 is pinned and
       # scripts/build-opencode-bundle.sh re-verifies it plus the Mach-O before staging; the
       # manifest records the actual staged hash.
       OPENCODE_OPENTUI_IOS_DYLIB: dist/opentui-ios-renderer/libopentui.dylib
-      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: 5a2f016bd8a3a2a7b86560204f0c48106666892a419353276493a462c6707242
+      OPENCODE_OPENTUI_IOS_DYLIB_SHA256: 4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868
     steps:
       - name: Checkout port repository
         uses: actions/checkout@v4
@@ -309,7 +309,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: opentui-ios-renderer
-          run-id: '41531609826'
+          run-id: '41582979506'
           github-token: ${{ github.token }}
           path: dist/opentui-ios-renderer
 
