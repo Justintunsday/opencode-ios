@@ -1,13 +1,11 @@
 # Install OpenCode iOS (rootless) on iPhone SE 2 / iOS 16.1.1
 
-> Mobile TUI candidate **node26test.6 / 2.2.5-3**: CLI [run 41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
-> `opencode.mjs` 21,403,769 bytes, SHA-256 `e4ea6bb07f3890c282b63b6ffd556a8ababf3abaaafe9835b1382c947fce519f`.
-> Patches 0018/0019 add narrow layouts, draft-preserving resize, reduced motion,
-> a 20 FPS iOS renderer profile, synchronized frame output and `TERM=dumb` guidance.
-> Native Node/renderer inputs are unchanged. Host mobile regressions and scoped
-> TypeScript checks pass; installation and phone/NewTerm visual acceptance are pending.
-> The previously verified test.5 evidence below remains historical and does not prove
-> this candidate fixes NewTerm flicker. Stable `v2.2.5-ios.5` is unchanged.
+> **node26test.6 / 2.2.5-3 — DEVICE-VERIFIED for mobile SSH PTY functionality.**
+> CLI [41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
+> package [41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889):
+> installation rc=0, narrow/resize TUI rc=0, 3-turn/121.533-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
+> NewTerm visual flicker confirmation is **PENDING**; SSH idle output was zero.
+> [Exact identities, raw output and limits](MOBILE_TUI_DEVICE_RESULTS.md). Stable `v2.2.5-ios.5` is unchanged.
 
 This is the device installation procedure for `OpenCode-iOS-rootless.deb`, an
 `iphoneos-arm64` Debian package that installs upstream **OpenCode v2 CLI** running
@@ -103,7 +101,7 @@ experimental node26 line:
 | --- | --- | --- | --- |
 | `node22` | Node.js **22.9.0** iPhoneOS arm64, built-in sqlite, **v6 mprotect-W^X runtime** | **Primary — DEVICE-VERIFIED (packaged, PASS=14/0)** with the mandatory `--single-threaded` launcher flag; CLI matrix + mock-provider agent turn PASS through the packaged launcher. | `package-report.json`: `"variant": "node22"`; `runtime.node.node_version` starts `22.` |
 | `node18` | Node.js **18.20.4** iPhoneOS arm64, V8 10.2 device-proven memory model, bundled sql.js sqlite shim | **Fallback**, CI-validated only (UNVERIFIED ON DEVICE); CLI bundle runs on a community Node 18 runtime | `package-report.json`: `"variant": "node18"` / `"runtime_kind": "node18"`; `runtime.node.node_version` starts `18.` |
-| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 W^X + foreground wasm jobs, **node:ffi + OpenTUI renderer** | **DEVICE-VERIFIED real TUI in experimental node26test.5**, depending on independent `node26` `26.13.0-1` (command `node`, author `nodejs`); normal/3-turn PTY and headless/tool E2E accepted. Stable node22 release unchanged. | `OpenCode-iOS-rootless-node26.deb`; exact pins and installation in §2b |
+| `node26` | Node.js **26.13.0** iPhoneOS arm64, V8 14.6 W^X + foreground wasm jobs, **node:ffi + OpenTUI renderer** | **DEVICE-VERIFIED real TUI in experimental node26test.6**, depending on independent `node26` `26.13.0-1` (command `node`, author `nodejs`); normal/3-turn PTY and headless/tool E2E accepted. Stable node22 release unchanged. | `OpenCode-iOS-rootless-node26.deb`; exact pins and installation in §2b |
 
 Inside the installed package: `/var/jb/usr/lib/opencode/runtime/node --single-threaded -p process.versions.node`
 prints the runtime version, and `/var/jb/usr/lib/opencode/runtime/runtime-manifest.json`
@@ -147,28 +145,28 @@ declares the capability profile.
 
 ## 2b. Experimental node26 + OpenTUI variant (DEVICE-VERIFIED real TUI)
 
-`v2.2.5-ios.5-node26test.5` uses independent **`node26` `26.13.0-1`** (command
-**`node`**, author **`nodejs`**) and OpenCode **`2.2.5-2`** with exact dependency
+`v2.2.5-ios.5-node26test.6` uses independent **`node26` `26.13.0-1`** (command
+**`node`**, author **`nodejs`**) and OpenCode **`2.2.5-3`** with exact dependency
 `node26 (= 26.13.0-1)`. The pair passed device CLI and real-TUI acceptance on iPhone
 SE 2 / iOS 16.1.1 / Dopamine rootless. The OpenCode deb contains no Node executable.
 It replaces the installed `opencode` variant; stable release assets are unchanged.
 
 | Item | Accepted value |
 | --- | --- |
-| OpenCode label / package | `v2.2.5-ios.5-node26test.5`; `opencode` `2.2.5-2`, `iphoneos-arm64` |
-| OpenCode package run | [41621747546](https://github.com/Justintunsday/opencode-ios/actions/runs/41621747546); artifact `opencode-ios-rootless-node26` contains both debs |
-| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,782,884 bytes**, SHA-256 `7f01f19162e63ab4c9d18e444ac7028ebb601db3bf7ed648e0cfaaada9fb0895` |
+| OpenCode label / package | `v2.2.5-ios.5-node26test.6`; `opencode` `2.2.5-3`, `iphoneos-arm64` |
+| OpenCode package run | [41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889); artifact `opencode-ios-rootless-node26` contains both debs |
+| OpenCode deb | `OpenCode-iOS-rootless-node26.deb`, **30,787,620 bytes**, SHA-256 `7c2ca0c2c40d278969887356928ff374c36ef101deabe4dd3e59fd710f5e68b7` |
 | Independent Node package | `node26` `26.13.0-1`; author `nodejs`; command `node` |
 | Node package run | [41620234785](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41620234785); artifact `node26-rootless` |
 | Node deb | `node26_26.13.0-1_iphoneos-arm64.deb`, **25,893,168 bytes**, SHA-256 `c6cda114912707b5c229178449e0cc0a641fa7165c270a8dd81456196fed9e51` |
 | Dependency / ownership | `opencode` depends on `node26 (= 26.13.0-1)`; no embedded Node executable; legacy runtime paths are relative links |
-| Compiled inputs | Runtime [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128), node SHA `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`; CLI [41584007287](https://github.com/Justintunsday/opencode-ios/actions/runs/41584007287), mjs SHA `1aab71859d5992e49b54f91fbe574578679dee3970693dc0176f9257869a3283`; renderer [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), dylib SHA `4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
+| Compiled inputs | Runtime [41549633128](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41549633128), node SHA `84613100b3d31a747a55d1132906bfef9417b15a1e33a4088ff1da5956e61ef9`; CLI [41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793), mjs SHA `e4ea6bb07f3890c282b63b6ffd556a8ababf3abaaafe9835b1382c947fce519f`; renderer [41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506), dylib SHA `4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868` |
 | Static validation | Node deb **23 PASS**; app builder **68 PASS**, native `dpkg-deb` metadata/combined extraction checks and 5 renderer builtin checks; CI does not execute iPhoneOS binaries |
 
 Download the accepted artifact with authenticated GitHub CLI:
 
 ```sh
-gh run download 41621747546 -R Justintunsday/opencode-ios -n opencode-ios-rootless-node26 -D node26test5
+gh run download 41632847889 -R Justintunsday/opencode-ios -n opencode-ios-rootless-node26 -D node26test6
 ```
 
 Transfer both `.deb` files, `SHA256SUMS` and `package-report.json` to the device,
@@ -196,12 +194,12 @@ is installed under `/var/jb/usr/lib/node26/`; OpenCode's old `runtime/node` path
 a relative compatibility link. npm/npx are not included. Remove dependent OpenCode
 before removing `node26`, or install another OpenCode variant whose dependency permits it.
 
-Acceptance: normal TUI **32.314 seconds / rc=0**, private TUI **3 shell/reply turns
-in 122.328 seconds / rc=0**, CLI **8/0**, strict JSON/tool E2E and standalone Node
-checks passed. CrashReporter had **3 new system Jetsam reports**, with no Node
-termination entries or Node crash reports. Details and memory-pressure limits:
-[`NODE26_EXTERNAL_DEVICE_RESULTS.md`](NODE26_EXTERNAL_DEVICE_RESULTS.md).
-The earlier 612.4-second / 12-turn soak was the embedded test.4 package.
+Acceptance: mobile resize TUI **36.290 seconds / rc=0**, private **3 shell/reply turns
+in 121.533 seconds / rc=0**, CLI **8/0**, strict JSON/tool E2E and terminal restoration passed.
+Minimum 24×8; 40×12 was exercised. NewTerm defaults use reduced motion and a 20 FPS cap;
+the actual NewTerm flicker result remains pending. See
+[`MOBILE_TUI_DEVICE_RESULTS.md`](MOBILE_TUI_DEVICE_RESULTS.md) for bytes, exits and crash attribution.
+Previous test.5 evidence remains in [`NODE26_EXTERNAL_DEVICE_RESULTS.md`](NODE26_EXTERNAL_DEVICE_RESULTS.md).
 
 The launcher always passes `--single-threaded` and the CLI forwards it to server children.
 Runtime patch 0016 also keeps wasm publication jobs on the foreground joining thread;

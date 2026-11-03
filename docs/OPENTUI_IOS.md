@@ -1,25 +1,22 @@
 # OpenTUI iPhoneOS renderer
 
-> Mobile TUI candidate **node26test.6 / 2.2.5-3**: CLI [run 41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
-> `opencode.mjs` 21,403,769 bytes, SHA-256 `e4ea6bb07f3890c282b63b6ffd556a8ababf3abaaafe9835b1382c947fce519f`.
-> Patches 0018/0019 add narrow layouts, draft-preserving resize, reduced motion,
-> a 20 FPS iOS renderer profile, synchronized frame output and `TERM=dumb` guidance.
-> Native Node/renderer inputs are unchanged. Host mobile regressions and scoped
-> TypeScript checks pass; installation and phone/NewTerm visual acceptance are pending.
-> The previously verified test.5 evidence below remains historical and does not prove
-> this candidate fixes NewTerm flicker. Stable `v2.2.5-ios.5` is unchanged.
+> **node26test.6 / 2.2.5-3 — DEVICE-VERIFIED for mobile SSH PTY functionality.**
+> CLI [41631591793](https://github.com/Justintunsday/opencode-ios/actions/runs/41631591793),
+> package [41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889):
+> installation rc=0, narrow/resize TUI rc=0, 3-turn/121.533-second TUI rc=0, CLI 8/0 and JSON/tool E2E.
+> NewTerm visual flicker confirmation is **PENDING**; SSH idle output was zero.
+> [Exact identities, raw output and limits](MOBILE_TUI_DEVICE_RESULTS.md). Stable `v2.2.5-ios.5` is unchanged.
 
 The renderer from [run 41582979506](https://github.com/Justintunsday/opencode-ios/actions/runs/41582979506)
-is **DEVICE-VERIFIED for node:ffi loading and execution** on iPhone SE 2 / iOS 16.1.1 /
-Dopamine rootless: installed `node:ffi` editor creation, insertion and JS callbacks returned 0, and
-real OpenTUI rendering was observed. **Packaged node26test.5 is DEVICE-VERIFIED**
-(package run [41621747546](https://github.com/Justintunsday/opencode-ios/actions/runs/41621747546),
-deb SHA `7f01f19162e63ab4c9d18e444ac7028ebb601db3bf7ed648e0cfaaada9fb0895`), depending on independent `node26` `26.13.0-1` (command `node`,
-author `nodejs`). The renderer bytes and `/var/jb/usr/lib/opencode/cli/assets` path
-are unchanged. Normal and 3-turn/122.328-second PTYs rendered, accepted input and
-returned `/exit` rc=0. No Node crash or Node Jetsam victim was observed; three
-system Jetsam reports are documented in
-[`NODE26_EXTERNAL_DEVICE_RESULTS.md`](NODE26_EXTERNAL_DEVICE_RESULTS.md).
+is DEVICE-VERIFIED for native loading/execution. Its exact signed bytes are retained in
+mobile node26test.6, package run 41632847889. Narrow/resize and 3-turn TUI acceptance
+both exit 0 using the independent node26 runtime and the `/var/jb` asset root.
+The mobile profile uses 20 FPS, complete synchronized output, reduced motion and a steady
+cursor. Actual SSH frames have balanced 2026 envelopes, no repeated full-screen clear and
+zero output in measured idle windows. NewTerm visual flicker confirmation is pending;
+the same older package also had a quiet SSH idle window, so no single root cause is asserted.
+See [mobile results](MOBILE_TUI_DEVICE_RESULTS.md) and the historical
+[test.5 acceptance](NODE26_EXTERNAL_DEVICE_RESULTS.md).
 Earlier embedded test.4 acceptance remains in [`VERIFICATION.md`](VERIFICATION.md).
 
 The final dylib must be linked with **Xcode clang/ld64 from the Zig static archive**, then

@@ -12,13 +12,13 @@ OpenCode 精确依赖它，不再内嵌另一份 Node。稳定版 `v2.2.5-ios.5`
 | 内容 | 当前已验收工件 |
 | --- | --- |
 | 独立 Node.js | `node26` `26.13.0-1`，[run 41620234785](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41620234785) |
-| OpenCode | `2.2.5-2` / `node26test.5`，[run 41621747546](https://github.com/Justintunsday/opencode-ios/actions/runs/41621747546) |
+| OpenCode | `2.2.5-3` / `node26test.6`，[run 41632847889](https://github.com/Justintunsday/opencode-ios/actions/runs/41632847889) |
 | 设备 | iPhone SE 2、iOS 16.1.1、Dopamine rootless |
-| 实测 | Node 11 项、192 HTTP / 24 wasm 压力回归；CLI 8/0；真实 PTY 三轮工具会话与 `/exit` 返回 0 |
-| 移动布局与 NewTerm 优化 | 当前源码候选；新工件与真机复验完成后更新此处 |
+| 实测 | CLI 8/0；窄屏缩放与 Unicode 草稿；121.533 秒真实 PTY 三轮工具会话、终端恢复与 `/exit` 返回 0 |
+| 移动布局与 NewTerm 优化 | 移动真 PTY 功能 DEVICE-VERIFIED；NewTerm 肉眼闪烁结果待反馈 |
 
 完整 SHA-256、退出码、原始 PTY 摘录和系统 Jetsam 记录见
-[独立运行时验收](docs/NODE26_EXTERNAL_DEVICE_RESULTS.md)。CI 负责构建与静态检查，
+[移动 TUI 验收](docs/MOBILE_TUI_DEVICE_RESULTS.md) 与 [独立运行时验收](docs/NODE26_EXTERNAL_DEVICE_RESULTS.md)。CI 负责构建与静态检查，
 真机结论来自实际设备命令；其他设备与系统版本尚未验收。
 
 ## 运行要求
@@ -33,7 +33,7 @@ OpenCode 精确依赖它，不再内嵌另一份 Node。稳定版 `v2.2.5-ios.5`
 在已登录 GitHub CLI 的电脑下载工件，内含两个 deb、报告与校验和：
 
 ```sh
-gh run download 41621747546 -R Justintunsday/opencode-ios \
+gh run download 41632847889 -R Justintunsday/opencode-ios \
   -n opencode-ios-rootless-node26 -D opencode-ios
 ```
 
@@ -83,7 +83,8 @@ opencode
 iOS 渲染策略限制为 20 帧/秒，合并更新并使用完整帧同步输出。
 默认关闭界面动画，使用不闪烁的线形光标；显式设置的动画与光标偏好仍会保留。
 扩展键盘协议为可选能力，iOS 使用基础按键路径。终端是否支持同步输出会影响实际观感，
-NewTerm 肉眼验收与 SSH 输出验证分别记录。
+NewTerm 肉眼验收与 SSH 输出验证分别记录。四段 SSH 空闲窗口均为零输出，
+新版在手机 NewTerm 中是否已消除持续闪烁仍待反馈，未标为已确认修复。
 
 - 更新后先在旧界面 `/exit`，再运行 `opencode`，让进程加载新版代码。
 - 若报 `EADDRINUSE`，可用 `opencode --standalone` 启动私有服务；不同账户应使用不同服务端口。
@@ -106,7 +107,10 @@ Node 用户 `worker_threads` 不受支持；iOS 禁用 tree-sitter 后台 worker
 
 SE 2 的内存有限，多开 TUI 与服务会增加压力。此前已观察到系统 Jetsam 日志，
 因此功能通过不代表无限期稳定运行。真实外部模型认证、计费与网络行为需要按服务商另行验证。
-完整范围见 [已知限制](docs/KNOWN_LIMITATIONS.md)。
+完整范围见 [已知限制](docs/KNOWN_LIMITATIONS.md)。Node 的 JIT/wasm 与原生文件、sysctl、
+exec/spawn、POSIX 共享内存和命名信号量测试为 19 PASS / 2 UNSUPPORTED；
+[报告](https://github.com/Justintunsday/nodejs26-ios/blob/main/docs/POSIX_JIT_WASM_DEVICE_RESULTS.md)
+记录 `sem_init` 的 ENOSYS 和 System V `shmget` 的 SIGSYS。
 
 ## 开发与构建
 
