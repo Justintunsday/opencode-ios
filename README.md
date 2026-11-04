@@ -1,47 +1,16 @@
 # OpenCode iOS
 
-**OpenCode, running natively on a jailbroken iPhone.**
-
-Not a web wrapper. Not a remote client. This is the real OpenCode v2 CLI, running on a
-native iPhoneOS arm64 Node.js runtime, with the real OpenTUI interface — full-screen,
-keyboard-driven, running directly on the phone. Open it in NewTerm or over SSH and it
-behaves like a terminal application, because that is exactly what it is.
-
-The project was built and tested on an iPhone SE 2 running iOS 16.1.1 with a Dopamine
-rootless jailbreak. It is a hobby-grade port, not an officially supported product, but
-it is real: full agent sessions, tool calls, model switching and session history all
-happen on the device.
-
-## Why this exists
-
-A coding agent is most useful when it is always with you. The iPhone is always with you;
-the terminal is the one place where OpenCode feels at home.
-
-Getting there meant fighting iOS rather than working around it. Node.js needs JIT and
-WebAssembly, iOS enforces process-wide W^X page permissions, and the full OpenTUI
-renderer ships as a native library with no iPhoneOS build. This repository contains the
-patches that make those pieces work together, plus the packaging that turns them into
-ordinary rootless `.deb` files. The result is a phone you can SSH into and hand a real
-coding task to.
-
-## Choose your build
-
-There are two release lines. They solve the same problem in different ways:
+## Builds
 
 | | Stable | Experimental |
 | --- | --- | --- |
 | Version | `v2.2.5-ios.5` | `2.2.5-5` / `node26test.8` |
 | Node.js | Embedded 22.9.0 | Separate `node26` `26.13.0-2` package |
 | Interface | Line-based REPL | Real full-screen OpenTUI TUI |
-| Best for | People who want the calm, proven path | People who want the actual OpenCode experience on a phone |
+| Best for | Minimal, proven path | Full OpenCode TUI on a phone |
 | Status | Device-verified | Device-verified on iPhone SE 2 / iOS 16.1.1 |
 
-The stable build is the one to pick if you just want a working REPL and headless
-`opencode run` sessions. The experimental build is the main event: the same interface you
-know from the desktop, reflowed for a narrow screen, with the mobile keyboard in mind.
-It depends on a separate runtime package instead of embedding a second copy of Node.
-
-## What you need
+## Requirements
 
 - A **jailbroken, arm64 iPhone** with a **rootless** bootstrap (`/var/jb`), such as
   Dopamine. Rootful jailbreaks and other prefixes are not supported.
