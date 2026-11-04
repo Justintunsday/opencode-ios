@@ -1,79 +1,68 @@
 # OpenCode iOS
 
-**Run OpenCode v2 on a jailbroken iPhone — native arm64, real terminal UI.**
+**OpenCode, running natively on a jailbroken iPhone.**
 
-This is an independent iPhoneOS port of [OpenCode](https://github.com/sst/opencode) for
-rootless jailbroken devices (`/var/jb`, Dopamine-style). It runs the upstream CLI on a
-native arm64 Node.js runtime. The experimental line renders the actual OpenTUI
-full-screen interface inside a real terminal, not a line-based fallback.
+Not a web wrapper. Not a remote client. This is the real OpenCode v2 CLI, running on a
+native iPhoneOS arm64 Node.js runtime, with the real OpenTUI interface — full-screen,
+keyboard-driven, running directly on the phone. Open it in NewTerm or over SSH and it
+behaves like a terminal application, because that is exactly what it is.
 
-The project currently ships two lines:
+The project was built and tested on an iPhone SE 2 running iOS 16.1.1 with a Dopamine
+rootless jailbreak. It is a hobby-grade port, not an officially supported product, but
+it is real: full agent sessions, tool calls, model switching and session history all
+happen on the device.
 
-| Line | Package | Runtime | What you get |
-| --- | --- | --- | --- |
-| **Stable** | `v2.2.5-ios.5` | Embedded Node.js 22.9.0 | Line-based REPL, headless `opencode run`, CLI |
-| **Experimental** | `2.2.5-5` / `node26test.8` | Separate `node26` `26.13.0-2` package | Real full-screen OpenTUI TUI, mobile layout, flicker fix |
+## Why this exists
 
-Both are built and packaged as Debian packages for `iphoneos-arm64`. The experimental
-package depends on the standalone [node26 runtime](https://github.com/Justintunsday/nodejs26-ios)
-instead of embedding a second Node build.
+A coding agent is most useful when it is always with you. The iPhone is always with you;
+the terminal is the one place where OpenCode feels at home.
 
-## Verified on real hardware
+Getting there meant fighting iOS rather than working around it. Node.js needs JIT and
+WebAssembly, iOS enforces process-wide W^X page permissions, and the full OpenTUI
+renderer ships as a native library with no iPhoneOS build. This repository contains the
+patches that make those pieces work together, plus the packaging that turns them into
+ordinary rootless `.deb` files. The result is a phone you can SSH into and hand a real
+coding task to.
 
-The packages below were installed and exercised on an actual device, not just CI:
+## Choose your build
 
-| | |
-| --- | --- |
-| Device | iPhone SE 2 (`iPhone12,8`), iOS 16.1.1, Dopamine rootless |
-| Terminal | NewTerm 3 and SSH PTY; rendering QA used **EverTerm 1.5-2** |
-| Stable package | `v2.2.5-ios.5` — device-verified install, REPL, CLI and headless runs |
-| Experimental package | `2.2.5-5` / `node26test.8` — [run 41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712), full TUI, resize/orientation, three-turn real PTY session, terminal restore and `/exit` |
-| POSIX runtime matrix | **21 PASS / 0 UNSUPPORTED / 0 FAIL** on device with `node26` `26.13.0-2` |
+There are two release lines. They solve the same problem in different ways:
 
-Other iPhone models and iOS versions have not been validated. CI cannot execute
-iPhoneOS binaries, so "CI green" only means the packages assembled and passed static
-checks; the device results above are the real acceptance evidence.
+| | Stable | Experimental |
+| --- | --- | --- |
+| Version | `v2.2.5-ios.5` | `2.2.5-5` / `node26test.8` |
+| Node.js | Embedded 22.9.0 | Separate `node26` `26.13.0-2` package |
+| Interface | Line-based REPL | Real full-screen OpenTUI TUI |
+| Best for | People who want the calm, proven path | People who want the actual OpenCode experience on a phone |
+| Status | Device-verified | Device-verified on iPhone SE 2 / iOS 16.1.1 |
 
-## What works
+The stable build is the one to pick if you just want a working REPL and headless
+`opencode run` sessions. The experimental build is the main event: the same interface you
+know from the desktop, reflowed for a narrow screen, with the mobile keyboard in mind.
+It depends on a separate runtime package instead of embedding a second copy of Node.
 
-- **A real TUI.** The full-screen OpenTUI interface opens in a real TTY, with sessions,
-  model selection, tool activity and streaming responses.
-- **Mobile-first layout.** The interface reflows for narrow screens and on-screen
-  keyboards. The minimum usable size is 24×8; 40×12 or larger is recommended. Rotation
-  and keyboard changes keep unsent drafts.
-- **No full-screen flashing on EverTerm.** iOS builds no longer emit DECSET 2026
-  synchronized-output frames, which EverTerm rendered as a full-screen present. The
-  user A/B-confirmed the fix, and the shipped frame stream contains zero sync frames.
-- **Flicker-free rendering defaults.** UI animations are off by default and the
-  cursor is a non-blinking bar; explicit user preferences are preserved.
-- **POSIX compatibility built in.** The `node26` launcher injects a compatibility dylib,
-  so unnamed POSIX semaphores and System V shared memory work for CLI tools, scripts and
-  native extensions.
-- **Optional root mode.** A root-owned server can run OpenCode tools with root
-  privileges while the TUI stays as your normal user. This is opt-in and documented
-  separately — see [Root service](docs/ROOT_SERVICE.md).
+## What you need
 
-## Requirements
-
-- A jailbroken, **arm64** iPhone with a **rootless** bootstrap (`/var/jb`), e.g.
-  Dopamine. Rootful jailbreaks and other prefixes are not packaged.
-- Procursus `dpkg` from the bootstrap.
-- iOS 15.0+ deployment target; the tested device is iOS 16.1.1.
-- A real terminal: NewTerm 3 or SSH (the TUI needs a TTY).
-- ~150 MB free under `/var/jb`.
-- Optional: `git` (`sudo apt-get install -y git`) for git tool support.
+- A **jailbroken, arm64 iPhone** with a **rootless** bootstrap (`/var/jb`), such as
+  Dopamine. Rootful jailbreaks and other prefixes are not supported.
+- Procursus `dpkg` and a shell from that bootstrap.
+- iOS 15.0 or newer; the device used for all testing is iOS 16.1.1.
+- A real terminal — NewTerm 3 or an SSH session. The TUI needs a TTY.
+- Around 150 MB of free space under `/var/jb`.
 - Your own model provider account or API key.
+- Optional: `git`, if you want the agent to work with git repositories
+  (`sudo apt-get install -y git`).
 
-## Install the experimental TUI (node26test.8)
+## Install the TUI build
 
-Download the package artifact to a computer where GitHub CLI is logged in:
+Grab the package artifact on a computer with GitHub CLI logged in:
 
 ```sh
 gh run download 41649519712 -R Justintunsday/opencode-ios \
   -n opencode-ios-rootless-node26 -D opencode-ios
 ```
 
-Copy the whole directory to the phone, then install both debs:
+Copy that directory to the phone, then install the runtime and the app:
 
 ```sh
 cd opencode-ios
@@ -81,150 +70,200 @@ sha256sum -c SHA256SUMS
 sudo dpkg -i node26_26.13.0-2_iphoneos-arm64.deb OpenCode-iOS-rootless-node26.deb
 ```
 
-Check the install and start the TUI:
+Confirm everything landed:
 
 ```sh
-node --version        # v26.13.0
-node -p 'process.platform'   # ios
-opencode --version
+node --version                 # v26.13.0
+node -p 'process.platform'     # ios
+opencode --version             # opencode2-node v2.2.5
+```
+
+Then open a project and start:
+
+```sh
 cd /var/mobile/Documents
 opencode
 ```
 
-Notes:
+Two things worth knowing before you start:
 
-- If you still have the old prototype `nodejs26-ios` packages installed, remove them
-  first. The public command is now `node`.
-- Configuration, credentials and sessions live in your home directory and survive
-  package upgrades.
-- For the stable Node 22 line, use the artifacts from the
-  [stable release](https://github.com/Justintunsday/opencode-ios/releases/tag/v2.2.5-ios.5).
-- Detailed upgrade, rollback and uninstall steps are in [docs/INSTALL.md](docs/INSTALL.md).
+- If an old prototype `nodejs26-ios` package is still installed, remove it first. The
+  public command is now simply `node`.
+- Config, credentials and sessions live in your home directory. Package upgrades leave
+  them alone.
 
-## Using the TUI
+If you prefer the stable build, install it from the
+[`v2.2.5-ios.5` release](https://github.com/Justintunsday/opencode-ios/releases/tag/v2.2.5-ios.5).
+The detailed install, upgrade and uninstall procedures are in
+[docs/INSTALL.md](docs/INSTALL.md).
 
-On first launch, run `/connect` to set up a model provider, then `/models` to pick a
-model. You can open the interface and browse local CLI features even before a real
-provider is configured.
+## Your first five minutes
 
-| Action | Key / command |
+On first launch, run `/connect` to point OpenCode at your model provider, then `/models`
+to choose a model. You can explore the interface and local CLI features before a provider
+is configured; only actual model calls need one.
+
+The essentials:
+
+| What you want | What to press |
 | --- | --- |
-| Send message | Enter |
-| Insert newline | Ctrl+J (Shift+Enter in terminals with an extended keyboard) |
-| Search / command menu | `/` then arrows + Enter |
-| Close menu / cancel | Esc |
-| Change model | `/models` |
-| Session history / new session | `/sessions` / `/new` |
-| Quit | `/exit` then Enter |
+| Send a message | Enter |
+| Add a line without sending | Ctrl+J (Shift+Enter on terminals that send it) |
+| Open the command menu | `/` |
+| Close a menu or cancel | Esc |
+| Switch models | `/models` |
+| Browse or create sessions | `/sessions`, `/new` |
+| Leave | `/exit` |
 
-The mobile layout drops the large startup logo, keeps status and common commands on the
-home screen, and pins the composer to the bottom. Narrow conversations use a single
-column with tighter margins.
+The home screen hides the large startup logo on small screens, keeps status and common
+commands visible, and anchors the composer to the bottom. Long conversations use a single
+column so text stays readable at phone width. Rotating the device or opening the keyboard
+reflows the layout without throwing away an unsent draft.
 
-These are native OpenTUI test frames rendered with desktop fonts (not phone screenshots).
-They show the 40×12 layout before and after the mobile pass:
+## What it looks like
 
-| Before: the large logo pushed the composer off-screen | After: input and hints stay visible |
+These are native OpenTUI test frames rendered with desktop fonts, not phone screenshots.
+They show the same 40×12 viewport before and after the mobile layout pass:
+
+| Before: the logo pushes the composer off-screen | After: input and hints remain visible |
 | --- | --- |
 | ![Old 40×12 layout](docs/images/mobile-before-40x12.png) | ![Mobile 40×12 layout](docs/images/mobile-after-40x12.png) |
 
-## Rendering on iOS
+The terminal UI is deliberately quiet. Animations are off by default, the cursor is a
+non-blinking bar, and on EverTerm the renderer no longer emits the synchronized-output
+frames that used to make the whole screen flash. The frame stream now carries zero sync
+frames, and idle time produces zero output.
 
-iOS limits the renderer to 20 FPS and coalesces updates. The port also suppresses DECSET
-2026 synchronized-output frames, because the tested terminal (EverTerm 1.5-2) treats each
-synchronized block as a full-screen present. That was the cause of the old full-screen
-flash; the fix is confirmed by user A/B testing and by frame capture (0/0 sync begin/end,
-zero output while idle).
+## What works today
 
-A few practical notes:
+- **A genuine terminal UI.** Sessions, streaming responses, tool calls, model selection
+  and history — all inside the real OpenTUI renderer.
+- **A layout built for a phone.** It stays usable down to 24×8 columns; 40×12 or larger
+  is comfortable. Drafts survive rotation and keyboard changes.
+- **Flicker-free rendering on EverTerm.** The iOS build suppresses DECSET 2026
+  synchronized-output frames, which EverTerm treated as a full-screen present. The fix
+  was confirmed both by user A/B testing and by captured frame data.
+- **POSIX calls that used to be missing.** The `node26` runtime ships a compatibility
+  dylib that implements unnamed POSIX semaphores and System V shared memory; the device
+  matrix is 21 PASS / 0 unsupported / 0 fail.
+- **An optional root mode.** A separate, opt-in root-owned server can run tools with root
+  privileges while the TUI keeps running as your normal user.
 
-- After upgrading, `/exit` the old TUI first, then start `opencode` again so the new code
-  is loaded.
-- If you see `EADDRINUSE`, start with a private server: `opencode --standalone`. Use a
-  different service port per account.
-- Never remove `--single-threaded` from the launcher: iOS JIT page-permission changes are
-  process-wide, so background V8 execution can race them.
-- Keep the renderer at `/var/jb/usr/lib/opencode/cli/assets` with its original signature.
-- Running outside a TTY prints guidance and exits with status 1. For scripts, use
-  `opencode run --standalone "your task"`.
+## What still hurts
 
-Useful commands:
+The port is honest about its edges. The complete list is in
+[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md); the short version:
 
-```sh
-opencode --version
-opencode models --standalone
-opencode debug paths
-opencode run --standalone "summarize this project"
-```
+- Node's user-facing `worker_threads` are not supported. iOS page-permission changes are
+  process-wide, so background isolates cannot safely run JIT code.
+- Interactive terminal panes fall back to pipes; there is no native PTY.
+- File watching uses polling instead of a native watcher.
+- Tree-sitter workers are disabled; code blocks render as plain text.
+- npm and npx are not included.
+- `git` is not installed by default.
+- Large sessions can hit the iPhone SE 2's memory ceiling. The launcher caps V8 old-space
+  at 1536 MiB; raise it with `OPENCODE_IOS_MAX_OLD_SPACE_MB` if you know what you are
+  doing.
+- Clipboard integration, Ghostty panes and audio are not fully validated.
+- Arabic and other RTL text keep logical order; final shaping depends on the terminal.
+- Real provider authentication, billing and network behaviour are outside this project's
+  test coverage.
 
 ## Optional: run tools as root
 
-If you want OpenCode's shell/tools to run as root, install the optional root-owned
-server (see [docs/ROOT_SERVICE.md](docs/ROOT_SERVICE.md)). It listens only on
-`127.0.0.1` with HTTP Basic authentication, while the TUI stays as your normal user.
+Some work — installing packages, touching system paths, managing services — needs root.
+Rather than making the whole app root, this repository offers a small opt-in service: a
+root-owned OpenCode server on `127.0.0.1` with HTTP Basic auth, and a normal-user TUI
+client (`opencode-root`) that talks to it.
 
 ```sh
-# one-time install, as root
+# one-time setup, as root
 sudo /var/jb/bin/sh /path/to/packaging/root-service/install-root-service.sh
 
-opencode-root                         # TUI connected to the root server
-sudo opencode-root-service status     # stop | start | restart
+opencode-root                        # TUI backed by the root server
+sudo opencode-root-service status    # stop | start | restart
 ```
 
-This mode deliberately creates a local privilege-escalation path and is **not**
-recommended on devices you don't fully trust. The mobile process needs to read the
-service password, so any local process running as `mobile` that can read that file could
-also connect to the root server.
+It is opt-in, it is not enabled by the package, and it deliberately creates a local
+privilege-escalation path. The password has to be readable by the mobile user, which
+means any local process running as `mobile` that can read it could also connect. Use it
+only on a device you control. Full details and the security model are in
+[docs/ROOT_SERVICE.md](docs/ROOT_SERVICE.md).
 
-## Known limitations
+## Under the hood
 
-The port targets a specific device and is honest about what is missing:
+Three pieces make this work.
 
-- Node user `worker_threads` are unsupported. iOS JIT/executable-memory changes are
-  process-wide.
-- Tree-sitter background workers are disabled on iOS; code blocks fall back to plain
-  text.
-- The runtime package does not include npm/npx.
-- Interactive terminal panes (native PTY), clipboard integration, Ghostty panes and
-  audio are not fully validated.
-- `git` is not installed by default; install it separately if you need git tools.
-- Large sessions can hit the iPhone SE 2's memory limit. The launcher caps V8 old space
-  at 1536 MiB; override with `OPENCODE_IOS_MAX_OLD_SPACE_MB`.
-- Arabic/RTL text keeps logical order; final shaping depends on the terminal.
-- Real provider auth, billing and network behaviour are the provider's domain and are
-  not covered by our mock-provider tests.
+**The CLI** is upstream OpenCode, pinned in [UPSTREAM.lock](UPSTREAM.lock) and maintained
+with a patch series rather than a fork of every file. The iOS changes are small and
+targeted: path/bootstrap assumptions, terminal detection, the mobile layout and the
+renderer integration.
 
-The full, itemized list is in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
-The Node runtime's JIT/wasm/POSIX results are in the
-[nodejs26-ios device report](https://github.com/Justintunsday/nodejs26-ios/blob/main/docs/POSIX_JIT_WASM_DEVICE_RESULTS.md)
-(21 PASS, 0 unsupported).
+**The runtime** is a separate Node.js 26.13.0 port in
+[nodejs26-ios](https://github.com/Justintunsday/nodejs26-ios). It uses an mprotect-based
+RW→RX model with the `--single-threaded` flag, a minimal two-key entitlement set, libffi
+callbacks for `node:ffi`, and the POSIX compatibility shim. That repository also holds the
+JIT/wasm/POSIX device evidence.
 
-## Development
+**The renderer** is `@opentui/core`, cross-compiled and signed for iPhoneOS arm64. It
+keeps the original signature, caps output at 20 FPS, removes the DECSET 2026 envelope and
+implements the narrow-screen layout. Build instructions and constraints are in
+[docs/OPENTUI_IOS.md](docs/OPENTUI_IOS.md).
 
-The upstream revision is pinned in [UPSTREAM.lock](UPSTREAM.lock); iOS-specific changes
-are maintained as patches. The Node.js runtime lives in a separate repository,
-[nodejs26-ios](https://github.com/Justintunsday/nodejs26-ios). UI work builds on the
-existing Solid/OpenTUI architecture; the design reference is
-[pageton/tui-design-skill](https://github.com/pageton/tui-design-skill).
+Packaging is deliberately boring: plain rootless Debian packages, exact-version
+dependencies, SHA-256 inventories and no self-updater. The OpenCode package depends on the
+runtime package instead of shipping a second Node binary.
 
-| Workflow | Purpose |
+## Troubleshooting
+
+**`opencode: command not found`** — make sure `/var/jb/usr/bin` is on your `PATH`, or run
+`/var/jb/usr/bin/opencode` directly.
+
+**`EADDRINUSE` when starting** — a stale background service is holding the port. Run
+`opencode --standalone` for a private server, or exit the old session first.
+
+**The screen flashes on every change** — update to the `node26test.8` build. Older
+releases wrapped frames in DECSET 2026, which EverTerm presents as a full-screen flash.
+
+**`dpkg` reports an unsatisfied node26 dependency** — install the matching runtime deb
+from the same artifact directory. The OpenCode package requires the exact `26.13.0-2`
+version.
+
+**I upgraded but still see the old behavior** — exit the running TUI completely, then
+start `opencode` again. The old process keeps the old code loaded.
+
+**A script hangs or behaves oddly outside a terminal** — non-TTY runs are intentionally
+unsupported; they print guidance and exit 1. Use `opencode run --standalone "..."` for
+scripting.
+
+**The app gets killed during a huge session** — that is the phone's memory pressure, not
+a crash in the port. Try a smaller session or raise `OPENCODE_IOS_MAX_OLD_SPACE_MB`
+carefully.
+
+## Building it yourself
+
+The upstream revision is pinned, patches live in the repository, and the runtime is built
+in its own repository. Hosted CI runners cannot execute iPhoneOS binaries, so CI proves
+assembly and static properties; device acceptance is a separate, documented step.
+
+| Workflow | What it builds |
 | --- | --- |
-| `build-opencode.yml` | Build the JS CLI and mobile TUI, run host tests |
-| `build-opentui-ios.yml` | Build and sign the iPhoneOS native renderer |
-| `package-rootless-node26.yml` | Assemble the OpenCode deb that depends on the external Node runtime |
-| `package-rootless.yml` | Build the stable Node 22 release line |
+| `build-opencode.yml` | The JS CLI and mobile TUI, plus host tests |
+| `build-opentui-ios.yml` | The signed iPhoneOS native renderer |
+| `package-rootless-node26.yml` | The OpenCode deb that depends on the external Node runtime |
+| `package-rootless.yml` | The stable Node 22 release line |
 
 ```sh
 gh workflow run build-opencode.yml -R Justintunsday/opencode-ios -f variant=node26
 ```
 
-Acceptance covers layout snapshots, basic input, paste, Unicode, resize/draft retention,
-idle output, frame synchronization and terminal restore, followed by a real iPhone PTY
-run. Build details are in [docs/OPENCODE_BUILD.md](docs/OPENCODE_BUILD.md); renderer
-requirements are in [docs/OPENTUI_IOS.md](docs/OPENTUI_IOS.md).
+Architecture notes are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); build details are
+in [docs/OPENCODE_BUILD.md](docs/OPENCODE_BUILD.md). The UI follows the existing
+Solid/OpenTUI structure, with visual direction from
+[pageton/tui-design-skill](https://github.com/pageton/tui-design-skill).
 
-## Credits and license
+## Credits
 
-This is an independent port. OpenCode, Node.js and OpenTUI remain the property of their
-respective authors and are distributed under their original licenses. See [LICENSE](LICENSE)
-and [NOTICE](NOTICE) for details.
+This is an independent port. OpenCode, Node.js and OpenTUI belong to their respective
+authors and keep their original licenses. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for
+the details.
