@@ -1,143 +1,230 @@
 # OpenCode iOS
 
-在越狱 iPhone 的终端里运行 **OpenCode v2 与真正的 OpenTUI 全屏界面**。
-项目面向 Dopamine rootless，安装路径为 `/var/jb`；支持 NewTerm 和 SSH 真 TTY。
+**Run OpenCode v2 on a jailbroken iPhone — native arm64, real terminal UI.**
 
-Node.js 独立打包：**包名 `node26`，版本 `26.13.0-2`，命令 `node`，作者 `nodejs`**。
-OpenCode 精确依赖它，不再内嵌另一份 Node。稳定版 `v2.2.5-ios.5` 保留原有 Node 22
-与行式 REPL，实验版提供完整 TUI，两条发布线分开记录。
+This is an independent iPhoneOS port of [OpenCode](https://github.com/sst/opencode) for
+rootless jailbroken devices (`/var/jb`, Dopamine-style). It runs the upstream CLI on a
+native arm64 Node.js runtime. The experimental line renders the actual OpenTUI
+full-screen interface inside a real terminal, not a line-based fallback.
 
-## 版本与验证
+The project currently ships two lines:
 
-| 内容 | 当前已验收工件 |
+| Line | Package | Runtime | What you get |
+| --- | --- | --- | --- |
+| **Stable** | `v2.2.5-ios.5` | Embedded Node.js 22.9.0 | Line-based REPL, headless `opencode run`, CLI |
+| **Experimental** | `2.2.5-5` / `node26test.8` | Separate `node26` `26.13.0-2` package | Real full-screen OpenTUI TUI, mobile layout, flicker fix |
+
+Both are built and packaged as Debian packages for `iphoneos-arm64`. The experimental
+package depends on the standalone [node26 runtime](https://github.com/Justintunsday/nodejs26-ios)
+instead of embedding a second Node build.
+
+## Verified on real hardware
+
+The packages below were installed and exercised on an actual device, not just CI:
+
+| | |
 | --- | --- |
-| 独立 Node.js | `node26` `26.13.0-2`，[run 41648623126](https://github.com/Justintunsday/nodejs26-ios/actions/runs/41648623126) |
-| OpenCode | `2.2.5-5` / `node26test.8`，[run 41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712) |
-| 设备 | iPhone SE 2、iOS 16.1.1、Dopamine rootless |
-| 实测 | CLI 8/0；窄屏缩放与 Unicode 草稿；121.600 秒真实 PTY 三轮工具会话、终端恢复与 `/exit` 返回 0；帧流 DECSET 2026 计数 0/0，空闲窗口 0 B |
-| 整屏闪烁修复 | 设备终端为 **EverTerm 1.5-2**；用户 A/B 确认旧版每个 2026 同步帧都会整屏闪。iOS 现不发送 2026 包络，功能 DEVICE-VERIFIED；官方包已由用户肉眼确认闪烁消失 |
-| POSIX 兼容（node26 `26.13.0-2`） | 启动器注入 `libios-posix-compat.dylib`：未命名 POSIX 信号量与 System V 共享内存可用，设备矩阵 **21 PASS / 0 UNSUPPORTED / 0 FAIL** |
+| Device | iPhone SE 2 (`iPhone12,8`), iOS 16.1.1, Dopamine rootless |
+| Terminal | NewTerm 3 and SSH PTY; rendering QA used **EverTerm 1.5-2** |
+| Stable package | `v2.2.5-ios.5` — device-verified install, REPL, CLI and headless runs |
+| Experimental package | `2.2.5-5` / `node26test.8` — [run 41649519712](https://github.com/Justintunsday/opencode-ios/actions/runs/41649519712), full TUI, resize/orientation, three-turn real PTY session, terminal restore and `/exit` |
+| POSIX runtime matrix | **21 PASS / 0 UNSUPPORTED / 0 FAIL** on device with `node26` `26.13.0-2` |
 
-完整 SHA-256、退出码、原始 PTY 摘录和系统 Jetsam 记录见
-[移动 TUI 验收](docs/MOBILE_TUI_DEVICE_RESULTS.md) 与 [独立运行时验收](docs/NODE26_EXTERNAL_DEVICE_RESULTS.md)。CI 负责构建与静态检查，
-真机结论来自实际设备命令；其他设备与系统版本尚未验收。
+Other iPhone models and iOS versions have not been validated. CI cannot execute
+iPhoneOS binaries, so "CI green" only means the packages assembled and passed static
+checks; the device results above are the real acceptance evidence.
 
-## 运行要求
+## What works
 
-- arm64 越狱 iPhone，rootless `/var/jb`，Procursus `dpkg`。二进制部署目标为 iOS 15.0。
-- UTF-8 真终端；移动布局最低 **24 列 × 8 行**，建议至少 40 × 12。
-- 独立 `node26` 运行时包。启动器自动添加必需的 `--single-threaded`。
-- Git 工具需要另外安装 `git`；模型服务需要自己的账号或 API key。
+- **A real TUI.** The full-screen OpenTUI interface opens in a real TTY, with sessions,
+  model selection, tool activity and streaming responses.
+- **Mobile-first layout.** The interface reflows for narrow screens and on-screen
+  keyboards. The minimum usable size is 24×8; 40×12 or larger is recommended. Rotation
+  and keyboard changes keep unsent drafts.
+- **No full-screen flashing on EverTerm.** iOS builds no longer emit DECSET 2026
+  synchronized-output frames, which EverTerm rendered as a full-screen present. The
+  user A/B-confirmed the fix, and the shipped frame stream contains zero sync frames.
+- **Flicker-free rendering defaults.** UI animations are off by default and the
+  cursor is a non-blinking bar; explicit user preferences are preserved.
+- **POSIX compatibility built in.** The `node26` launcher injects a compatibility dylib,
+  so unnamed POSIX semaphores and System V shared memory work for CLI tools, scripts and
+  native extensions.
+- **Optional root mode.** A root-owned server can run OpenCode tools with root
+  privileges while the TUI stays as your normal user. This is opt-in and documented
+  separately — see [Root service](docs/ROOT_SERVICE.md).
 
-## 下载与安装
+## Requirements
 
-在已登录 GitHub CLI 的电脑下载工件，内含两个 deb、报告与校验和：
+- A jailbroken, **arm64** iPhone with a **rootless** bootstrap (`/var/jb`), e.g.
+  Dopamine. Rootful jailbreaks and other prefixes are not packaged.
+- Procursus `dpkg` from the bootstrap.
+- iOS 15.0+ deployment target; the tested device is iOS 16.1.1.
+- A real terminal: NewTerm 3 or SSH (the TUI needs a TTY).
+- ~150 MB free under `/var/jb`.
+- Optional: `git` (`sudo apt-get install -y git`) for git tool support.
+- Your own model provider account or API key.
+
+## Install the experimental TUI (node26test.8)
+
+Download the package artifact to a computer where GitHub CLI is logged in:
 
 ```sh
 gh run download 41649519712 -R Justintunsday/opencode-ios \
   -n opencode-ios-rootless-node26 -D opencode-ios
 ```
 
-将整个工件目录传到手机，在该目录执行：
+Copy the whole directory to the phone, then install both debs:
 
 ```sh
+cd opencode-ios
 sha256sum -c SHA256SUMS
 sudo dpkg -i node26_26.13.0-2_iphoneos-arm64.deb OpenCode-iOS-rootless-node26.deb
-node --version
-node -p 'process.platform'
+```
+
+Check the install and start the TUI:
+
+```sh
+node --version        # v26.13.0
+node -p 'process.platform'   # ios
 opencode --version
 cd /var/mobile/Documents
 opencode
 ```
 
-预期 Node 输出 `v26.13.0` 与 `ios`。旧 `nodejs26-ios` 原型包如仍安装，需要先移除；
-新版对外命令是 `node`。配置、凭据和会话存放在用户目录，包升级会保留它们。
-详细的升级、回退及卸载方法见 [安装文档](docs/INSTALL.md)。
+Notes:
 
-## 手机操作
+- If you still have the old prototype `nodejs26-ios` packages installed, remove them
+  first. The public command is now `node`.
+- Configuration, credentials and sessions live in your home directory and survive
+  package upgrades.
+- For the stable Node 22 line, use the artifacts from the
+  [stable release](https://github.com/Justintunsday/opencode-ios/releases/tag/v2.2.5-ios.5).
+- Detailed upgrade, rollback and uninstall steps are in [docs/INSTALL.md](docs/INSTALL.md).
 
-在 TUI 输入 `/connect` 配置模型服务，再用 `/models` 选择模型。
-未配置真实服务时仍可打开界面和使用本地 CLI；本项目的自动化代理验收使用本地模拟服务。
+## Using the TUI
 
-| 操作 | 按键或命令 |
+On first launch, run `/connect` to set up a model provider, then `/models` to pick a
+model. You can open the interface and browse local CLI features even before a real
+provider is configured.
+
+| Action | Key / command |
 | --- | --- |
-| 发送 | Enter |
-| 输入换行 | Ctrl+J；支持扩展键盘的终端也可用 Shift+Enter |
-| 查找操作 | 输入 `/`，方向键选择，Enter 确认 |
-| 关闭菜单 / 中断 | Esc；按当前界面提示操作 |
-| 切换模型 | `/models` |
-| 历史会话 / 新建 | `/sessions` / `/new` |
-| 退出 | `/exit` 后 Enter |
+| Send message | Enter |
+| Insert newline | Ctrl+J (Shift+Enter in terminals with an extended keyboard) |
+| Search / command menu | `/` then arrows + Enter |
+| Close menu / cancel | Esc |
+| Change model | `/models` |
+| Session history / new session | `/sessions` / `/new` |
+| Quit | `/exit` then Enter |
 
-移动布局收起大字 Logo，首页保留状态和常用命令，输入区固定在底部；
-窄屏对话使用单栏与较小边距。屏幕旋转、软件键盘缩小高度时重新排版，保留未发送草稿。
-过小窗口显示尺寸提示，恢复尺寸后继续编辑。
+The mobile layout drops the large startup logo, keeps status and common commands on the
+home screen, and pins the composer to the bottom. Narrow conversations use a single
+column with tighter margins.
 
-40×12 的 OpenTUI 原生测试帧对比（电脑字体绘制，非手机截图）：
+These are native OpenTUI test frames rendered with desktop fonts (not phone screenshots).
+They show the 40×12 layout before and after the mobile pass:
 
-| 改版前：输入区被大字 Logo 挤出 | 移动布局：输入与操作提示完整可见 |
+| Before: the large logo pushed the composer off-screen | After: input and hints stay visible |
 | --- | --- |
-| ![旧版 40×12 测试帧](docs/images/mobile-before-40x12.png) | ![新版 40×12 测试帧](docs/images/mobile-after-40x12.png) |
+| ![Old 40×12 layout](docs/images/mobile-before-40x12.png) | ![Mobile 40×12 layout](docs/images/mobile-after-40x12.png) |
 
-## 渲染与终端（EverTerm / NewTerm）
+## Rendering on iOS
 
-iOS 渲染策略限制为 20 帧/秒并合并更新，且**不再发送 DECSET 2026 同步输出帧**。
-设备实际终端是 **EverTerm 1.5-2**（不是 NewTerm）：它把每个同步输出块当作一次全屏 present，
-所以旧版每个变化帧都会整屏闪一下。用户 A/B 已确认去掉 2026 包络后闪烁消失；
-新版帧流中 2026 begin/end 为 **0/0**，空闲窗口仍为零输出，
-官方 `node26test.8` 已由用户肉眼确认闪烁消失（2026-11-03）。
-默认关闭界面动画，使用不闪烁的线形光标；显式设置的动画与光标偏好仍会保留。
-扩展键盘协议为可选能力，iOS 使用基础按键路径。
+iOS limits the renderer to 20 FPS and coalesces updates. The port also suppresses DECSET
+2026 synchronized-output frames, because the tested terminal (EverTerm 1.5-2) treats each
+synchronized block as a full-screen present. That was the cause of the old full-screen
+flash; the fix is confirmed by user A/B testing and by frame capture (0/0 sync begin/end,
+zero output while idle).
 
-- 更新后先在旧界面 `/exit`，再运行 `opencode`，让进程加载新版代码。
-- 若报 `EADDRINUSE`，可用 `opencode --standalone` 启动私有服务；不同账户应使用不同服务端口。
-- 不要移除启动器的 `--single-threaded`。iOS JIT 的 W^X 权限切换作用于整个进程。
-- 渲染库必须保留在 `/var/jb/usr/lib/opencode/cli/assets`，并保持原始签名。
-- 非 TTY 运行会给出指引并返回 1；脚本使用 `opencode run --standalone "任务"`。
+A few practical notes:
+
+- After upgrading, `/exit` the old TUI first, then start `opencode` again so the new code
+  is loaded.
+- If you see `EADDRINUSE`, start with a private server: `opencode --standalone`. Use a
+  different service port per account.
+- Never remove `--single-threaded` from the launcher: iOS JIT page-permission changes are
+  process-wide, so background V8 execution can race them.
+- Keep the renderer at `/var/jb/usr/lib/opencode/cli/assets` with its original signature.
+- Running outside a TTY prints guidance and exits with status 1. For scripts, use
+  `opencode run --standalone "your task"`.
+
+Useful commands:
 
 ```sh
 opencode --version
 opencode models --standalone
 opencode debug paths
-opencode run --standalone "说明当前项目结构"
+opencode run --standalone "summarize this project"
 ```
 
-## 已知限制
+## Optional: run tools as root
 
-Node 用户 `worker_threads` 不受支持；iOS 禁用 tree-sitter 后台 worker，代码块使用纯文本
-回退。运行时包不含 npm/npx。剪贴板、交互式工具 PTY、Ghostty 面板与音频未提供完整验收。
-中文、emoji、组合字符按显示宽度排版；Arabic/RTL 保留逻辑文本，最终塑形与双向显示取决于终端。
+If you want OpenCode's shell/tools to run as root, install the optional root-owned
+server (see [docs/ROOT_SERVICE.md](docs/ROOT_SERVICE.md)). It listens only on
+`127.0.0.1` with HTTP Basic authentication, while the TUI stays as your normal user.
 
-SE 2 的内存有限，多开 TUI 与服务会增加压力。此前已观察到系统 Jetsam 日志，
-因此功能通过不代表无限期稳定运行。真实外部模型认证、计费与网络行为需要按服务商另行验证。
-完整范围见 [已知限制](docs/KNOWN_LIMITATIONS.md)。Node 的 JIT/wasm 与原生文件、sysctl、
-exec/spawn、POSIX 共享内存和命名信号量测试为 19 PASS / 2 UNSUPPORTED；
-[报告](https://github.com/Justintunsday/nodejs26-ios/blob/main/docs/POSIX_JIT_WASM_DEVICE_RESULTS.md)
-记录 `sem_init` 的 ENOSYS 和 System V `shmget` 的 SIGSYS。
+```sh
+# one-time install, as root
+sudo /var/jb/bin/sh /path/to/packaging/root-service/install-root-service.sh
 
-## 开发与构建
+opencode-root                         # TUI connected to the root server
+sudo opencode-root-service status     # stop | start | restart
+```
 
-上游版本固定在 [UPSTREAM.lock](UPSTREAM.lock)，iOS 修改以补丁维护。
-Node 运行时位于独立仓库 [nodejs26-ios](https://github.com/Justintunsday/nodejs26-ios)。
-UI 调整复用现有 Solid/OpenTUI 架构，设计参考
-[pageton/tui-design-skill](https://github.com/pageton/tui-design-skill)。
+This mode deliberately creates a local privilege-escalation path and is **not**
+recommended on devices you don't fully trust. The mobile process needs to read the
+service password, so any local process running as `mobile` that can read that file could
+also connect to the root server.
 
-| 工作流 | 用途 |
+## Known limitations
+
+The port targets a specific device and is honest about what is missing:
+
+- Node user `worker_threads` are unsupported. iOS JIT/executable-memory changes are
+  process-wide.
+- Tree-sitter background workers are disabled on iOS; code blocks fall back to plain
+  text.
+- The runtime package does not include npm/npx.
+- Interactive terminal panes (native PTY), clipboard integration, Ghostty panes and
+  audio are not fully validated.
+- `git` is not installed by default; install it separately if you need git tools.
+- Large sessions can hit the iPhone SE 2's memory limit. The launcher caps V8 old space
+  at 1536 MiB; override with `OPENCODE_IOS_MAX_OLD_SPACE_MB`.
+- Arabic/RTL text keeps logical order; final shaping depends on the terminal.
+- Real provider auth, billing and network behaviour are the provider's domain and are
+  not covered by our mock-provider tests.
+
+The full, itemized list is in [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+The Node runtime's JIT/wasm/POSIX results are in the
+[nodejs26-ios device report](https://github.com/Justintunsday/nodejs26-ios/blob/main/docs/POSIX_JIT_WASM_DEVICE_RESULTS.md)
+(21 PASS, 0 unsupported).
+
+## Development
+
+The upstream revision is pinned in [UPSTREAM.lock](UPSTREAM.lock); iOS-specific changes
+are maintained as patches. The Node.js runtime lives in a separate repository,
+[nodejs26-ios](https://github.com/Justintunsday/nodejs26-ios). UI work builds on the
+existing Solid/OpenTUI architecture; the design reference is
+[pageton/tui-design-skill](https://github.com/pageton/tui-design-skill).
+
+| Workflow | Purpose |
 | --- | --- |
-| `build-opencode.yml` | 构建 JS CLI 与移动 TUI，运行主机测试 |
-| `build-opentui-ios.yml` | 构建并签名 iPhoneOS 原生渲染库 |
-| `package-rootless-node26.yml` | 生成依赖独立 Node 的 OpenCode deb，校验两个包 |
-| `package-rootless.yml` | 保留稳定 Node 22 发布线 |
+| `build-opencode.yml` | Build the JS CLI and mobile TUI, run host tests |
+| `build-opentui-ios.yml` | Build and sign the iPhoneOS native renderer |
+| `package-rootless-node26.yml` | Assemble the OpenCode deb that depends on the external Node runtime |
+| `package-rootless.yml` | Build the stable Node 22 release line |
 
 ```sh
 gh workflow run build-opencode.yml -R Justintunsday/opencode-ios -f variant=node26
 ```
 
-验收覆盖布局快照、基础按键、粘贴、Unicode、缩放保留草稿、空闲输出、帧同步与终端恢复，
-随后在 iPhone 真 PTY 验证。构建细节见 [OPENCODE_BUILD.md](docs/OPENCODE_BUILD.md)，
-渲染库要求见 [OPENTUI_IOS.md](docs/OPENTUI_IOS.md)。
+Acceptance covers layout snapshots, basic input, paste, Unicode, resize/draft retention,
+idle output, frame synchronization and terminal restore, followed by a real iPhone PTY
+run. Build details are in [docs/OPENCODE_BUILD.md](docs/OPENCODE_BUILD.md); renderer
+requirements are in [docs/OPENTUI_IOS.md](docs/OPENTUI_IOS.md).
 
-## 许可
+## Credits and license
 
-这是独立移植项目。OpenCode、Node.js、OpenTUI 的版权与许可保留原作者归属；
-详见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。
+This is an independent port. OpenCode, Node.js and OpenTUI remain the property of their
+respective authors and are distributed under their original licenses. See [LICENSE](LICENSE)
+and [NOTICE](NOTICE) for details.
