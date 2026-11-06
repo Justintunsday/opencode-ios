@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode iOS"
+  short_description: "配置和排查 iPhone 上的 OpenCode 运行环境、服务身份、模型及设备桥接"
+  default_prompt: "使用 $opencode-ios 核对手机上 OpenCode 的实际运行环境与配置，并完成当前授权的配置或排查任务。"

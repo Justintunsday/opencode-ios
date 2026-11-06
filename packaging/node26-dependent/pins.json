@@ -10,7 +10,7 @@
   "cli_sha256": "8067e4262d3d87f3cc09f55045641995867247fa3e837ed8711e3b77a7ad8305",
   "renderer_run": "41582979506",
   "renderer_sha256": "4792df5d32e846339e8f9f29865a4e4596a0f34465424ec4c15f9e1152581868",
-  "opencode_version": "2.2.5-5",
+  "opencode_version": "2.2.5-6",
   "experimental_label": "v2.2.5-ios.5-node26test.8",
   "source_date_epoch": 1793717000
 }

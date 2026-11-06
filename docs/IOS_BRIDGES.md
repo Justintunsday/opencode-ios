@@ -1,6 +1,6 @@
 # Optional iOS bridge integration
 
-[iOS Control Bridge](https://github.com/Justintunsday/ios-control-bridge) supplies
+[Control API](https://github.com/Justintunsday/ios-control-bridge) supplies
 fixed system-service operations. [iOSRemoteBridge](https://github.com/Justintunsday/iOSRemoteBridge)
 supplies paired screenshots and UI input. OpenCode can use both from the same
 session. Its provider and runtime configuration remain independent.
@@ -28,7 +28,7 @@ other MCP servers, instruction paths and unrelated JSONC comments are retained.
 Changes have backups; repeated identical setup is a no-op. A conflicting server
 name requires another `--server-name`.
 
-The Control Bridge package defaults to `/var/jb/usr/lib/ios-control-bridge`.
+The Control API package defaults to `/var/jb/usr/lib/ios-control-bridge`.
 For a checkout, use `opencode-ios-bridge --icb-root /absolute/ios-control-bridge
 setup ...`. `IOS_CONTROL_BRIDGE_ROOT` and `IOS_BRIDGE_PYTHON` override that root
 and `/var/jb/usr/bin/python3` respectively. If this command is not yet installed,
@@ -57,3 +57,16 @@ observation sequence, verify service writes by readback and release the single
 remote session when finished. Setup does not enable root execution or Siri.
 
 See the [full setup and validation contract](https://github.com/Justintunsday/ios-control-bridge/blob/main/docs/opencode-integration.md).
+
+## Bundled skills
+
+OpenCode packages contain the complete `opencode-ios` skill under
+`/var/jb/usr/lib/opencode/skills/opencode-ios`. iOSRemoteBridge packages contain
+`ios-computer-use` under `/var/jb/usr/lib/iosremotebridge/skills/ios-computer-use`.
+The files are package-owned resources, including their references and metadata;
+installing them does not overwrite user profiles or skill directories.
+
+For OpenCode v2.2.5, add the desired package skill directory to the existing
+configuration's `skills` array if it should participate in skill discovery.
+Retain existing entries and avoid loading two copies of the same skill ID.
+Other clients can reference the packaged skill directories directly.

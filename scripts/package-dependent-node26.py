@@ -77,6 +77,10 @@ def main():
     require(b'libios-posix-compat.dylib' in launcher and b'DYLD_INSERT_LIBRARIES' in launcher, 'POSIX compatibility shim injection')
     files['var/jb/usr/bin/opencode'] = (launcher,0o755)
     files['var/jb/usr/bin/opencode-ios-bridge'] = ((ROOT/'packaging/rootless/usr/bin/opencode-ios-bridge').read_bytes(),0o755)
+    require((ROOT/'skills/opencode-ios/SKILL.md').is_file(), 'Bundled OpenCode iOS skill source')
+    for path in sorted((ROOT/'skills').rglob('*')):
+        if path.is_file() and not path.is_symlink() and path.suffix in ('.md', '.yaml', '.yml'):
+            files[APP+'/skills/'+path.relative_to(ROOT/'skills').as_posix()] = (path.read_bytes(),0o644)
     files[APP+'/runtime/dependency.json'] = ((json.dumps(pin,indent=2)+'\n').encode(),0o644)
     for name in ('INSTALL.md','VERIFICATION.md','KNOWN_LIMITATIONS.md','OPENTUI_IOS.md','OPENCODE_BUILD.md','NODE26_EXTERNAL_RUNTIME.md','NODE26_EXTERNAL_DEVICE_RESULTS.md','IOS_BRIDGES.md'):
         files[DOC+'/'+name] = ((ROOT/'docs'/name).read_bytes(),0o644)
@@ -95,7 +99,8 @@ def main():
     control = f'''Package: opencode
 Version: {pin['opencode_version']}
 Architecture: iphoneos-arm64
-Maintainer: OpenCode iOS port maintainers <opencode-ios-port@users.noreply.github.com>
+Maintainer: opencode <opencode-ios-port@users.noreply.github.com>
+Author: opencode
 Installed-Size: {installed_kib}
 Section: Development
 Priority: optional
@@ -116,7 +121,7 @@ Description: OpenCode v2 native TUI using the standalone Node.js 26 runtime
     (args.output/node_filename).write_bytes(args.node_package.read_bytes())
     report = dict(package='opencode',version=pin['opencode_version'],variant='node26-external',experimental_label=pin['experimental_label'],
                   depends=dependency,runtime_embedded=False,source_pins=pin,file=filename,bytes=len(deb),sha256=sha256(deb),
-                  device_status='UNVERIFIED ON DEVICE (CI assembly only)',static_checks=checks,symlinks=links,
+                  device_status='UNVERIFIED ON DEVICE (CI assembly only)',static_checks=checks,symlinks=links,bundled_skills=['opencode-ios'],
                   files=[dict(path=name,bytes=len(data),mode=oct(mode),sha256=sha256(data)) for name,(data,mode) in sorted(files.items())])
     encoded = (json.dumps(report,indent=2)+'\n').encode()
     (args.output/'package-report.json').write_bytes(encoded)

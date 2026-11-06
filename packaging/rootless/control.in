@@ -2,6 +2,7 @@ Package: opencode
 Version: @VERSION@
 Architecture: iphoneos-arm64
 Maintainer: @MAINTAINER@
+Author: opencode
 Installed-Size: @INSTALLED_SIZE@
 Section: Development
 Priority: optional

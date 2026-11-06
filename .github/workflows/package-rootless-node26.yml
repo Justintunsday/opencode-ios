@@ -56,6 +56,7 @@ jobs:
           test "$(dpkg-deb -f "$node_deb" Package)" = node26
           test "$(dpkg-deb -f "$node_deb" Author)" = nodejs
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Package)" = opencode
+          test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Author)" = opencode
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Version)" = '${{ steps.pin.outputs.opencode_version }}'
           test "$(dpkg-deb -f OpenCode-iOS-rootless-node26.deb Depends)" = 'firmware (>= 15.0), node26 (= ${{ steps.pin.outputs.node_package_version }})'
           dpkg-deb --info OpenCode-iOS-rootless-node26.deb
@@ -66,6 +67,10 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, pathlib
           root = pathlib.Path('extracted')
+          skill = root / 'var/jb/usr/lib/opencode/skills/opencode-ios'
+          assert (skill / 'SKILL.md').read_text().startswith('---\nname: opencode-ios\n')
+          assert (skill / 'references/bridges.md').is_file()
+          assert (skill / 'agents/openai.yaml').is_file()
           report = json.load(open('package-report.json'))
           assert report['runtime_embedded'] is False
           import os
