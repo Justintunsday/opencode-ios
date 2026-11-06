@@ -1,0 +1,26 @@
+#!/var/jb/bin/sh
+# Optional integration. Python and bridge backends are installed separately.
+set -eu
+ICB_ROOT="${IOS_CONTROL_BRIDGE_ROOT:-/var/jb/usr/lib/ios-control-bridge}"
+if [ "${1:-}" = --icb-root ]; then
+    if [ "$#" -lt 2 ]; then
+        echo 'opencode-ios-bridge: --icb-root requires an absolute checkout path' >&2
+        exit 2
+    fi
+    ICB_ROOT="$2"
+    shift 2
+fi
+case "$ICB_ROOT" in
+    /* | [A-Za-z]:/*) ;;
+    *) echo 'opencode-ios-bridge: bridge root must be absolute' >&2; exit 2 ;;
+esac
+BRIDGE_PYTHON="${IOS_BRIDGE_PYTHON:-/var/jb/usr/bin/python3}"
+if [ ! -f "$ICB_ROOT/src/ios_control_bridge/opencode.py" ] || [ ! -f "$ICB_ROOT/bin/iosctl" ]; then
+    echo 'opencode-ios-bridge: update ios-control-bridge or set IOS_CONTROL_BRIDGE_ROOT to its checkout' >&2
+    exit 1
+fi
+if [ ! -x "$BRIDGE_PYTHON" ]; then
+    echo 'opencode-ios-bridge: Python 3.9+ is required; set IOS_BRIDGE_PYTHON to its absolute executable' >&2
+    exit 1
+fi
+exec "$BRIDGE_PYTHON" -B "$ICB_ROOT/bin/iosctl" opencode "$@"

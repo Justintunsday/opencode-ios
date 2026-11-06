@@ -167,6 +167,7 @@ ALLOWED_DATA_PREFIXES = (
 )
 EXECUTABLE_DATA = {
     "var/jb/usr/bin/opencode",
+    "var/jb/usr/bin/opencode-ios-bridge",
     "var/jb/usr/bin/rg",
     "var/jb/usr/share/doc/opencode/device-smoke.sh",
     "var/jb/usr/lib/opencode/runtime/node",
@@ -858,6 +859,7 @@ def _check_repo_checks(checks, repo_root, mode, out_dir):
             repo_root / "packaging/rootless/prerm",
             repo_root / "packaging/rootless/postrm",
             repo_root / "packaging/rootless/usr/bin/opencode",
+            repo_root / "packaging/rootless/usr/bin/opencode-ios-bridge",
             repo_root / "packaging/rootless/usr/bin/opencode-node18",
             repo_root / "packaging/rootless/usr/share/doc/opencode/device-smoke.sh",
         ) if path.is_file()

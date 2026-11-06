@@ -320,6 +320,8 @@ mkdir -p "$STAGE/DEBIAN" \
 info "staging rootless tree (variant=$VARIANT)"
 cp "$LAUNCHER_SRC" "$STAGE/var/jb/usr/bin/opencode"
 chmod 0755 "$STAGE/var/jb/usr/bin/opencode"
+cp "$ROOT/packaging/rootless/usr/bin/opencode-ios-bridge" "$STAGE/var/jb/usr/bin/opencode-ios-bridge"
+chmod 0755 "$STAGE/var/jb/usr/bin/opencode-ios-bridge"
 
 cp "$NODE_SRC" "$STAGE/var/jb/usr/lib/opencode/runtime/node"
 chmod 0755 "$STAGE/var/jb/usr/lib/opencode/runtime/node"
@@ -411,6 +413,7 @@ copy_doc "$ROOT/packaging/rootless/usr/share/doc/opencode/copyright" \
     "$STAGE/var/jb/usr/share/doc/opencode/copyright" 0644
 copy_doc "$ROOT/docs/VERIFICATION.md" "$STAGE/var/jb/usr/share/doc/opencode/VERIFICATION.md" 0644
 copy_doc "$ROOT/docs/INSTALL.md" "$STAGE/var/jb/usr/share/doc/opencode/INSTALL.md" 0644
+copy_doc "$ROOT/docs/IOS_BRIDGES.md" "$STAGE/var/jb/usr/share/doc/opencode/IOS_BRIDGES.md" 0644
 if [ -f "$ROOT/docs/KNOWN_LIMITATIONS.md" ]; then
     copy_doc "$ROOT/docs/KNOWN_LIMITATIONS.md" \
         "$STAGE/var/jb/usr/share/doc/opencode/KNOWN_LIMITATIONS.md" 0644

@@ -142,6 +142,11 @@ the principal items are:
 
 ## Optional root execution
 
+For system services and screenshot/input tools, see the separate
+[optional bridge integration](docs/IOS_BRIDGES.md). New packages include
+`opencode-ios-bridge setup` and `doctor` to configure both bridges and check
+their shared Python 3.9-compatible MCP entry point.
+
 Certain operations — installing packages, modifying system paths, managing services —
 require root privileges. As an alternative to running the entire application as root,
 this repository provides an optional root-owned server on `127.0.0.1` with HTTP Basic
